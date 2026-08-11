@@ -6,6 +6,7 @@
 
 #import "MCMManager.h"
 #import "MCMBridge.h"
+#import "BadQueryProbe.h"
 #import "FFLogger.h"
 
 #import <fcntl.h>
@@ -19,6 +20,11 @@
 static const uint64_t kMCMFlags = 0x900000000ULL;
 static const uint64_t kMCMReadWritePartFlags = 0x8100000000ULL;
 static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArrest";
+
+// Sandbox handle consumed through the bad_query variant matrix for the
+// MobileGestalt group. Kept alive for the whole process: releasing it would
+// revoke the escape and the editor would go empty again.
+static int64_t gBadQueryGestaltHandle = -1;
 
 // Private LaunchServices API used only for installed-app discovery.
 @interface NSObject (MCMLaunchServices)
@@ -223,6 +229,42 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         }
         FFLogTag(@"MCM", @"gestalt route reached root=%@ but file missing %@ errno=%d",
             root, path, errno);
+    }
+
+    // iOS 26.6 fallback: MCM's class-13 activation is denied at token
+    // issuance, but the bad_query variant matrix still issues tokens for
+    // group=systemgroup.com.apple.mobilegestaltcache (flags 0x900000000 /
+    // 0x800000000, part 0/3, traversal 0/1). Consume one handle per target
+    // and keep it so the editor can read and rewrite the plist.
+    if (gBadQueryGestaltHandle < 0) {
+        NSArray<NSString *> *targets = @[
+            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
+            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
+            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache",
+            @"/var/mobile/Containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
+        ];
+        for (NSString *target in targets) {
+            NSString *detail = nil;
+            FFLogTag(@"MCM", @"gestalt bad_query consume begin target=%@", target);
+            int64_t handle = BadQueryConsumePath(target, nil, NO, &detail);
+            if (handle >= 0) {
+                gBadQueryGestaltHandle = handle;
+                FFLogTag(@"MCM", @"gestalt bad_query consume OK handle=%lld target=%@",
+                    handle, target);
+                break;
+            }
+            FFLogTag(@"MCM", @"gestalt bad_query consume FAIL code=%lld target=%@ error=%@",
+                handle, target, detail ?: @"(nil)");
+        }
+    }
+    if (gBadQueryGestaltHandle >= 0) {
+        for (NSString *candidate in candidates) {
+            if (access(candidate.fileSystemRepresentation, R_OK) == 0) {
+                FFLogTag(@"MCM", @"gestalt reachable via bad_query path=%@ handle=%lld",
+                    candidate, gBadQueryGestaltHandle);
+                return candidate;
+            }
+        }
     }
 
     // Last resort: the symlink bad_query creates inside Device Storage.

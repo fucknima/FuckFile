@@ -1,6 +1,7 @@
 #import "FFGestaltEditorViewController.h"
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
+#import "FFLogger.h"
 
 #import <errno.h>
 #import <objc/runtime.h>
@@ -113,18 +114,23 @@
     NSString *path = [[MCMManager sharedManager] mobileGestaltPath:&error];
     if (!path) {
         self.errorText = error ?: @"MobileGestalt.plist is not reachable";
+        FFLogTag(@"Gestalt", @"loadState FAIL path=(nil) error=%@", self.errorText);
         [self.tableView reloadData];
         return;
     }
+    FFLogTag(@"Gestalt", @"loadState path=%@", path);
     self.gestaltPath = path;
     self.gestaltDirectory = path.stringByDeletingLastPathComponent;
 
     NSDictionary *raw = [NSDictionary dictionaryWithContentsOfFile:path];
     if (![raw isKindOfClass:NSDictionary.class]) {
         self.errorText = @"MobileGestalt.plist is empty or invalid";
+        FFLogTag(@"Gestalt", @"loadState FAIL plist invalid path=%@", path);
         [self.tableView reloadData];
         return;
     }
+    FFLogTag(@"Gestalt", @"loadState plist OK entries=%lu path=%@",
+        (unsigned long)raw.count, path);
     self.dictionary = [raw mutableCopy];
     self.errorText = nil;
 
@@ -135,8 +141,13 @@
     [[NSFileManager defaultManager] createDirectoryAtPath:backupDirectory
         withIntermediateDirectories:YES attributes:nil error:nil];
     self.backupPath = [backupDirectory stringByAppendingPathComponent:@"SavedGestalt.plist"];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:self.backupPath])
-        [[NSFileManager defaultManager] copyItemAtPath:path toPath:self.backupPath error:nil];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:self.backupPath]) {
+        BOOL copied = [[NSFileManager defaultManager] copyItemAtPath:path
+            toPath:self.backupPath error:nil];
+        FFLogTag(@"Gestalt", @"backup copy path=%@ result=%d", self.backupPath, copied);
+    } else {
+        FFLogTag(@"Gestalt", @"backup exists path=%@", self.backupPath);
+    }
 
     NSMutableDictionary *cacheExtra = [self cacheExtra];
     NSMutableDictionary *artwork = [cacheExtra[@"oPeik/9e8lQWMszEjbPzng"]
@@ -179,7 +190,7 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    if (self.errorText) return section == 0 ? 1 : 1;
+    if (self.errorText) return section == 0 ? 1 : 2;
     switch (section) {
         case 0: return 1; // warning
         case 1: return 3; // apply / revert / open location
@@ -232,7 +243,11 @@
             cell.imageView.image = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"];
             cell.imageView.tintColor = [UIColor systemYellowColor];
         } else {
-            cell.textLabel.text = @"重试";
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"重试";
+            } else {
+                cell.textLabel.text = @"查看日志";
+            }
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
         return cell;
@@ -334,7 +349,8 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (self.errorText) {
-        if (indexPath.section == 1) [self loadState];
+        if (indexPath.section == 1 && indexPath.row == 0) [self loadState];
+        else if (indexPath.section == 1 && indexPath.row == 1) [self presentLog];
         return;
     }
     if (indexPath.section == 1) {
@@ -504,6 +520,25 @@
     FFBrowserViewController *browser = [[FFBrowserViewController alloc]
         initWithPath:self.gestaltDirectory];
     [self.navigationController pushViewController:browser animated:YES];
+}
+
+- (void)presentLog
+{
+    NSString *logPath = FFLogPath();
+    NSString *text = [NSString stringWithContentsOfFile:logPath
+        encoding:NSUTF8StringEncoding error:nil];
+    if (!text.length) text = @"日志为空，请先运行探针。";
+    UIViewController *viewer = [UIViewController new];
+    viewer.title = @"FuckFile 日志";
+    UITextView *textView = [[UITextView alloc] initWithFrame:viewer.view.bounds];
+    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    textView.editable = NO;
+    textView.selectable = YES;
+    textView.font = [UIFont fontWithName:@"Menlo" size:11];
+    textView.text = text;
+    [viewer.view addSubview:textView];
+    [self.navigationController pushViewController:viewer animated:YES];
 }
 
 - (void)chooseSubtype

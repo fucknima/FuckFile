@@ -9,6 +9,39 @@
 @property(nonatomic) BOOL running;
 @end
 
+static NSString *const kProbeHelpText =
+    @"【沙盒逃逸探针使用说明】\n\n"
+    @"1. 首次打开 App 会自动跑一轮探针（约 1 秒）。\n"
+    @"   每一步成功/失败都会写进：\n"
+    @"   Device Storage/BadQuery Probe Log.txt\n"
+    @"   Device Storage/FuckFile Log.txt\n\n"
+    @"2. 看结果：\n"
+    @"   - 探针列表：绿色=逃逸成功，红色=失败。\n"
+    @"   - 变体矩阵：iOS 26.6 上 canonical flags 被拦，"
+    @"但矩阵里 TOKEN-OK 的组合仍能签发沙盒 token。\n\n"
+    @"3. 枚举容器（关键步骤）：\n"
+    @"   - 点“枚举容器”，App 会消费沙盒扩展并列出：\n"
+    @"     App Data / InternalDaemon / PluginKitPlugin / "
+    @"App Groups / System Groups\n"
+    @"   - 结果按 bundle id 建符号链接到：\n"
+    @"     Device Storage/[BadQuery] Escaped/<分类>/\n"
+    @"   - 然后回首页 → 设备存储 → [BadQuery] Escaped → App Data，"
+    @"就能看到其它 App 的 Documents/Library/tmp。\n"
+    @"   - 重启 App 后 token 会失效；本版已加自动重连。"
+    @"如果仍打不开，回这里再点一次“枚举容器”。\n\n"
+    @"4. 设置 App Group 牺牲（可选）：\n"
+    @"   - 仅当你用带 App Group entitlement 的证书签名时才需要。\n"
+    @"   - 点“设置 App Group 牺牲”，输入你的 group id（如 group.xxx）保存。\n"
+    @"   - 重新运行探针 + 枚举容器，App Groups 可列出更多容器；\n"
+    @"     没有配置时 class 7 路线会跳过（日志会写明）。\n\n"
+    @"5. 消费自定义路径：\n"
+    @"   - 对任意绝对路径执行 bad_query，成功后本进程内可访问。\n"
+    @"   - “释放扩展”只释放最近一次手动消费的句柄，枚举用的不会释放。\n\n"
+    @"6. 导出日志：\n"
+    @"   文件 App → 我的 iPhone → FuckFile → Device Storage\n"
+    @"   把 FuckFile Log.txt、BadQuery Probe Log.txt、ACCESS MAP.txt、"
+    @"BadQuery Probe Results.plist 压缩导出即可。";
+
 @implementation FFProbeViewController
 
 - (instancetype)init
@@ -49,7 +82,7 @@
 {
     switch (section) {
         case 0: return 5;
-        case 1: return 8;
+        case 1: return 9;
         case 2: {
             NSArray *probes = [self.report[@"Probes"] isKindOfClass:NSArray.class]
                 ? self.report[@"Probes"] : @[];
@@ -160,6 +193,7 @@
             case 5: cell.textLabel.text = @"枚举容器（UUID → 包名）"; break;
             case 6: cell.textLabel.text = @"设置 App Group 牺牲"; break;
             case 7: cell.textLabel.text = @"查看变体矩阵"; break;
+            case 8: cell.textLabel.text = @"使用说明"; break;
         }
         return cell;
     }
@@ -190,13 +224,14 @@
     if (indexPath.section == 1) {
         switch (indexPath.row) {
             case 0: [self rerunProbe]; break;
-            case 1: [self presentText:@"Probe Log" body:BadQueryProbeLogText()]; break;
+            case 1: [self presentText:@"探针日志" body:BadQueryProbeLogText()]; break;
             case 2: [self presentResults]; break;
             case 3: [self consumeCustomPath]; break;
             case 4: [self releaseHandle]; break;
             case 5: [self enumerateContainers]; break;
             case 6: [self setSacrificeGroup]; break;
             case 7: [self presentVariantMatrix]; break;
+            case 8: [self presentHelp]; break;
         }
         return;
     }
@@ -365,6 +400,11 @@
     }
     [self presentText:[NSString stringWithFormat:@"变体矩阵（%lu/%lu 可用）",
         (unsigned long)ok, (unsigned long)matrix.count] body:text];
+}
+
+- (void)presentHelp
+{
+    [self presentText:@"使用说明" body:kProbeHelpText];
 }
 
 - (void)presentProbeDetail:(NSDictionary *)probe

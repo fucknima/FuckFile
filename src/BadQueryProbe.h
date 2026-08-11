@@ -41,4 +41,11 @@ FOUNDATION_EXPORT void BadQueryReleaseHandle(int64_t handle);
 // AppGroupSacrifice route automatically.
 FOUNDATION_EXPORT NSDictionary * _Nullable BadQueryEnumerateAllContainers(void);
 
+// Re-consumes a sandbox extension for every escaped root and keeps the
+// handles alive for the process lifetime. Use at startup and after a probe
+// re-run so previously created symlinks under
+//   Device Storage/[BadQuery] Escaped/
+// stay reachable even after the app was restarted.
+FOUNDATION_EXPORT NSDictionary * _Nullable BadQueryReconnectEscapedRoots(void);
+
 NS_ASSUME_NONNULL_END

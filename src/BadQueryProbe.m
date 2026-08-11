@@ -733,6 +733,11 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                     combo[@"Part"], combo[@"Traversal"], matrixHandle);
                 return matrixHandle;
             }
+            FFLogTag(@"BadQueryProbe",
+                @"consume FAIL matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ code=%lld",
+                path, combo[@"Group"],
+                [combo[@"Flags"] unsignedLongLongValue],
+                combo[@"Part"], combo[@"Traversal"], matrixHandle);
         }
     }
     if (error)
@@ -865,5 +870,67 @@ NSDictionary *BadQueryEnumerateAllContainers(void)
         stringByAppendingPathComponent:@"Enumerate Results.plist"];
     [summary writeToFile:summaryPath atomically:YES];
     logStep(YES, @"enumerate all containers", summaryPath);
+    return summary;
+}
+
+#pragma mark - Reconnect escaped roots
+
+// Process-wide handles consumed by BadQueryReconnectEscapedRoots. They are
+// intentionally never released: the escape must stay alive while browsing.
+static NSMutableDictionary<NSString *, NSNumber *> *gReconnectHandles;
+
+NSDictionary *BadQueryReconnectEscapedRoots(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gReconnectHandles = [NSMutableDictionary dictionary];
+    });
+
+    NSArray<NSDictionary *> *roots = @[
+        @{@"Name": @"App Data", @"Path": @"/var/mobile/Containers/Data/Application"},
+        @{@"Name": @"InternalDaemon", @"Path": @"/var/mobile/Containers/Data/InternalDaemon"},
+        @{@"Name": @"PluginKitPlugin", @"Path": @"/var/mobile/Containers/Data/PluginKitPlugin"},
+        @{@"Name": @"App Groups", @"Path": @"/var/mobile/Containers/Shared/AppGroup"},
+        @{@"Name": @"System Groups", @"Path": @"/var/mobile/Containers/Shared/SystemGroup"},
+        @{@"Name": @"SystemGroup (new path)", @"Path": @"/var/containers/Shared/SystemGroup"},
+        @{@"Name": @"MobileGestalt Caches",
+          @"Path": @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches"},
+    ];
+
+    NSMutableArray<NSDictionary *> *results = [NSMutableArray array];
+    for (NSDictionary *root in roots) {
+        NSString *name = root[@"Name"];
+        NSString *path = root[@"Path"];
+        NSNumber *existing = gReconnectHandles[name];
+        if (existing && existing.longLongValue >= 0) {
+            [results addObject:@{@"Name": name, @"Path": path,
+                                 @"Status": @"already-active", @"Handle": existing}];
+            continue;
+        }
+        NSString *error = nil;
+        int64_t handle = BadQueryConsumePath(path, nil, NO, &error);
+        if (handle >= 0) {
+            gReconnectHandles[name] = @(handle);
+            [results addObject:@{@"Name": name, @"Path": path,
+                                 @"Status": @"active", @"Handle": @(handle)}];
+            logStep(YES, [NSString stringWithFormat:@"reconnect %@", name],
+                [NSString stringWithFormat:@"handle=%lld path=%@", handle, path]);
+        } else {
+            [results addObject:@{@"Name": name, @"Path": path, @"Status": @"failed",
+                                 @"Error": error ?: [NSString stringWithFormat:@"code=%lld", handle]}];
+            logStep(NO, [NSString stringWithFormat:@"reconnect %@", name],
+                error ?: [NSString stringWithFormat:@"code=%lld", handle]);
+        }
+    }
+
+    NSDictionary *summary = @{
+        @"Version": @1,
+        @"CreatedAt": NSDate.date,
+        @"Results": results,
+    };
+    NSString *summaryPath = [BadQueryEscapedRoot()
+        stringByAppendingPathComponent:@"Reconnect Results.plist"];
+    [summary writeToFile:summaryPath atomically:YES];
+    logStep(YES, @"reconnect all roots", summaryPath);
     return summary;
 }

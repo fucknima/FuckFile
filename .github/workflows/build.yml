@@ -40,6 +40,12 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Info.plist" 2>/dev/null || true
           plutil -lint "$APP/Info.plist"
+          # Compile a real launch storyboard: without one, sideloaded apps
+          # fall back to legacy compatibility mode and get black bars on
+          # modern iPhones (only the middle third of the screen renders).
+          mkdir -p "$APP/Base.lproj"
+          /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
+          ls -la "$APP/Base.lproj"
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
           codesign --force -s - "$APP" || true

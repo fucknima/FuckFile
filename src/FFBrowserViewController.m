@@ -1,6 +1,8 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
 #import "MCMManager.h"
+#import "BadQueryProbe.h"
+#import "FFLogger.h"
 #import "PosterBoardFeature.h"
 
 #import <AVKit/AVKit.h>
@@ -56,6 +58,7 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, copy) NSString *searchText;
 @property(nonatomic) FFSortMode sortMode;
+@property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
 @end
@@ -63,6 +66,8 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 // Process-wide paste state so Copy in one folder can Paste in another.
 static NSString *gClipboardSource = nil;
 static FFClipboardMode gClipboardMode = FFClipboardModeNone;
+static NSMutableSet<NSString *> *gConsumedEscapedRoots;
+static NSMutableSet<NSString *> *gConsumedLinkTargets;
 
 @implementation FFBrowserViewController
 
@@ -180,6 +185,51 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     if (self.loading) return;
     self.loading = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            gConsumedEscapedRoots = [NSMutableSet set];
+            gConsumedLinkTargets = [NSMutableSet set];
+        });
+        // Inside [BadQuery] Escaped the sandbox extension may be gone after a
+        // restart. Re-consume the matching real root, and if the current path
+        // is itself a symlink (a container UUID/bundle-id link), consume its
+        // target too. Every step is written to FuckFile Log.txt.
+        NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
+        if (escapedRoot.length) {
+            BOOL cached = NO;
+            @synchronized (gConsumedEscapedRoots) {
+                cached = [gConsumedEscapedRoots containsObject:escapedRoot];
+            }
+            if (!cached) {
+                NSString *error = nil;
+                int64_t handle = BadQueryConsumePath(escapedRoot, nil, NO, &error);
+                FFLogTag(@"Browser", @"escaped reconnect root=%@ path=%@ handle=%lld error=%@",
+                    escapedRoot, self.currentPath, handle, error ?: @"(nil)");
+                if (handle >= 0) {
+                    @synchronized (gConsumedEscapedRoots) {
+                        [gConsumedEscapedRoots addObject:escapedRoot];
+                    }
+                }
+            }
+        }
+        NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
+        if (linkTarget.length) {
+            BOOL cached = NO;
+            @synchronized (gConsumedLinkTargets) {
+                cached = [gConsumedLinkTargets containsObject:linkTarget];
+            }
+            if (!cached) {
+                NSString *error = nil;
+                int64_t handle = BadQueryConsumePath(linkTarget, nil, NO, &error);
+                FFLogTag(@"Browser", @"escaped reconnect target=%@ handle=%lld error=%@",
+                    linkTarget, handle, error ?: @"(nil)");
+                if (handle >= 0) {
+                    @synchronized (gConsumedLinkTargets) {
+                        [gConsumedLinkTargets addObject:linkTarget];
+                    }
+                }
+            }
+        }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
@@ -188,8 +238,63 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             [self applyFilter];
             [self.tableView reloadData];
             [self.refreshControl endRefreshing];
+            if (loaded.count == 0 && self.loadError.length) {
+                [self presentLoadError];
+            }
         });
     });
+}
+
+- (NSString *)escapedRootForPath:(NSString *)path
+{
+    NSArray<NSString *> *parts = path.pathComponents;
+    NSUInteger index = [parts indexOfObject:@"[BadQuery] Escaped"];
+    if (index == NSNotFound || index + 1 >= parts.count) return nil;
+    NSString *folder = parts[index + 1];
+    static NSDictionary<NSString *, NSString *> *map;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        map = @{
+            @"App Data": @"/var/mobile/Containers/Data/Application",
+            @"InternalDaemon": @"/var/mobile/Containers/Data/InternalDaemon",
+            @"PluginKitPlugin": @"/var/mobile/Containers/Data/PluginKitPlugin",
+            @"App Groups": @"/var/mobile/Containers/Shared/AppGroup",
+            @"System Groups": @"/var/mobile/Containers/Shared/SystemGroup",
+            @"SystemGroup (new path)": @"/var/containers/Shared/SystemGroup",
+        };
+    });
+    return map[folder];
+}
+
+- (NSString *)symlinkTargetOfPath:(NSString *)path
+{
+    struct stat status = {0};
+    if (lstat(path.fileSystemRepresentation, &status) != 0 || !S_ISLNK(status.st_mode))
+        return nil;
+    char target[PATH_MAX] = {0};
+    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
+    if (length <= 0) return nil;
+    target[length] = '\0';
+    return [NSString stringWithUTF8String:target];
+}
+
+- (void)presentLoadError
+{
+    NSString *message = self.loadError.length ? self.loadError : @"未知错误";
+    message = [message stringByAppendingString:
+        @"\n\n沙盒扩展可能已经失效。App 已尝试自动重新消费 token；"
+        @"如果仍然失败，请到「bad_query 探针控制台」点「枚举容器」重建链接，"
+        @"或点「重新运行探针」后重试。"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开目录"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"重试"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [weakSelf reloadEntries];
+        }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (NSArray<FFEntry *> *)loadDirectoryContents
@@ -197,9 +302,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     NSMutableArray<FFEntry *> *result = [NSMutableArray array];
     DIR *directory = opendir(self.currentPath.fileSystemRepresentation);
     if (!directory) {
+        self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)",
+            errno, strerror(errno)];
         NSLog(@"[FuckFile] opendir failed path=%@ errno=%d", self.currentPath, errno);
         return result;
     }
+    self.loadError = nil;
     struct dirent *entry = NULL;
     while ((entry = readdir(directory)) != NULL) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;

@@ -4,6 +4,7 @@
 #import "FFGestaltEditorViewController.h"
 #import "BadQueryProbe.h"
 #import "MCMManager.h"
+#import "FFLogger.h"
 
 @interface FFHomeViewController ()
 @property(nonatomic) NSUInteger categoryCount;
@@ -44,6 +45,19 @@
     [super viewWillAppear:animated];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     [self reloadStatus];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    UIWindow *window = self.view.window;
+    FFLogTag(@"UI", @"home view=%@ safe=%@ table=%@ window=%@ screen=%@ nav=%@",
+        NSStringFromCGRect(self.view.bounds),
+        NSStringFromUIEdgeInsets(self.view.safeAreaInsets),
+        NSStringFromCGRect(self.tableView.frame),
+        NSStringFromCGRect(window.frame),
+        NSStringFromCGRect(UIScreen.mainScreen.bounds),
+        NSStringFromCGRect(self.navigationController.navigationBar.frame));
 }
 
 - (void)reloadStatus
