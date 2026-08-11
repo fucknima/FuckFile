@@ -17,18 +17,20 @@ jobs:
           sudo mkdir -p /opt/theos
           sudo chown "$(whoami)" /opt/theos
           git clone --recursive --depth 1 https://github.com/theos/theos.git /opt/theos
+          brew install ldid
 
       - name: Build
         run: |
           export THEOS=/opt/theos
           make clean
-          make FINALPACKAGE=1
+          make
 
       - name: Package unsigned IPA
         run: |
-          APP="$(find .theos -name 'FuckFile.app' -type d | head -1)"
+          APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
           if [ -z "$APP" ]; then
-            echo "FuckFile.app not found"
+            echo "FuckFile.app not found under .theos/obj"
+            find .theos -maxdepth 4 -type d | head -20
             exit 1
           fi
           # Strip any certificate-based signature down to ad-hoc so the

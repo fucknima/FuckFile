@@ -1,4 +1,6 @@
-TARGET := iphone:clang:17.5:15.0
+# latest = use the SDK shipped with the installed Xcode (GitHub Actions
+# macos runners only provide the Xcode SDK, not theos/sdks packages).
+TARGET := iphone:clang:latest:15.0
 ARCHS = arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
