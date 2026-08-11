@@ -238,7 +238,9 @@ static NSMutableDictionary *runSingleProbe(NSString *name, NSString *path,
     logStep(queryResult != NULL, @"container_query_get_single_result",
         queryResult ? @"returned object" : @"NULL (denied outside of sandbox?)");
     if (!queryResult) {
+#if !OS_OBJECT_USE_OBJC
         xpc_release(identifier);
+#endif
         query_free(query);
         dlclose(mgr);
         result[@"Status"] = @"denied";
@@ -251,7 +253,9 @@ static NSMutableDictionary *runSingleProbe(NSString *name, NSString *path,
     char *token = copy_sandbox_token(queryResult);
     logStep(token != NULL, @"container_copy_sandbox_token", token ? @"token obtained" : @"NULL");
     if (!token) {
+#if !OS_OBJECT_USE_OBJC
         xpc_release(identifier);
+#endif
         query_free(query);
         dlclose(mgr);
         result[@"Status"] = @"failed";
@@ -263,7 +267,9 @@ static NSMutableDictionary *runSingleProbe(NSString *name, NSString *path,
     logStep(handle >= 0, @"sandbox_extension_consume",
         handle >= 0 ? [NSString stringWithFormat:@"handle=%lld", handle] : @"consume failed");
     free(token);
+#if !OS_OBJECT_USE_OBJC
     xpc_release(identifier);
+#endif
     query_free(query);
     dlclose(mgr);
     if (handle < 0) {
