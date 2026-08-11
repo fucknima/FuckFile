@@ -269,8 +269,9 @@
             NSUInteger total = 0;
             for (NSDictionary *result in [summary[@"Results"] isKindOfClass:NSArray.class]
                 ? summary[@"Results"] : @[]) {
-                total += [[result[@"Count"] isKindOfClass:NSNumber.class]
-                    ? result[@"Count"] : @0] unsignedIntegerValue;
+                NSNumber *count = [result[@"Count"] isKindOfClass:NSNumber.class]
+                    ? result[@"Count"] : nil;
+                total += count ? count.unsignedIntegerValue : 0;
             }
             [self reloadReport];
             [self flash:[NSString stringWithFormat:
