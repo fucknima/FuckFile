@@ -364,10 +364,80 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     NSMutableArray<FFEntry *> *result = [NSMutableArray array];
     DIR *directory = opendir(self.currentPath.fileSystemRepresentation);
     if (!directory) {
-        self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)",
-            errno, strerror(errno)];
-        FFLogTag(@"Browser", @"opendir FAIL path=%@ errno=%d (%s)",
-            self.currentPath, errno, strerror(errno));
+        // opendir is denied on some system-group directories (e.g. the
+        // MobileGestalt Caches folder) even though the consumed token grants
+        // file access. bad_query_list (fsgetpath) does not need opendir, so
+        // use it as a listing fallback.
+        NSString *varPath = [self varFormOfPath:self.currentPath];
+        NSString *fallbackError = nil;
+        NSArray<NSString *> *names = varPath.length
+            ? BadQueryListDirectory(varPath, &fallbackError) : nil;
+        if (names.count) {
+            FFLogTag(@"Browser",
+                @"opendir FAIL path=%@ errno=%d (%s) -> bad_query_list fallback entries=%lu",
+                self.currentPath, errno, strerror(errno), (unsigned long)names.count);
+            for (NSString *name in names) {
+                NSString *path = [self.currentPath stringByAppendingPathComponent:name];
+                FFEntry *item = [FFEntry new];
+                item.name = name;
+                item.path = path;
+                struct stat status = {0};
+                if (lstat(path.fileSystemRepresentation, &status) != 0) {
+                    item.detail = [NSString stringWithFormat:@"lstat errno=%d", errno];
+                    [result addObject:item];
+                    continue;
+                }
+                item.mode = status.st_mode;
+                item.uid = status.st_uid;
+                item.gid = status.st_gid;
+                item.modificationDate = [NSDate dateWithTimeIntervalSince1970:status.st_mtimespec.tv_sec];
+                item.creationDate = [NSDate dateWithTimeIntervalSince1970:status.st_birthtimespec.tv_sec];
+                item.isSymlink = S_ISLNK(status.st_mode);
+                if (item.isSymlink) {
+                    char target[PATH_MAX] = {0};
+                    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
+                    if (length > 0) {
+                        target[length] = '\0';
+                        item.linkTarget = [NSString stringWithUTF8String:target];
+                    }
+                    struct stat resolved = {0};
+                    if (stat(path.fileSystemRepresentation, &resolved) == 0) {
+                        item.isDirectory = S_ISDIR(resolved.st_mode);
+                        item.size = (unsigned long long)resolved.st_size;
+                    }
+                } else {
+                    item.isDirectory = S_ISDIR(status.st_mode);
+                    item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
+                }
+                [result addObject:item];
+            }
+            self.loadError = nil;
+            [self decorateEntries:result];
+            [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
+                if (left.isDirectory != right.isDirectory)
+                    return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+                switch (self.sortMode) {
+                    case FFSortModeSize:
+                        if (left.size != right.size)
+                            return left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
+                        break;
+                    case FFSortModeDate:
+                        return [right.modificationDate compare:left.modificationDate];
+                    case FFSortModeName:
+                    default:
+                        break;
+                }
+                return [left.name compare:right.name options:NSNumericSearch];
+            }];
+            return result;
+        }
+        self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)%@",
+            errno, strerror(errno),
+            fallbackError.length
+                ? [NSString stringWithFormat:@"；bad_query_list 回退失败：%@", fallbackError]
+                : @""];
+        FFLogTag(@"Browser", @"opendir FAIL path=%@ errno=%d (%s) fallback=%@",
+            self.currentPath, errno, strerror(errno), fallbackError ?: @"(nil)");
         return result;
     }
     self.loadError = nil;

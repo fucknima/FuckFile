@@ -37,6 +37,13 @@ FOUNDATION_EXPORT int64_t BadQueryConsumePath(NSString *path,
 FOUNDATION_EXPORT int64_t BadQueryConsumePathForOpen(NSString *path,
                                                       NSString * _Nullable * _Nullable error);
 
+// Lists a directory with bad_query_list (fsgetpath) instead of opendir.
+// Some system-group directories (e.g. MobileGestalt Caches on iOS 26.6)
+// deny opendir even when the token grants file access; fsgetpath still
+// resolves their child paths. Returns direct-child names or nil on failure.
+FOUNDATION_EXPORT NSArray<NSString *> * _Nullable BadQueryListDirectory(
+    NSString *path, NSString * _Nullable * _Nullable error);
+
 // Releases a handle returned by BadQueryConsumePath / bad_query().
 FOUNDATION_EXPORT void BadQueryReleaseHandle(int64_t handle);
 
