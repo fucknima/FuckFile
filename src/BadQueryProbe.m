@@ -854,6 +854,41 @@ int64_t BadQueryConsumePathForOpen(NSString *path, NSString **error)
     return -1;
 }
 
+NSArray<NSString *> *BadQueryListDirectory(NSString *path, NSString **error)
+{
+    if (!path.length || ![path hasPrefix:@"/"]) {
+        if (error) *error = @"path must be absolute";
+        return nil;
+    }
+    NSString *consumeError = nil;
+    int64_t handle = BadQueryConsumePath(path, nil, NO, &consumeError);
+    if (handle < 0) {
+        if (error) *error = consumeError ?: @"consume failed";
+        FFLogTag(@"BadQueryProbe", @"list-directory consume FAIL path=%@ error=%@",
+            path, consumeError ?: @"(nil)");
+        return nil;
+    }
+    char *pathCopy = strdup(path.UTF8String);
+    char *list = pathCopy ? bad_query_list(pathCopy, 5000000) : NULL;
+    free(pathCopy);
+    if (!list) {
+        if (error) *error = @"bad_query_list returned NULL (fsgetpath denied)";
+        FFLogTag(@"BadQueryProbe", @"list-directory NULL path=%@ handle=%lld", path, handle);
+        return nil;
+    }
+    NSString *text = [NSString stringWithUTF8String:list];
+    free(list);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        if (!line.length) continue;
+        NSString *name = line.lastPathComponent;
+        if (name.length) [names addObject:name];
+    }
+    FFLogTag(@"BadQueryProbe", @"list-directory OK path=%@ entries=%lu handle=%lld",
+        path, (unsigned long)names.count, handle);
+    return names;
+}
+
 void BadQueryReleaseHandle(int64_t handle)
 {
     bad_query_release(handle);

@@ -452,7 +452,7 @@
 
     NSError *error = nil;
     if (![self writeDictionary:self.dictionary error:&error]) {
-        [self showError:error];
+        [self showWriteError:error];
         return;
     }
     [self flash:@"已写入 MobileGestalt，重启后生效。"];
@@ -484,7 +484,7 @@
     }
     NSError *error = nil;
     if (![self writeDictionary:[backup mutableCopy] error:&error]) {
-        [self showError:error];
+        [self showWriteError:error];
         return;
     }
     [self flash:@"已还原 MobileGestalt，重启后生效。"];
@@ -658,6 +658,18 @@
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MobileGestalt 操作失败"
         message:error.localizedDescription ?: @"未知错误"
         preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showWriteError:(NSError *)error
+{
+    NSString *message = [NSString stringWithFormat:
+        @"写入失败：iOS 26.6 上当前矩阵 token 是只读的，读写组合 0x8100000000 "
+        @"被内核拒绝（日志 code=-4）。目前只能读取、备份和导出，不能直接修改。\n\n%@",
+        error.localizedDescription ?: @"未知错误"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MobileGestalt 写入失败"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
