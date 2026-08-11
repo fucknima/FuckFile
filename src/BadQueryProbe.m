@@ -644,7 +644,7 @@ static NSString *buildTextReport(NSDictionary *report)
             [text appendString:@"Sandbox extension token types:\n"];
             for (NSDictionary *entry in tokenTypes) {
                 [text appendFormat:@"  %@: %@\n", entry[@"Name"],
-                    entry[@"TokenPrefix"] ?: entry[@"Status"]];
+                    entry[@"ExtensionClass"] ?: (entry[@"Status"] ?: @"?")];
             }
         }
     }
@@ -1548,7 +1548,7 @@ static NSMutableDictionary *runWriteProbe(void)
           @"Part": @0, @"Traversal": @YES},
         @{@"Name": @"Own container (class 2 path)",
           @"Path": ownContainer, @"Flags": @(0x900000000ULL),
-          @"Part": @3, @"Traversal": @YES},
+          @"Part": @0, @"Traversal": @YES},
     ];
     for (NSDictionary *t in tokenTargets) {
         NSMutableDictionary *entry = [NSMutableDictionary dictionary];
@@ -1562,10 +1562,16 @@ static NSMutableDictionary *runWriteProbe(void)
             entry[@"Status"] = @"no-token";
             logStep(NO, @"token fetch", t[@"Name"]);
         } else {
-            entry[@"TokenPrefix"] = [token substringToIndex:MIN((NSUInteger)120, token.length)];
+            // The token's 7th ';'-separated field is the extension class
+            // (com.apple.app-sandbox.read vs read-write). Print it in full.
+            NSArray<NSString *> *fields = [token componentsSeparatedByString:@";"];
+            NSString *extensionClass = fields.count > 6 ? fields[6] : @"";
+            entry[@"ExtensionClass"] = extensionClass;
+            entry[@"TokenLength"] = @(token.length);
+            entry[@"TokenPrefix"] = [token substringToIndex:MIN((NSUInteger)100, token.length)];
             entry[@"Status"] = @"token";
-            logStep(YES, @"token fetch", [NSString stringWithFormat:@"%@ -> %.120s...",
-                t[@"Name"], token.UTF8String]);
+            logStep(YES, @"token fetch", [NSString stringWithFormat:@"%@ -> class=%@ (len=%lu)",
+                t[@"Name"], extensionClass, (unsigned long)token.length]);
         }
         [tokenTypes addObject:entry];
     }
