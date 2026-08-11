@@ -69,6 +69,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 static NSMutableSet<NSString *> *gConsumedEscapedRoots;
 static NSMutableSet<NSString *> *gConsumedLinkTargets;
 static NSMutableSet<NSString *> *gConsumedDirectPaths;
+static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 @implementation FFBrowserViewController
 
@@ -191,6 +192,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             gConsumedEscapedRoots = [NSMutableSet set];
             gConsumedLinkTargets = [NSMutableSet set];
             gConsumedDirectPaths = [NSMutableSet set];
+            gFailedDirectPaths = [NSMutableSet set];
         });
         NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
         NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
@@ -206,7 +208,11 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             @synchronized (gConsumedDirectPaths) {
                 cached = [gConsumedDirectPaths containsObject:varPath];
             }
-            if (!cached) {
+            BOOL failed = NO;
+            @synchronized (gFailedDirectPaths) {
+                failed = [gFailedDirectPaths containsObject:varPath];
+            }
+            if (!cached && !failed) {
                 NSString *error = nil;
                 int64_t handle = BadQueryConsumePathForOpen(varPath, &error);
                 FFLogTag(@"Browser", @"escaped reconnect direct=%@ path=%@ handle=%lld error=%@",
@@ -215,7 +221,13 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
                     @synchronized (gConsumedDirectPaths) {
                         [gConsumedDirectPaths addObject:varPath];
                     }
+                } else {
+                    @synchronized (gFailedDirectPaths) {
+                        [gFailedDirectPaths addObject:varPath];
+                    }
                 }
+            } else if (failed) {
+                FFLogTag(@"Browser", @"escaped direct skip (failed earlier) path=%@", self.currentPath);
             }
         }
 
@@ -258,7 +270,13 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             }
         }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
-        if (loaded.count == 0 && self.loadError.length && varPath.length) {
+        BOOL directFailed = NO;
+        if (varPath.length) {
+            @synchronized (gFailedDirectPaths) {
+                directFailed = [gFailedDirectPaths containsObject:varPath];
+            }
+        }
+        if (loaded.count == 0 && self.loadError.length && varPath.length && !directFailed) {
             // The first open may have raced the token issuance; consume again
             // (failure is not cached) and try once more before showing the
             // error alert.
