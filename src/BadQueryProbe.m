@@ -1791,15 +1791,24 @@ static NSMutableDictionary *runCmgProbe(void)
             continue;
         }
         char *token = object_get_sandbox_token(res);
-        entry[@"Token"] = token ? [NSString stringWithUTF8String:token] : nil;
-        if (token) free(token);
+        // NOTE: unlike container_copy_sandbox_token, this returns a pointer
+        // INTO the container object — it must NOT be freed (mond does not
+        // free it either). Copy the string before the object is released.
+        if (token) {
+            char *dup = strdup(token);
+            entry[@"Token"] = dup ? [NSString stringWithUTF8String:dup] : nil;
+            if (dup) free(dup);
+        }
         BOOL activated = object_activate(res, true);
         entry[@"Activated"] = @(activated);
         logStep(activated, @"cmg activate",
             [NSString stringWithFormat:@"%@ -> %@", variant[@"Name"], activated ? @"YES" : @"NO"]);
         if (activated) {
             const char *c_path = object_get_path(res);
-            if (c_path) {
+            if (!c_path) {
+                entry[@"Status"] = @"no-path";
+                logStep(NO, @"cmg get_path", @"returned NULL");
+            } else {
                 NSString *plist = [[NSString stringWithUTF8String:c_path]
                     stringByAppendingPathComponent:@"com.apple.MobileGestalt.plist"];
                 errno = 0;
