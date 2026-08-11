@@ -1045,6 +1045,7 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
     // iOS 26.6 fallback: the canonical flags issue no token, but the variant
     // matrix proves class-13 combos still do. Try target-traversal combos
     // first so the handle actually covers the requested path.
+    NSUInteger tried = 0;
     if (!groupIdentifier && !isGroup) {
         static NSArray<NSDictionary *> *combos;
         static dispatch_once_t onceToken;
@@ -1071,7 +1072,6 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                                              @"Part": part, @"Traversal": traversal}];
             combos = all;
         });
-        NSUInteger tried = 0;
         for (NSDictionary *combo in combos) {
             tried++;
             int64_t matrixHandle = BadQueryConsumeCombo(path, combo[@"Group"],
