@@ -37,6 +37,24 @@ MCM 层移植自 [0xjohnnydev/FilzaSlop](https://github.com/0xjohnnydev/FilzaSlo
 - 下拉刷新；启动与操作日志输出到系统日志（`[FuckFile]`）
 - 每次启动生成 `Device Storage/ACCESS MAP.txt` 记录各 class 查询结果
 
+## 排障日志
+
+所有关键步骤（bundle id 校验、MCM bridge 加载、每个 class 的 identifier 枚举、
+每个容器的 lease 激活/符号链接结果、scoped 探测、bad_query 每一步）都会追加写入：
+
+```text
+Documents/Device Storage/FuckFile Log.txt
+```
+
+bad_query 的详细分步日志另存于：
+
+```text
+Documents/Device Storage/BadQuery Probe Log.txt
+```
+
+开启文件共享（`UIFileSharingEnabled`）后，可通过 文件 App →
+“我的 iPhone → FuckFile → Device Storage” 直接导出这两个 txt。
+
 ## bad_query 探针（iOS 26.x）
 
 内置 [forcequitOS/bad_query](https://github.com/forcequitOS/bad_query) 的 C 实现

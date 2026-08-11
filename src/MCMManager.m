@@ -6,6 +6,7 @@
 
 #import "MCMManager.h"
 #import "MCMBridge.h"
+#import "FFLogger.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -210,13 +211,18 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
             partDomain:[route[@"Domain"] length] ? route[@"Domain"] : nil
             flags:kMCMReadWritePartFlags error:&detail];
         if (!root) {
-            NSLog(@"[FuckFile] gestalt route failed class=%llu detail=%@",
-                [route[@"Class"] unsignedLongLongValue], detail);
+            FFLogTag(@"MCM", @"gestalt route FAIL class=%llu detail=%@",
+                [route[@"Class"] unsignedLongLongValue], detail ?: @"(nil)");
             continue;
         }
         NSString *path = [root stringByAppendingPathComponent:route[@"File"]];
         struct stat status = {0};
-        if (lstat(path.fileSystemRepresentation, &status) == 0) return path;
+        if (lstat(path.fileSystemRepresentation, &status) == 0) {
+            FFLogTag(@"MCM", @"gestalt path OK %@", path);
+            return path;
+        }
+        FFLogTag(@"MCM", @"gestalt route reached root=%@ but file missing %@ errno=%d",
+            root, path, errno);
     }
 
     // Last resort: the symlink bad_query creates inside Device Storage.
@@ -252,8 +258,8 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
     NSString *target = [self activate:containerClass identifier:identifier
                                 group:group error:&error];
     if (!target) {
-        NSLog(@"[FuckFile] activation failed class=%llu id=%@ detail=%@",
-              containerClass, identifier, error);
+        FFLogTag(@"MCM", @"activation FAIL class=%llu id=%@ group=%d error=%@",
+                 containerClass, identifier, group, error ?: @"(nil)");
         return;
     }
     NSString *link = [directory stringByAppendingPathComponent:identifier];
@@ -269,10 +275,11 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         unlink(link.fileSystemRepresentation);
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0) {
-        NSLog(@"[FuckFile] symlink failed id=%@ errno=%d", identifier, errno);
+        FFLogTag(@"MCM", @"symlink FAIL id=%@ errno=%d", identifier, errno);
         return;
     }
     [self recordLink:directory identifier:identifier target:target];
+    FFLogTag(@"MCM", @"link OK class=%llu id=%@ target=%@", containerClass, identifier, target);
 }
 
 - (void)installDirectFilesystemLinks:(NSString *)directory containerRoot:(NSString *)containerRoot
@@ -298,10 +305,12 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
             unlink(link.fileSystemRepresentation);
         }
         if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-            NSLog(@"[FuckFile] direct symlink failed id=%@ target=%@ errno=%d",
-                  identifier, target, errno);
-        else
+            FFLogTag(@"MCM", @"direct symlink FAIL id=%@ target=%@ errno=%d",
+                     identifier, target, errno);
+        else {
             [self recordLink:directory identifier:identifier target:target];
+            FFLogTag(@"MCM", @"direct link OK id=%@ target=%@", identifier, target);
+        }
     }
 }
 
@@ -318,8 +327,8 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         struct stat stale = {0};
         if (lstat(link.fileSystemRepresentation, &stale) == 0 && S_ISLNK(stale.st_mode))
             unlink(link.fileSystemRepresentation);
-        NSLog(@"[FuckFile] scoped activation failed class=%llu id=%@ part=%llu domain=%@ detail=%@",
-              containerClass, identifier, part, partDomain, error);
+        FFLogTag(@"MCM", @"scoped activation FAIL class=%llu id=%@ part=%llu domain=%@ error=%@",
+                 containerClass, identifier, part, partDomain, error ?: @"(nil)");
         return;
     }
     struct stat status = {0};
@@ -334,9 +343,9 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         unlink(link.fileSystemRepresentation);
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        NSLog(@"[FuckFile] scoped symlink failed name=%@ errno=%d", linkName, errno);
+        FFLogTag(@"MCM", @"scoped symlink FAIL name=%@ errno=%d", linkName, errno);
     else {
-        NSLog(@"[FuckFile] scoped path ready name=%@ target=%@", linkName, target);
+        FFLogTag(@"MCM", @"scoped path OK name=%@ target=%@", linkName, target);
         [self recordLink:directory identifier:linkName target:target];
     }
 }
@@ -347,8 +356,8 @@ static NSArray<NSString *> *MCMDynamicIdentifiers(uint64_t containerClass)
 {
     NSString *error = nil;
     NSArray *identifiers = MCMEnumerateIdentifiersForClass(containerClass, 1024, &error);
-    NSLog(@"[FuckFile] discovery class=%llu count=%lu detail=%@", containerClass,
-          (unsigned long)identifiers.count, error);
+    FFLogTag(@"MCM", @"discovery class=%llu count=%lu detail=%@", containerClass,
+             (unsigned long)identifiers.count, error ?: @"(nil)");
     NSMutableArray *safe = [NSMutableArray arrayWithCapacity:identifiers.count];
     for (NSString *identifier in identifiers)
         if (MCMSafeIdentifier(identifier)) [safe addObject:identifier];
@@ -429,7 +438,7 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
             unlink(linkPath.fileSystemRepresentation);
         result[@"Status"] = @"failed";
         result[@"Error"] = detail ?: @"activation failed";
-        NSLog(@"[FuckFile] experimental name=%@ status=failed error=%@", name, detail);
+        FFLogTag(@"MCM", @"experimental FAIL name=%@ error=%@", name, detail ?: @"(nil)");
         return result;
     }
     result[@"ReturnedPath"] = target;
@@ -461,8 +470,8 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     if (symlink(target.fileSystemRepresentation, linkPath.fileSystemRepresentation) != 0)
         result[@"LinkError"] = [NSString stringWithFormat:@"errno=%d", errno];
     result[@"Status"] = @"linked";
-    NSLog(@"[FuckFile] experimental name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@",
-          name, containerClass, identifier, part, partDomain, result[@"Status"], target);
+    FFLogTag(@"MCM", @"experimental OK name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@",
+             name, containerClass, identifier, part, partDomain, result[@"Status"], target);
     return result;
 }
 
@@ -515,15 +524,17 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
 {
     NSString *actual = NSBundle.mainBundle.bundleIdentifier;
     if (![actual isEqualToString:kRequiredIdentifier]) {
-        NSLog(@"[FuckFile] disabled: bundle identifier %@ must be %@", actual, kRequiredIdentifier);
+        FFLogTag(@"MCM", @"DISABLED bundle identifier '%@' != required '%@'",
+            actual, kRequiredIdentifier);
         _started = YES;
         return;
     }
     if (!MCMBridgeAvailable()) {
-        NSLog(@"[FuckFile] disabled: ContainerManager symbols unavailable");
+        FFLogTag(@"MCM", @"DISABLED ContainerManager symbols unavailable");
         _started = YES;
         return;
     }
+    FFLogTag(@"MCM", @"start root=%@ bridge=OK", MCMVirtualRoot());
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = MCMVirtualRoot();
     NSString *apps = [root stringByAppendingPathComponent:kMCMAppDataDirectoryName];
@@ -674,7 +685,7 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
 
     [self writeAccessMap:root];
     _started = YES;
-    NSLog(@"[FuckFile] ready root=%@ active_leases=%lu", root, (unsigned long)_leases.count);
+    FFLogTag(@"MCM", @"ready root=%@ active_leases=%lu", root, (unsigned long)_leases.count);
 }
 
 @end

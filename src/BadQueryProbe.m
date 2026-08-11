@@ -3,6 +3,7 @@
 
 #import "BadQueryProbe.h"
 #import "bad_query.h"
+#import "FFLogger.h"
 
 #import <UIKit/UIKit.h>
 #import <dirent.h>
@@ -32,7 +33,7 @@ static void logLine(NSString *line)
     NSString *stamp = [NSDateFormatter localizedStringFromDate:NSDate.date
         dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
     NSString *full = [NSString stringWithFormat:@"[%@] %@\n", stamp, line];
-    NSLog(@"[BadQueryProbe] %@", line);
+    FFLogTag(@"BadQueryProbe", @"%@", line);
     @synchronized (gLog) {
         [gLog appendString:full];
         NSString *logPath = [[probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Log.txt"] stringByStandardizingPath];

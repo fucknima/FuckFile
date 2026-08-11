@@ -10,6 +10,7 @@ APPLICATION_NAME = FuckFile
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
 	src/FFCopyEngine.m \
