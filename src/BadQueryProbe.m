@@ -889,6 +889,107 @@ NSArray<NSString *> *BadQueryListDirectory(NSString *path, NSString **error)
     return names;
 }
 
+int64_t BadQueryConsumePathCreate(NSString *path, NSString **error)
+{
+    if (!path.length || ![path hasPrefix:@"/"]) {
+        if (error) *error = @"path must be absolute";
+        return -255;
+    }
+    char *pathBuffer = strdup(path.UTF8String);
+    if (!pathBuffer) {
+        if (error) *error = @"out of memory";
+        return -255;
+    }
+    int64_t handle = bad_query(pathBuffer, true, NULL, false);
+    free(pathBuffer);
+    if (handle >= 0) {
+        FFLogTag(@"BadQueryProbe", @"create-consume OK canonical path=%@ handle=%lld",
+            path, handle);
+        return handle;
+    }
+    for (NSDictionary *combo in BadQueryMatrixCombos()) {
+        int64_t matrixHandle = BadQueryConsumeCombo(path, combo[@"Group"],
+            [combo[@"Flags"] unsignedLongLongValue],
+            [combo[@"Part"] unsignedLongLongValue],
+            [combo[@"Traversal"] boolValue]);
+        if (matrixHandle >= 0) {
+            FFLogTag(@"BadQueryProbe",
+                @"create-consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
+                path, combo[@"Group"],
+                [combo[@"Flags"] unsignedLongLongValue],
+                combo[@"Part"], combo[@"Traversal"], matrixHandle);
+            return matrixHandle;
+        }
+    }
+    if (error)
+        *error = [NSString stringWithFormat:@"create-consume failed (code=%lld: %@)",
+            handle, BadQueryCodeText(handle)];
+    return handle;
+}
+
+NSDictionary *BadQueryProbeWriteTest(NSString *directory, NSString **error)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"Directory"] = directory ?: @"";
+    if (!directory.length || ![directory hasPrefix:@"/"]) {
+        if (error) *error = @"directory must be absolute";
+        result[@"Status"] = @"failed";
+        result[@"Error"] = @"directory must be absolute";
+        return result;
+    }
+    NSString *probePath = [directory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@".fuckfile_write_test_%@.tmp",
+            NSUUID.UUID.UUIDString]];
+    result[@"ProbePath"] = probePath;
+    logStep(YES, @"write-test begin", [NSString stringWithFormat:@"probe=%@", probePath]);
+
+    NSString *consumeError = nil;
+    int64_t handle = BadQueryConsumePathCreate(probePath, &consumeError);
+    result[@"ConsumeHandle"] = @(handle);
+    if (handle < 0) {
+        result[@"Status"] = @"consume-failed";
+        result[@"Error"] = consumeError ?: [NSString stringWithFormat:@"code=%lld", handle];
+        logStep(NO, @"write-test consume", result[@"Error"]);
+        return result;
+    }
+    logStep(YES, @"write-test consume", [NSString stringWithFormat:@"handle=%lld", handle]);
+
+    errno = 0;
+    int fd = open(probePath.UTF8String, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    result[@"CreateOpenOK"] = @(fd >= 0);
+    result[@"CreateOpenErrno"] = @(fd >= 0 ? 0 : errno);
+    logStep(fd >= 0, @"write-test create+open",
+        fd >= 0 ? @"created" : [NSString stringWithFormat:@"errno=%d (%s)", errno, strerror(errno)]);
+    if (fd >= 0) {
+        errno = 0;
+        const char payload[] = "fuckfile-write-ok\n";
+        ssize_t written = write(fd, payload, sizeof(payload) - 1);
+        result[@"WriteOK"] = @(written == (ssize_t)(sizeof(payload) - 1));
+        result[@"WriteErrno"] = @(written == (ssize_t)(sizeof(payload) - 1) ? 0 : errno);
+        logStep(written == (ssize_t)(sizeof(payload) - 1), @"write-test write",
+            written == (ssize_t)(sizeof(payload) - 1)
+                ? @"written" : [NSString stringWithFormat:@"errno=%d (%s)", errno, strerror(errno)]);
+        close(fd);
+    }
+
+    NSString *plistPath = [directory stringByAppendingPathComponent:
+        @"com.apple.MobileGestalt.plist"];
+    result[@"PlistPath"] = plistPath;
+    errno = 0;
+    int plistFd = open(plistPath.UTF8String, O_WRONLY, 0);
+    result[@"PlistOpenWriteOK"] = @(plistFd >= 0);
+    result[@"PlistOpenWriteErrno"] = @(plistFd >= 0 ? 0 : errno);
+    logStep(plistFd >= 0, @"write-test plist open O_WRONLY",
+        plistFd >= 0 ? @"writable" : [NSString stringWithFormat:@"errno=%d (%s)", errno, strerror(errno)]);
+    if (plistFd >= 0) close(plistFd);
+
+    unlink(probePath.UTF8String);
+    result[@"Status"] = [result[@"CreateOpenOK"] boolValue] ? @"write-ok" : @"read-only";
+    logStep([result[@"Status"] isEqualToString:@"write-ok"], @"write-test done",
+        result[@"Status"]);
+    return result;
+}
+
 void BadQueryReleaseHandle(int64_t handle)
 {
     bad_query_release(handle);

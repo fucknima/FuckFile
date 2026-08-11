@@ -44,6 +44,18 @@ FOUNDATION_EXPORT int64_t BadQueryConsumePathForOpen(NSString *path,
 FOUNDATION_EXPORT NSArray<NSString *> * _Nullable BadQueryListDirectory(
     NSString *path, NSString * _Nullable * _Nullable error);
 
+// Canonical bad_query with create=true (skips the existing-path precheck),
+// falling back to the variant matrix when the canonical flags are blocked.
+// Used by the on-device write-capability test.
+FOUNDATION_EXPORT int64_t BadQueryConsumePathCreate(NSString *path,
+                                                     NSString * _Nullable * _Nullable error);
+
+// Tries to create and write a probe file under directory, and separately
+// probes whether com.apple.MobileGestalt.plist in that directory can be
+// opened for writing. Logs every step; returns a result dictionary.
+FOUNDATION_EXPORT NSDictionary * _Nullable BadQueryProbeWriteTest(
+    NSString *directory, NSString * _Nullable * _Nullable error);
+
 // Releases a handle returned by BadQueryConsumePath / bad_query().
 FOUNDATION_EXPORT void BadQueryReleaseHandle(int64_t handle);
 

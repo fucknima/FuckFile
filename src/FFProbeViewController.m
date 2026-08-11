@@ -83,7 +83,7 @@ static NSString *const kProbeHelpText =
 {
     switch (section) {
         case 0: return 5;
-        case 1: return 9;
+        case 1: return 10;
         case 2: {
             NSArray *probes = [self.report[@"Probes"] isKindOfClass:NSArray.class]
                 ? self.report[@"Probes"] : @[];
@@ -227,6 +227,7 @@ static NSString *const kProbeHelpText =
             case 6: cell.textLabel.text = @"设置 App Group 牺牲"; break;
             case 7: cell.textLabel.text = @"查看变体矩阵"; break;
             case 8: cell.textLabel.text = @"使用说明"; break;
+            case 9: cell.textLabel.text = @"测试写入权限"; break;
         }
         return cell;
     }
@@ -265,6 +266,7 @@ static NSString *const kProbeHelpText =
             case 6: [self setSacrificeGroup]; break;
             case 7: [self presentVariantMatrix]; break;
             case 8: [self presentHelp]; break;
+            case 9: [self runWriteTest]; break;
         }
         return;
     }
@@ -438,6 +440,52 @@ static NSString *const kProbeHelpText =
 - (void)presentHelp
 {
     [self presentText:@"使用说明" body:kProbeHelpText];
+}
+
+- (void)runWriteTest
+{
+    if (self.running) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"测试写入权限"
+        message:@"在目标目录创建并写入一个测试文件，同时测试 com.apple.MobileGestalt.plist 能否以写方式打开。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.keyboardType = UIKeyboardTypeURL;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"开始测试"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *directory = alert.textFields.firstObject.text;
+            [weakSelf startWriteTest:directory];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)startWriteTest:(NSString *)directory
+{
+    if (!directory.length || self.running) return;
+    self.running = YES;
+    [self flash:@"写入测试进行中（会尝试多组组合）…"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *error = nil;
+        NSDictionary *result = BadQueryProbeWriteTest(directory, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.running = NO;
+            NSMutableString *text = [NSMutableString string];
+            for (NSString *key in @[@"Directory", @"ProbePath", @"ConsumeHandle",
+                                    @"CreateOpenOK", @"CreateOpenErrno", @"WriteOK",
+                                    @"WriteErrno", @"PlistOpenWriteOK",
+                                    @"PlistOpenWriteErrno", @"Status", @"Error"]) {
+                id value = result[key];
+                if (value) [text appendFormat:@"%@: %@\n", key, value];
+            }
+            if (error) [text appendFormat:@"Error: %@\n", error];
+            [self presentText:@"写入权限测试" body:text];
+        });
+    });
 }
 
 - (void)presentProbeDetail:(NSDictionary *)probe
