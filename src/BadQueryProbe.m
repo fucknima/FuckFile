@@ -2056,6 +2056,19 @@ static NSDictionary *BadQueryEnumerateRoot(NSString *title, NSString *rootPath,
     NSString *error = nil;
     int64_t handle = BadQueryConsumePath(rootPath,
         useGroupRoute ? sacrificeGroupId() : nil, useGroupRoute, &error);
+    if (handle < 0 && useGroupRoute) {
+        // Self-signed builds never register the sacrifice group with
+        // containermanagerd (class=7 discovery count=0), so the class-7
+        // route fails with -3 and the matrix fallback is skipped (it only
+        // runs for non-group consumes). Retry the plain class-13 route,
+        // which enumerated App Groups successfully before the sacrifice
+        // config existed.
+        FFLogTag(@"BadQueryProbe", @"enumerate %@ sacrifice route failed (%@); retrying plain class-13 route",
+            title, error);
+        error = nil;
+        handle = BadQueryConsumePath(rootPath, nil, NO, &error);
+        useGroupRoute = NO;
+    }
     if (handle < 0) {
         result[@"Status"] = @"failed";
         result[@"Error"] = error ?: [NSString stringWithFormat:@"consume failed (%lld)", handle];
