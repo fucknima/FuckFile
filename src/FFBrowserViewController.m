@@ -68,6 +68,7 @@ static NSString *gClipboardSource = nil;
 static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 static NSMutableSet<NSString *> *gConsumedEscapedRoots;
 static NSMutableSet<NSString *> *gConsumedLinkTargets;
+static NSMutableSet<NSString *> *gConsumedDirectPaths;
 
 @implementation FFBrowserViewController
 
@@ -189,12 +190,39 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
         dispatch_once(&onceToken, ^{
             gConsumedEscapedRoots = [NSMutableSet set];
             gConsumedLinkTargets = [NSMutableSet set];
+            gConsumedDirectPaths = [NSMutableSet set];
         });
+        NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
+        NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
+
+        // Real paths outside the app's own container (e.g. the MobileGestalt
+        // Caches directory opened from the editor, or an MCM lease target)
+        // need their own sandbox extension. Consume the /var form once.
+        NSString *varPath = [self varFormOfPath:self.currentPath];
+        BOOL outsideOwnContainer = varPath.length &&
+            ![self.currentPath hasPrefix:NSHomeDirectory()];
+        if (outsideOwnContainer && !escapedRoot.length && !linkTarget.length) {
+            BOOL cached = NO;
+            @synchronized (gConsumedDirectPaths) {
+                cached = [gConsumedDirectPaths containsObject:varPath];
+            }
+            if (!cached) {
+                NSString *error = nil;
+                int64_t handle = BadQueryConsumePath(varPath, nil, NO, &error);
+                FFLogTag(@"Browser", @"escaped reconnect direct=%@ path=%@ handle=%lld error=%@",
+                    varPath, self.currentPath, handle, error ?: @"(nil)");
+                if (handle >= 0) {
+                    @synchronized (gConsumedDirectPaths) {
+                        [gConsumedDirectPaths addObject:varPath];
+                    }
+                }
+            }
+        }
+
         // Inside [BadQuery] Escaped the sandbox extension may be gone after a
         // restart. Re-consume the matching real root, and if the current path
         // is itself a symlink (a container UUID/bundle-id link), consume its
         // target too. Every step is written to FuckFile Log.txt.
-        NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
         if (escapedRoot.length) {
             BOOL cached = NO;
             @synchronized (gConsumedEscapedRoots) {
@@ -212,7 +240,6 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
                 }
             }
         }
-        NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
         if (linkTarget.length) {
             BOOL cached = NO;
             @synchronized (gConsumedLinkTargets) {
@@ -231,6 +258,16 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
             }
         }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
+        if (loaded.count == 0 && self.loadError.length && varPath.length) {
+            // The first open may have raced the token issuance; consume again
+            // (failure is not cached) and try once more before showing the
+            // error alert.
+            NSString *error = nil;
+            int64_t retryHandle = BadQueryConsumePath(varPath, nil, NO, &error);
+            FFLogTag(@"Browser", @"escaped retry direct=%@ handle=%lld error=%@",
+                varPath, retryHandle, error ?: @"(nil)");
+            loaded = [self loadDirectoryContents];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
             self.hasLoaded = YES;
@@ -278,6 +315,13 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
     return [NSString stringWithUTF8String:target];
 }
 
+- (NSString *)varFormOfPath:(NSString *)path
+{
+    if ([path hasPrefix:@"/private/var"]) return [path substringFromIndex:8];
+    if ([path hasPrefix:@"/var"]) return path;
+    return nil;
+}
+
 - (void)presentLoadError
 {
     NSString *message = self.loadError.length ? self.loadError : @"未知错误";
@@ -304,13 +348,20 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
     if (!directory) {
         self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)",
             errno, strerror(errno)];
-        NSLog(@"[FuckFile] opendir failed path=%@ errno=%d", self.currentPath, errno);
+        FFLogTag(@"Browser", @"opendir FAIL path=%@ errno=%d (%s)",
+            self.currentPath, errno, strerror(errno));
         return result;
     }
     self.loadError = nil;
+    NSUInteger total = 0;
+    NSUInteger dirs = 0;
+    NSUInteger files = 0;
+    NSUInteger links = 0;
+    NSUInteger lstatFailures = 0;
     struct dirent *entry = NULL;
     while ((entry = readdir(directory)) != NULL) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        total++;
         NSString *name = [NSFileManager.defaultManager
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
         if (!name) continue;
@@ -320,10 +371,14 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
         item.path = path;
         struct stat status = {0};
         if (lstat(path.fileSystemRepresentation, &status) != 0) {
+            lstatFailures++;
             item.detail = [NSString stringWithFormat:@"lstat errno=%d", errno];
             [result addObject:item];
             continue;
         }
+        if (S_ISLNK(status.st_mode)) links++;
+        else if (S_ISDIR(status.st_mode)) dirs++;
+        else files++;
         item.mode = status.st_mode;
         item.uid = status.st_uid;
         item.gid = status.st_gid;
@@ -349,6 +404,9 @@ static NSMutableSet<NSString *> *gConsumedLinkTargets;
         [result addObject:item];
     }
     closedir(directory);
+    FFLogTag(@"Browser", @"dir scan path=%@ total=%lu dirs=%lu files=%lu links=%lu lstatFail=%lu",
+        self.currentPath, (unsigned long)total, (unsigned long)dirs,
+        (unsigned long)files, (unsigned long)links, (unsigned long)lstatFailures);
     [self decorateEntries:result];
     [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
         if (left.isDirectory != right.isDirectory)
