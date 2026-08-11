@@ -667,6 +667,42 @@ static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
     return handle;
 }
 
+// A consumed sandbox handle is only useful if the target path is actually
+// reachable. The matrix issues tokens for several combos, but on iOS 26.6
+// some combos return a handle that does NOT grant access to the requested
+// path (e.g. directory enumeration of the MobileGestalt Caches folder).
+// Verify with access() and open() before accepting a handle.
+static BOOL BadQueryPathAccessible(NSString *path)
+{
+    errno = 0;
+    BOOL readable = access(path.UTF8String, R_OK) == 0;
+    int accessErrno = errno;
+
+    struct stat status = {0};
+    BOOL isDirectory = lstat(path.UTF8String, &status) == 0 && S_ISDIR(status.st_mode);
+    int flags = O_RDONLY | O_CLOEXEC | (isDirectory ? O_DIRECTORY : 0);
+    errno = 0;
+    int fd = open(path.UTF8String, flags);
+    if (fd >= 0) {
+        close(fd);
+        return YES;
+    }
+    int openErrno = errno;
+    if (isDirectory) {
+        // Directory enumeration must be proven by open(O_DIRECTORY);
+        // access(R_OK) alone is not enough on iOS 26.6.
+        FFLogTag(@"BadQueryProbe",
+            @"accessibility FAIL dir path=%@ accessErrno=%d openErrno=%d",
+            path, accessErrno, openErrno);
+        return NO;
+    }
+    if (!readable)
+        FFLogTag(@"BadQueryProbe",
+            @"accessibility FAIL file path=%@ accessErrno=%d openErrno=%d",
+            path, accessErrno, openErrno);
+    return readable;
+}
+
 int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                             BOOL isGroup, NSString **error)
 {
@@ -686,9 +722,14 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
     free(pathBuffer);
     free(groupBuffer);
     if (handle >= 0) {
-        FFLogTag(@"BadQueryProbe", @"consume OK canonical path=%@ handle=%lld",
+        if (BadQueryPathAccessible(path) || groupIdentifier || isGroup) {
+            FFLogTag(@"BadQueryProbe", @"consume OK canonical path=%@ handle=%lld",
+                path, handle);
+            return handle;
+        }
+        FFLogTag(@"BadQueryProbe",
+            @"consume OK canonical but NOT accessible path=%@ handle=%lld; trying matrix",
             path, handle);
-        return handle;
     }
 
     // iOS 26.6 fallback: the canonical flags issue no token, but the variant
@@ -726,23 +767,38 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                 [combo[@"Part"] unsignedLongLongValue],
                 [combo[@"Traversal"] boolValue]);
             if (matrixHandle >= 0) {
+                if (BadQueryPathAccessible(path)) {
+                    FFLogTag(@"BadQueryProbe",
+                        @"consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
+                        path, combo[@"Group"],
+                        [combo[@"Flags"] unsignedLongLongValue],
+                        combo[@"Part"], combo[@"Traversal"], matrixHandle);
+                    return matrixHandle;
+                }
                 FFLogTag(@"BadQueryProbe",
-                    @"consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
+                    @"consume OK matrix but NOT accessible path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld; keep trying",
                     path, combo[@"Group"],
                     [combo[@"Flags"] unsignedLongLongValue],
                     combo[@"Part"], combo[@"Traversal"], matrixHandle);
-                return matrixHandle;
+                handle = -1;
+                continue;
             }
             FFLogTag(@"BadQueryProbe",
                 @"consume FAIL matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ code=%lld",
                 path, combo[@"Group"],
                 [combo[@"Flags"] unsignedLongLongValue],
                 combo[@"Part"], combo[@"Traversal"], matrixHandle);
+            handle = matrixHandle;
         }
     }
-    if (error)
-        *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
-            handle, BadQueryCodeText(handle)];
+    if (error) {
+        if (handle == -1) {
+            *error = @"all token-issuing matrix combos consumed, but none granted access to the path";
+        } else {
+            *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
+                handle, BadQueryCodeText(handle)];
+        }
+    }
     return handle;
 }
 
