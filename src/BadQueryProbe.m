@@ -1071,7 +1071,9 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                                              @"Part": part, @"Traversal": traversal}];
             combos = all;
         });
+        NSUInteger tried = 0;
         for (NSDictionary *combo in combos) {
+            tried++;
             int64_t matrixHandle = BadQueryConsumeCombo(path, combo[@"Group"],
                 [combo[@"Flags"] unsignedLongLongValue],
                 [combo[@"Part"] unsignedLongLongValue],
@@ -1094,7 +1096,7 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
     if (error)
         *error = [NSString stringWithFormat:
             @"bad_query failed (code=%lld: %@) and all %lu matrix combos also failed",
-            handle, BadQueryCodeText(handle), (unsigned long)combos.count];
+            handle, BadQueryCodeText(handle), (unsigned long)tried];
     return handle;
 }
 
