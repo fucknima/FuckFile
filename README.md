@@ -207,13 +207,14 @@ ACCESS MAP.txt
 
 ## 构建与安装
 
-push 到 `main` 后 GitHub Actions 自动构建并上传：
+push 到任意分支后 GitHub Actions 都会自动构建并上传：
 
 ```text
 https://github.com/fucknima/FuckFile/actions
 ```
 
-artifact 名为 `FuckFile-unsigned-ipa`，下载 `FuckFile.ipa` 后自行重签（爱思助手 / zsign / TrollStore）。
+artifact 按分支命名（如 `FuckFile-unsigned-ipa-main`、`FuckFile-unsigned-ipa-codex-gestalt-export`），
+下载 `FuckFile.ipa` 后自行重签（爱思助手 / zsign / TrollStore）。
 
 本地构建（需要 macOS + Theos）：
 
