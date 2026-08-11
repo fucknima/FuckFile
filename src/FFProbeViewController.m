@@ -48,8 +48,8 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 4;
-        case 1: return 7;
+        case 0: return 5;
+        case 1: return 8;
         case 2: {
             NSArray *probes = [self.report[@"Probes"] isKindOfClass:NSArray.class]
                 ? self.report[@"Probes"] : @[];
@@ -62,9 +62,9 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"Status";
-        case 1: return @"Actions";
-        case 2: return @"Probes";
+        case 0: return @"状态";
+        case 1: return @"操作";
+        case 2: return @"探针列表";
         default: return nil;
     }
 }
@@ -72,7 +72,7 @@
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == 2 && [self.report[@"Probes"] isKindOfClass:NSArray.class])
-        return @"Tap a probe for the full step result. Escaped paths are symlinked into Device Storage/[BadQuery] Escaped.";
+        return @"点击探针查看完整步骤结果。逃逸成功的路径已链接到 设备存储/[BadQuery] Escaped/。";
     return nil;
 }
 
@@ -90,15 +90,15 @@
             ? self.report[@"Environment"] : nil;
         switch (indexPath.row) {
             case 0:
-                cell.textLabel.text = @"System";
+                cell.textLabel.text = @"系统";
                 cell.detailTextLabel.text = environment
                     ? [NSString stringWithFormat:@"iOS %@ (%@)", environment[@"SystemVersion"], environment[@"Build"]]
                     : [NSString stringWithFormat:@"iOS %@", UIDevice.currentDevice.systemVersion];
                 break;
             case 1:
-                cell.textLabel.text = @"Report";
+                cell.textLabel.text = @"报告";
                 if (!self.report) {
-                    cell.detailTextLabel.text = @"Not run yet";
+                    cell.detailTextLabel.text = @"尚未运行";
                 } else {
                     NSArray *probes = [self.report[@"Probes"] isKindOfClass:NSArray.class]
                         ? self.report[@"Probes"] : @[];
@@ -107,20 +107,35 @@
                         if ([probe[@"Status"] isKindOfClass:NSString.class] &&
                             [probe[@"Status"] isEqualToString:@"escaped"]) escaped++;
                     cell.detailTextLabel.text = [NSString stringWithFormat:
-                        @"%lu/%lu escaped", (unsigned long)escaped, (unsigned long)probes.count];
+                        @"%lu/%lu 逃逸成功", (unsigned long)escaped, (unsigned long)probes.count];
                 }
                 break;
             case 2:
-                cell.textLabel.text = @"Last run";
+                cell.textLabel.text = @"最近运行";
                 cell.detailTextLabel.text = [self.report[@"CreatedAt"] isKindOfClass:NSDate.class]
                     ? [NSDateFormatter localizedStringFromDate:self.report[@"CreatedAt"]
                         dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterMediumStyle]
-                    : @"Never";
+                    : @"从未";
                 break;
             case 3:
-                cell.textLabel.text = @"App Group sacrifice";
+                cell.textLabel.text = @"App Group 牺牲配置";
                 cell.detailTextLabel.text = [self.report[@"SacrificeGroupConfigured"] boolValue]
-                    ? @"Configured" : @"Not configured";
+                    ? @"已配置" : @"未配置";
+                break;
+            case 4:
+                cell.textLabel.text = @"变体矩阵";
+                {
+                    NSArray *matrix = [self.report[@"VariantMatrix"] isKindOfClass:NSArray.class]
+                        ? self.report[@"VariantMatrix"] : nil;
+                    NSUInteger ok = 0;
+                    for (NSDictionary *entry in matrix ?: @[])
+                        if ([entry[@"Status"] isKindOfClass:NSString.class] &&
+                            [entry[@"Status"] isEqualToString:@"TOKEN-OK"]) ok++;
+                    cell.detailTextLabel.text = matrix
+                        ? [NSString stringWithFormat:@"%lu/%lu 组合能签发 token",
+                            (unsigned long)ok, (unsigned long)matrix.count]
+                        : @"未记录";
+                }
                 break;
         }
         return cell;
@@ -135,15 +150,16 @@
         cell.textLabel.textColor = [UIColor labelColor];
         cell.textLabel.textAlignment = NSTextAlignmentLeft;
         switch (indexPath.row) {
-            case 0: cell.textLabel.text = @"Re-run Probe"; break;
-            case 1: cell.textLabel.text = @"View Step Log"; break;
-            case 2: cell.textLabel.text = @"View Results Plist"; break;
-            case 3: cell.textLabel.text = @"Consume Custom Path"; break;
+            case 0: cell.textLabel.text = @"重新运行探针"; break;
+            case 1: cell.textLabel.text = @"查看分步日志"; break;
+            case 2: cell.textLabel.text = @"查看结果 Plist"; break;
+            case 3: cell.textLabel.text = @"消费自定义路径"; break;
             case 4: cell.textLabel.text = self.lastHandle >= 0
-                ? [NSString stringWithFormat:@"Release Extension (handle %lld)", self.lastHandle]
-                : @"Release Extension"; break;
-            case 5: cell.textLabel.text = @"Enumerate Containers (UUID → Bundle ID)"; break;
-            case 6: cell.textLabel.text = @"Set App Group Sacrifice"; break;
+                ? [NSString stringWithFormat:@"释放扩展（句柄 %lld）", self.lastHandle]
+                : @"释放扩展"; break;
+            case 5: cell.textLabel.text = @"枚举容器（UUID → 包名）"; break;
+            case 6: cell.textLabel.text = @"设置 App Group 牺牲"; break;
+            case 7: cell.textLabel.text = @"查看变体矩阵"; break;
         }
         return cell;
     }
@@ -180,6 +196,7 @@
             case 4: [self releaseHandle]; break;
             case 5: [self enumerateContainers]; break;
             case 6: [self setSacrificeGroup]; break;
+            case 7: [self presentVariantMatrix]; break;
         }
         return;
     }
@@ -195,30 +212,30 @@
 {
     if (self.running) return;
     self.running = YES;
-    [self flash:@"Probe running in the background…"];
+    [self flash:@"探针正在后台运行…"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         BadQueryProbeRunAgain();
         dispatch_async(dispatch_get_main_queue(), ^{
             self.running = NO;
             [self reloadReport];
-            [self flash:@"Probe complete"];
+            [self flash:@"探针完成"];
         });
     });
 }
 
 - (void)consumeCustomPath
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Consume Custom Path"
-        message:@"Runs bad_query against an absolute path and keeps the sandbox extension handle."
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"消费自定义路径"
+        message:@"对绝对路径执行 bad_query，成功后保留沙箱扩展句柄。"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.text = @"/var/mobile/Containers/Data/Application";
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
         field.keyboardType = UIKeyboardTypeURL;
     }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Consume" style:UIAlertActionStyleDefault
+    [alert addAction:[UIAlertAction actionWithTitle:@"执行" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
             NSString *path = alert.textFields.firstObject.text;
             [weakSelf runConsume:path];
@@ -229,16 +246,16 @@
 - (void)runConsume:(NSString *)path
 {
     if (!path.length) return;
-    [self flash:@"Consuming sandbox extension…"];
+    [self flash:@"正在消费沙箱扩展…"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *error = nil;
         int64_t handle = BadQueryConsumePath(path, nil, NO, &error);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (handle >= 0) {
                 self.lastHandle = handle;
-                [self flash:[NSString stringWithFormat:@"Escaped! handle=%lld (%@)", handle, path]];
+                [self flash:[NSString stringWithFormat:@"逃逸成功！句柄=%lld（%@）", handle, path]];
             } else {
-                [self flash:error ?: [NSString stringWithFormat:@"Failed (code=%lld)", handle]];
+                [self flash:error ?: [NSString stringWithFormat:@"失败（错误码 %lld）", handle]];
             }
             [self.tableView reloadData];
         });
@@ -248,12 +265,12 @@
 - (void)releaseHandle
 {
     if (self.lastHandle < 0) {
-        [self flash:@"No active handle"];
+        [self flash:@"没有活动的句柄"];
         return;
     }
     BadQueryReleaseHandle(self.lastHandle);
     self.lastHandle = -1;
-    [self flash:@"Extension released"];
+    [self flash:@"扩展已释放"];
     [self.tableView reloadData];
 }
 
@@ -261,7 +278,7 @@
 {
     if (self.running) return;
     self.running = YES;
-    [self flash:@"Enumerating containers with bad_query_list…"];
+    [self flash:@"正在用 bad_query_list 枚举容器…"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *summary = BadQueryEnumerateAllContainers();
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -275,7 +292,7 @@
             }
             [self reloadReport];
             [self flash:[NSString stringWithFormat:
-                @"Mapped %lu containers into Device Storage/[BadQuery] Escaped/", total]];
+                @"已映射 %lu 个容器到 设备存储/[BadQuery] Escaped/", total]];
         });
     });
 }
@@ -288,17 +305,17 @@
     NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:path];
     NSString *current = [existing[@"GroupId"] isKindOfClass:NSString.class]
         ? existing[@"GroupId"] : @"";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"App Group Sacrifice"
-        message:@"iOS 26 App Group access requires a group that your signing identity owns. Enter the group id and make sure it is in your entitlements."
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"App Group 牺牲"
+        message:@"iOS 26 访问 App Group 需要一个你签名身份拥有的 group。输入 group id，并确保它已写入 entitlements。"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.text = current;
         field.placeholder = @"group.your.own.group";
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
             NSString *groupId = alert.textFields.firstObject.text;
             groupId = [groupId stringByTrimmingCharactersInSet:
@@ -309,7 +326,7 @@
                 [@{@"GroupId": groupId} writeToFile:path atomically:YES];
             }
             [weakSelf reloadReport];
-            [weakSelf flash:@"Saved. Re-run the probe (and the container enumeration) to use the group route."];
+            [weakSelf flash:@"已保存。重新运行探针和容器枚举即可使用 group 路线。"];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -317,7 +334,7 @@
 - (void)presentResults
 {
     if (!self.report) {
-        [self flash:@"No results yet"];
+        [self flash:@"还没有结果"];
         return;
     }
     NSError *error = nil;
@@ -325,7 +342,29 @@
         format:NSPropertyListXMLFormat_v1_0 options:0 error:&error];
     NSString *text = xml ? [[NSString alloc] initWithData:xml encoding:NSUTF8StringEncoding]
         : (error.localizedDescription ?: @"Serialization failed");
-    [self presentText:@"Probe Results" body:text];
+    [self presentText:@"探针结果" body:text];
+}
+
+- (void)presentVariantMatrix
+{
+    NSArray *matrix = [self.report[@"VariantMatrix"] isKindOfClass:NSArray.class]
+        ? self.report[@"VariantMatrix"] : nil;
+    if (!matrix.count) {
+        [self flash:@"还没有变体矩阵结果"];
+        return;
+    }
+    NSMutableString *text = [NSMutableString string];
+    NSUInteger ok = 0;
+    for (NSDictionary *entry in matrix) {
+        NSString *status = [entry[@"Status"] isKindOfClass:NSString.class]
+            ? entry[@"Status"] : @"?";
+        if ([status isEqualToString:@"TOKEN-OK"]) ok++;
+        [text appendFormat:@"group=%@ flags=%@ part=%@ traversal=%@ status=%@\n",
+            entry[@"Group"] ?: @"?", entry[@"Flags"] ?: @"?",
+            entry[@"Part"] ?: @"?", entry[@"Traversal"] ?: @"?", status];
+    }
+    [self presentText:[NSString stringWithFormat:@"变体矩阵（%lu/%lu 可用）",
+        (unsigned long)ok, (unsigned long)matrix.count] body:text];
 }
 
 - (void)presentProbeDetail:(NSDictionary *)probe

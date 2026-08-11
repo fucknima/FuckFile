@@ -52,7 +52,7 @@
 {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        self.title = @"MobileGestalt";
+        self.title = @"MobileGestalt 编辑器";
         _features = [self buildFeatures];
     }
     return self;
@@ -62,27 +62,27 @@
 {
     NSMutableArray<FFFeature *> *features = [NSMutableArray array];
     NSArray<NSDictionary *> *definitions = @[
-        @{@"Title": @"Dynamic Island", @"Keys": @[@"YlEtTtHlNesRBMal1CqRaA"]},
-        @{@"Title": @"Always On Display", @"Keys": @[@"j8/Omm6s1lsmTDFsXjsBfA", @"2OOJf1VhaM7NxfRok3HbWQ"]},
-        @{@"Title": @"AOD Vibrancy", @"Keys": @[@"ykpu7qyhqFweVMKtxNylWA"]},
-        @{@"Title": @"Charge Limit", @"Keys": @[@"37NVydb//GP/GrhuTN+exg"]},
-        @{@"Title": @"Boot Chime", @"Keys": @[@"QHxt+hGLaBPbQJbXiUJX3w"]},
-        @{@"Title": @"Liquid Glass Low Power Mode", @"Keys": @[@"SAGvsp6O6kAQ4fEfDJpC4Q"]},
-        @{@"Title": @"Camera Control", @"Keys": @[@"CwvKxM2cEogD3p+HYgaW0Q", @"oOV1jhJbdV3AddkcCg0AEA"]},
-        @{@"Title": @"Action Button", @"Keys": @[@"cT44WE1EohiwRzhsZ8xEsw"]},
-        @{@"Title": @"Crash Detection", @"Keys": @[@"HCzWusHQwZDea6nNhaKndw"]},
-        @{@"Title": @"Tap to Wake", @"Keys": @[@"yZf3GTRMGTuwSV/lD7Cagw"]},
-        @{@"Title": @"Pulse Width Modulation", @"Keys": @[@"6IejgN+1Fmu5/QrZFOIeNw"]},
-        @{@"Title": @"Security Research Device UI", @"Keys": @[@"XYlJKKkj2hztRP1NWWnhlw"]},
-        @{@"Title": @"Disable Region Restrictions", @"Keys": @[@"h63QSdBCiT/z0WU6rdQv6Q", @"zHeENZu+wbg7PUprwNwBWg"],
-          @"OnValues": @[@"US", @"LL/A"], @"Info": @"Sets region code to US / LL/A."},
+        @{@"Title": @"灵动岛", @"Keys": @[@"YlEtTtHlNesRBMal1CqRaA"]},
+        @{@"Title": @"全天候显示", @"Keys": @[@"j8/Omm6s1lsmTDFsXjsBfA", @"2OOJf1VhaM7NxfRok3HbWQ"]},
+        @{@"Title": @"息屏显示振动效果", @"Keys": @[@"ykpu7qyhqFweVMKtxNylWA"]},
+        @{@"Title": @"充电上限", @"Keys": @[@"37NVydb//GP/GrhuTN+exg"]},
+        @{@"Title": @"开机提示音", @"Keys": @[@"QHxt+hGLaBPbQJbXiUJX3w"]},
+        @{@"Title": @"Liquid Glass 低电量模式", @"Keys": @[@"SAGvsp6O6kAQ4fEfDJpC4Q"]},
+        @{@"Title": @"相机控制", @"Keys": @[@"CwvKxM2cEogD3p+HYgaW0Q", @"oOV1jhJbdV3AddkcCg0AEA"]},
+        @{@"Title": @"操作按钮", @"Keys": @[@"cT44WE1EohiwRzhsZ8xEsw"]},
+        @{@"Title": @"车祸检测", @"Keys": @[@"HCzWusHQwZDea6nNhaKndw"]},
+        @{@"Title": @"轻点唤醒", @"Keys": @[@"yZf3GTRMGTuwSV/lD7Cagw"]},
+        @{@"Title": @"PWM 调光", @"Keys": @[@"6IejgN+1Fmu5/QrZFOIeNw"]},
+        @{@"Title": @"安全研究设备 UI", @"Keys": @[@"XYlJKKkj2hztRP1NWWnhlw"]},
+        @{@"Title": @"关闭区域限制", @"Keys": @[@"h63QSdBCiT/z0WU6rdQv6Q", @"zHeENZu+wbg7PUprwNwBWg"],
+          @"OnValues": @[@"US", @"LL/A"], @"Info": @"将区域代码设为 US / LL/A。"},
         @{@"Title": @"Apple Intelligence", @"Keys": @[@"A62OafQ85EJAiiqKn4agtg"]},
-        @{@"Title": @"Allow Installing iPadOS Apps", @"Keys": @[@"9MZ5AdH43csAUajl/dU+IQ"],
+        @{@"Title": @"允许安装 iPadOS 应用", @"Keys": @[@"9MZ5AdH43csAUajl/dU+IQ"],
           @"OnValues": @[@[@1, @2]]},
-        @{@"Title": @"Apple Pencil Settings", @"Keys": @[@"yhHcB0iH0d1XzPO/CFd3ow"]},
-        @{@"Title": @"Stage Manager", @"Keys": @[@"qeaj75wk3HF4DwQ8qbIi7g"]},
-        @{@"Title": @"Internal Storage", @"Keys": @[@"LBJfwOEzExRxzlAnSuI7eg"]},
-        @{@"Title": @"Metal HUD in All Apps", @"Keys": @[@"EqrsVvjcYDdxHBiQmGhAWw"]},
+        @{@"Title": @"Apple Pencil 设置", @"Keys": @[@"yhHcB0iH0d1XzPO/CFd3ow"]},
+        @{@"Title": @"台前调度", @"Keys": @[@"qeaj75wk3HF4DwQ8qbIi7g"]},
+        @{@"Title": @"内部存储", @"Keys": @[@"LBJfwOEzExRxzlAnSuI7eg"]},
+        @{@"Title": @"全局 Metal HUD", @"Keys": @[@"EqrsVvjcYDdxHBiQmGhAWw"]},
     ];
     for (NSDictionary *definition in definitions) {
         NSArray *onValues = definition[@"OnValues"] ?: @[];
@@ -194,26 +194,26 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    if (self.errorText) return section == 0 ? @"MobileGestalt" : @"Actions";
+    if (self.errorText) return section == 0 ? @"MobileGestalt" : @"操作";
     switch (section) {
-        case 0: return @"Warning";
-        case 1: return @"Actions";
-        case 2: return @"Device Artwork";
-        case 3: return @"Software-Oriented Features";
-        case 4: return @"Hardware-Oriented Features";
-        case 5: return @"Eligibility";
-        case 6: return @"Internal";
+        case 0: return @"警告";
+        case 1: return @"操作";
+        case 2: return @"设备外观";
+        case 3: return @"软件功能";
+        case 4: return @"硬件功能";
+        case 5: return @"资格";
+        case 6: return @"内部";
         default: return nil;
     }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (self.errorText) return section == 0 ? @"Rebooting with an empty or invalid MobileGestalt.plist may cause a bootloop." : nil;
+    if (self.errorText) return section == 0 ? @"在 MobileGestalt.plist 为空或损坏时重启可能导致无法开机。" : nil;
     if (section == 0)
-        return @"Changes can break features or softbrick the device if misused. Keep the backup and revert before rebooting if anything looks wrong.";
+        return @"修改可能破坏功能或导致设备软砖。请保留备份，发现异常时先还原再重启。";
     if (section == 1)
-        return @"The original plist is backed up on first launch. Revert restores that exact copy.";
+        return @"首次启动时已备份原始 plist。“还原修改”会恢复该备份。";
     return nil;
 }
 
@@ -226,13 +226,13 @@
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                           reuseIdentifier:@"Error"];
         if (indexPath.section == 0) {
-            cell.textLabel.text = @"MobileGestalt unavailable";
+            cell.textLabel.text = @"MobileGestalt 不可用";
             cell.detailTextLabel.text = self.errorText;
             cell.detailTextLabel.numberOfLines = 0;
             cell.imageView.image = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"];
             cell.imageView.tintColor = [UIColor systemYellowColor];
         } else {
-            cell.textLabel.text = @"Try again";
+            cell.textLabel.text = @"重试";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
         return cell;
@@ -241,7 +241,7 @@
     if (indexPath.section == 0) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                        reuseIdentifier:@"Warn"];
-        cell.textLabel.text = @"Do not reboot with an empty/invalid plist";
+        cell.textLabel.text = @"请勿在 plist 为空或损坏时重启";
         cell.detailTextLabel.text = self.gestaltPath;
         cell.detailTextLabel.numberOfLines = 0;
         cell.imageView.image = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"];
@@ -256,13 +256,13 @@
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"Apply Tweaks";
+            cell.textLabel.text = @"应用修改";
             cell.textLabel.textColor = [UIColor systemBlueColor];
         } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"Revert Tweaks";
+            cell.textLabel.text = @"还原修改";
             cell.textLabel.textColor = [UIColor systemRedColor];
         } else {
-            cell.textLabel.text = @"Open Plist Location";
+            cell.textLabel.text = @"打开 plist 所在目录";
             cell.textLabel.textColor = [UIColor labelColor];
         }
         return cell;
@@ -273,7 +273,7 @@
             if (!cell)
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
                                               reuseIdentifier:@"Subtype"];
-            cell.textLabel.text = @"Subtype";
+            cell.textLabel.text = @"型号子类型";
             cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld", (long)self.subtype];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return cell;
@@ -283,7 +283,7 @@
             if (!cell)
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                               reuseIdentifier:@"NameToggle"];
-            cell.textLabel.text = @"Custom Device Name";
+            cell.textLabel.text = @"自定义设备名";
             UISwitch *toggle = [UISwitch new];
             toggle.on = self.enableDeviceName;
             [toggle addTarget:self action:@selector(nameToggleChanged:) forControlEvents:UIControlEventValueChanged];
@@ -296,7 +296,7 @@
                                           reuseIdentifier:@"NameField"];
         UITextField *field = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 220, 40)];
         field.text = self.deviceName;
-        field.placeholder = @"Device Name";
+        field.placeholder = @"设备名称";
         field.autocorrectionType = UITextAutocorrectionTypeNo;
         [field addTarget:self action:@selector(nameFieldChanged:) forControlEvents:UIControlEventEditingChanged];
         cell.accessoryView = field;
@@ -307,8 +307,8 @@
         if (!cell)
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
                                           reuseIdentifier:@"ProductType"];
-        cell.textLabel.text = @"Device Model";
-        cell.detailTextLabel.text = self.productType.length ? self.productType : @"Default";
+        cell.textLabel.text = @"设备型号";
+        cell.detailTextLabel.text = self.productType.length ? self.productType : @"默认";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return cell;
     }
@@ -399,8 +399,8 @@
     if (index < 0 || index >= (NSInteger)self.features.count) return;
     FFFeature *feature = self.features[index];
     [self setFeature:feature on:sender.on];
-    if ([feature.title isEqualToString:@"Disable Region Restrictions"] && sender.on)
-        [self flash:@"Region code set to US / LL/A. Do not use this to break regional laws."];
+    if ([feature.title isEqualToString:@"关闭区域限制"] && sender.on)
+        [self flash:@"区域代码已设为 US / LL/A。请勿用于违反当地法律的操作。"];
 }
 
 - (void)nameToggleChanged:(UISwitch *)sender
@@ -435,16 +435,16 @@
         [self showError:error];
         return;
     }
-    [self flash:@"MobileGestalt updated. Reboot for changes to take effect."];
+    [self flash:@"已写入 MobileGestalt，重启后生效。"];
 }
 
 - (void)confirmRevert
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Revert MobileGestalt?"
-        message:@"Restores the exact backup saved on first launch." preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"还原 MobileGestalt？"
+        message:@"恢复首次启动时保存的原始备份。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Revert" style:UIAlertActionStyleDestructive
+    [alert addAction:[UIAlertAction actionWithTitle:@"还原" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             [weakSelf revertTweaks];
         }]];
@@ -454,12 +454,12 @@
 - (void)revertTweaks
 {
     if (!self.backupPath || ![[NSFileManager defaultManager] fileExistsAtPath:self.backupPath]) {
-        [self flash:@"No backup found"];
+        [self flash:@"未找到备份"];
         return;
     }
     NSDictionary *backup = [NSDictionary dictionaryWithContentsOfFile:self.backupPath];
     if (![backup isKindOfClass:NSDictionary.class]) {
-        [self flash:@"Backup is invalid"];
+        [self flash:@"备份无效"];
         return;
     }
     NSError *error = nil;
@@ -467,7 +467,7 @@
         [self showError:error];
         return;
     }
-    [self flash:@"MobileGestalt reverted. Reboot for changes to take effect."];
+    [self flash:@"已还原 MobileGestalt，重启后生效。"];
     [self loadState];
 }
 
@@ -509,9 +509,9 @@
 - (void)chooseSubtype
 {
     NSArray<NSDictionary *> *presets = @[
-        @{@"Name": [NSString stringWithFormat:@"Original (%ld)", (long)self.originalSubtype],
+        @{@"Name": [NSString stringWithFormat:@"原始值（%ld）", (long)self.originalSubtype],
           @"Value": @(self.originalSubtype)},
-        @{@"Name": @"Disable Dynamic Island", @"Value": @2436},
+        @{@"Name": @"关闭灵动岛", @"Value": @2436},
         @{@"Name": @"iPhone 14 Pro", @"Value": @2436},
         @{@"Name": @"iPhone 14 Pro Max", @"Value": @2796},
         @{@"Name": @"iPhone 15 Pro Max", @"Value": @2976},
@@ -519,8 +519,8 @@
         @{@"Name": @"iPhone 16 Pro Max", @"Value": @2868},
         @{@"Name": @"iPhone Air", @"Value": @2736},
     ];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Subtype"
-        message:@"Device artwork subtype (changing it may disable Dynamic Island on some models)."
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"型号子类型"
+        message:@"设备外观子类型（修改可能导致部分机型灵动岛失效）。"
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
     for (NSDictionary *preset in presets) {
@@ -532,7 +532,7 @@
             }];
         [alert addAction:action];
     }
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     alert.popoverPresentationController.sourceView = self.view;
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -541,7 +541,7 @@
 {
     NSMutableArray<NSDictionary *> *options = [NSMutableArray array];
     if (self.originalProductType.length)
-        [options addObject:@{@"Name": [NSString stringWithFormat:@"Default (%@)", self.originalProductType],
+        [options addObject:@{@"Name": [NSString stringWithFormat:@"默认（%@）", self.originalProductType],
             @"Value": self.originalProductType}];
     [options addObjectsFromArray:@[
         @{@"Name": @"iPhone 15 Pro", @"Value": @"iPhone16,1"},
@@ -555,8 +555,8 @@
         @{@"Name": @"iPhone 17 Pro Max", @"Value": @"iPhone18,2"},
         @{@"Name": @"iPhone Air", @"Value": @"iPhone18,4"},
     ]];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Spoof Device Model"
-        message:@"Only spoof if you want Apple Intelligence eligibility. May break Face ID."
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"伪装设备型号"
+        message:@"仅在你需要 Apple Intelligence 资格时使用。可能导致面容 ID 失效。"
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
     for (NSDictionary *option in options) {
@@ -567,7 +567,7 @@
                                   withRowAnimation:UITableViewRowAnimationNone];
             }]];
     }
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     alert.popoverPresentationController.sourceView = self.view;
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -588,10 +588,10 @@
 
 - (void)showError:(NSError *)error
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MobileGestalt failed"
-        message:error.localizedDescription ?: @"Unknown error"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MobileGestalt 操作失败"
+        message:error.localizedDescription ?: @"未知错误"
         preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 

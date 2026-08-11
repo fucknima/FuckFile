@@ -55,6 +55,16 @@ Documents/Device Storage/BadQuery Probe Log.txt
 开启文件共享（`UIFileSharingEnabled`）后，可通过 文件 App →
 “我的 iPhone → FuckFile → Device Storage” 直接导出这两个 txt。
 
+## iOS 26.6 兼容
+
+- 界面已全部中文化。
+- 当 canonical bad_query flags（`0x0000008000000000`）在 26.6 上被 token
+  签发拦截时，App 会自动回退到“变体矩阵”验证过的 class-13 组合
+  （group × flags × part × traversal，共 64 种，遍历优先），消费第一个
+  成功签发 token 的组合，再执行 `bad_query_list` 容器枚举。
+- 探针结果 plist 会记录 `VariantMatrix`，控制台可查看 64 种组合中哪些
+  能签发 token（日志里显示为 `TOKEN-OK`）。
+
 ## bad_query 探针（iOS 26.x）
 
 内置 [forcequitOS/bad_query](https://github.com/forcequitOS/bad_query) 的 C 实现

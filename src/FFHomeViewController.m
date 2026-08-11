@@ -101,10 +101,10 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"Storage";
-        case 1: return @"bad_query Probe";
-        case 2: return @"Tools";
-        case 3: return @"About";
+        case 0: return @"存储";
+        case 1: return @"bad_query 探针";
+        case 2: return @"工具";
+        case 3: return @"关于";
         default: return nil;
     }
 }
@@ -122,46 +122,46 @@
 
     switch (indexPath.section) {
         case 0: {
-            cell.textLabel.text = @"Device Storage";
+            cell.textLabel.text = @"设备存储";
             cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu category folders, %lu active links", (unsigned long)self.categoryCount,
+                @"%lu 个分类目录，%lu 个有效链接", (unsigned long)self.categoryCount,
                 (unsigned long)self.linkCount];
             cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
             break;
         }
         case 1: {
-            cell.textLabel.text = @"Probe Console";
+            cell.textLabel.text = @"探针控制台";
             cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu escaped paths — results, log, container mapping (UUID → bundle ID)",
+                @"%lu 条逃逸路径 — 结果、日志、容器映射（UUID → 包名）",
                 (unsigned long)self.escapedCount];
             cell.imageView.image = [UIImage systemImageNamed:@"waveform.path.ecg"];
             break;
         }
         case 2: {
             if (indexPath.row == 0) {
-                cell.textLabel.text = @"MobileGestalt Editor";
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"Status: %@",
-                    self.gestaltStatus ?: @"Checking…"];
+                cell.textLabel.text = @"MobileGestalt 编辑器";
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"状态：%@",
+                    self.gestaltStatus ?: @"检查中…"];
                 cell.imageView.image = [UIImage systemImageNamed:@"iphone.gen3"];
             } else {
-                cell.textLabel.text = @"Wallpaper Lab";
-                cell.detailTextLabel.text = @"PosterBoard .tendies import, inspect & rollback";
+                cell.textLabel.text = @"壁纸实验室";
+                cell.detailTextLabel.text = @"PosterBoard .tendies 导入、检查与回滚";
                 cell.imageView.image = [UIImage systemImageNamed:@"photo.on.rectangle.angled"];
             }
             break;
         }
         case 3: {
             if (indexPath.row == 0) {
-                cell.textLabel.text = @"Version";
+                cell.textLabel.text = @"版本";
                 cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"%@ (build %@) · iOS %@",
+                    @"%@（构建 %@）· iOS %@",
                     NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?",
                     NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"?",
                     UIDevice.currentDevice.systemVersion];
                 cell.imageView.image = [UIImage systemImageNamed:@"info.circle.fill"];
             } else {
-                cell.textLabel.text = @"Credits";
-                cell.detailTextLabel.text = @"MCM: FilzaSlop · Escape: bad_query · UI ideas: mond";
+                cell.textLabel.text = @"致谢";
+                cell.detailTextLabel.text = @"MCM：FilzaSlop · 逃逸：bad_query · UI 参考：mond";
                 cell.imageView.image = [UIImage systemImageNamed:@"person.3.fill"];
             }
             break;
@@ -201,10 +201,10 @@
 
 - (void)presentCredits
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Credits"
-        message:@"MCM identity bypass & PosterBoard lab: 0xjohnnydev/FilzaSlop\nSandbox escape: forcequitOS/bad_query\nMobileGestalt editor concept: rooootdev/mond"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"致谢"
+        message:@"MCM 身份绕过与壁纸实验室：0xjohnnydev/FilzaSlop\n沙箱逃逸：forcequitOS/bad_query\nMobileGestalt 编辑器参考：rooootdev/mond"
         preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
