@@ -29,7 +29,6 @@ typedef NS_ENUM(NSInteger, FFClipboardMode) {
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic) BOOL loading;
-@property(nonatomic, strong) UIRefreshControl *refreshControl;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @end
 
@@ -57,9 +56,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 56;
 
-    UIRefreshControl *refresh = [UIRefreshControl new];
-    [refresh addTarget:self action:@selector(reloadEntries) forControlEvents:UIControlEventValueChanged];
-    self.refreshControl = refresh;
+    self.refreshControl = [UIRefreshControl new];
+    [self.refreshControl addTarget:self action:@selector(reloadEntries)
+                  forControlEvents:UIControlEventValueChanged];
 
     self.pasteItem = [[UIBarButtonItem alloc] initWithTitle:@"Paste"
         style:UIBarButtonItemStylePlain target:self action:@selector(pasteAction:)];
