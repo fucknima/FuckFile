@@ -1832,8 +1832,9 @@ static NSMutableDictionary *runCmgProbe(void)
                         entry[@"Restored"] = @(restored);
                         NSData *after = [NSData dataWithContentsOfFile:plist];
                         entry[@"SHA256Match"] = @(after.length && [sha256Hex(after) isEqualToString:sha256Hex(original)]);
-                        logStep(restored && entry[@"SHA256Match"], @"cmg restore+verify",
-                            @"original intact" : @"MISMATCH!");
+                        BOOL restoredOk = restored && [entry[@"SHA256Match"] boolValue];
+                        logStep(restoredOk, @"cmg restore+verify",
+                            restoredOk ? @"original intact" : @"MISMATCH!");
                     }
                 }
             }
