@@ -33,6 +33,13 @@ jobs:
             find .theos -maxdepth 4 -type d | head -20
             exit 1
           fi
+          # Theos 'make' (compile only) does not place Info.plist in the
+          # .app bundle; inject the repo one and pin the critical fields.
+          cp Info.plist "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Info.plist" 2>/dev/null || true
+          plutil -lint "$APP/Info.plist"
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
           codesign --force -s - "$APP" || true
@@ -41,7 +48,7 @@ jobs:
           cp -R "$APP" Payload/
           zip -qry FuckFile.ipa Payload
           echo "IPA: $(pwd)/FuckFile.ipa ($(du -h FuckFile.ipa | cut -f1))"
-          ls -la Payload/FuckFile.app | head -20
+          unzip -l FuckFile.ipa
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
