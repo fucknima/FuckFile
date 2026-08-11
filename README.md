@@ -32,6 +32,37 @@ MCM 层移植自 [0xjohnnydev/FilzaSlop](https://github.com/0xjohnnydev/FilzaSlo
 - 下拉刷新；启动与操作日志输出到系统日志（`[FuckFile]`）
 - 每次启动生成 `Device Storage/ACCESS MAP.txt` 记录各 class 查询结果
 
+## bad_query 探针（iOS 26.x）
+
+内置 [forcequitOS/bad_query](https://github.com/forcequitOS/bad_query) 的 C 实现
+（`src/BadQuery.c`），启动时自动对全部目标路径执行探针，**每一步**（dlopen、
+每个符号解析、query 组装、containermanagerd 回包、token 消费、access/open/
+readdir 验证）都记录到：
+
+- `Device Storage/BadQuery Probe Log.txt`（分步、带时间戳、可连续追加）
+- `Device Storage/BadQuery Probe Results.plist`（结构化结果）
+- 系统日志 `[BadQueryProbe]` 前缀
+
+探针成功的路径会被 symlink 到 `Device Storage/[BadQuery] Escaped/`，可直接浏览。
+
+iOS 26 上访问 App Group 需要"App Group sacrifice"：把你自己签名时带的
+App Group id 写进 `Documents/AppGroupSacrifice.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>GroupId</key><string>group.your.own.group</string>
+</dict></plist>
+```
+
+签名时（zsign/爱思）注入对应 entitlement：
+
+```xml
+<key>com.apple.security.application-groups</key>
+<array><string>group.your.own.group</string></array>
+```
+
 ## 构建（GitHub Actions）
 
 仓库 push 自动构建并上传未签名 `FuckFile.ipa`（ad-hoc 签名，需自行重签安装，
@@ -52,7 +83,10 @@ make FINALPACKAGE=1
   `Probe Results.plist`。
 - 可配置目标清单：放 `Documents/MCMIdentifiers.plist`（格式见仓库根示例），
   或在 `src/MCMManager.m` 的 fallback 列表里加 identifier。
+- zsign 重签时保持 bundle id 为 `com.apple.mobile.MobileHouseArrest`（MCM 路径
+  的硬性要求）；bad_query 探针本身对身份无要求，即使改 bundle id 也能测。
 
 ## Credits
 
 - MCM 机制与实现：0xjohnnydev/FilzaSlop（及其上游 FilzaJailedDS / MCM 研究成果）
+- bad_query 沙箱逃逸：forcequitOS/bad_query（Taj C）

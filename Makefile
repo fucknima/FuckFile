@@ -13,7 +13,9 @@ FuckFile_FILES = \
 	src/FFBrowserViewController.m \
 	src/FFCopyEngine.m \
 	src/MCMBridge.m \
-	src/MCMManager.m
+	src/MCMManager.m \
+	src/BadQueryProbe.m \
+	src/BadQuery.c
 
 FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \

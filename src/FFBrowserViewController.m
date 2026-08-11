@@ -60,6 +60,17 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
 
+    // Reload once the background bad_query probe has finished.
+    __weak typeof(self) weakSelf = self;
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf reloadEntries];
+            });
+        }];
+
     self.pasteItem = [[UIBarButtonItem alloc] initWithTitle:@"Paste"
         style:UIBarButtonItemStylePlain target:self action:@selector(pasteAction:)];
     self.navigationItem.rightBarButtonItems = @[self.pasteItem];
