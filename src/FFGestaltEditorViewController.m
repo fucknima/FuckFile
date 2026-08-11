@@ -193,7 +193,7 @@
     if (self.errorText) return section == 0 ? 1 : 2;
     switch (section) {
         case 0: return 1; // warning
-        case 1: return 3; // apply / revert / open location
+        case 1: return 4; // apply / revert / open location / export
         case 2: return self.enableDeviceName ? 3 : 2; // subtype + name toggle (+ field)
         case 3: return 6; // software
         case 4: return 5; // hardware
@@ -276,8 +276,11 @@
         } else if (indexPath.row == 1) {
             cell.textLabel.text = @"还原修改";
             cell.textLabel.textColor = [UIColor systemRedColor];
-        } else {
+        } else if (indexPath.row == 2) {
             cell.textLabel.text = @"打开 plist 所在目录";
+            cell.textLabel.textColor = [UIColor labelColor];
+        } else {
+            cell.textLabel.text = @"导出 plist 到设备存储";
             cell.textLabel.textColor = [UIColor labelColor];
         }
         return cell;
@@ -356,7 +359,8 @@
     if (indexPath.section == 1) {
         if (indexPath.row == 0) [self applyTweaks];
         else if (indexPath.row == 1) [self confirmRevert];
-        else [self openPlistLocation];
+        else if (indexPath.row == 2) [self openPlistLocation];
+        else [self exportPlist];
         return;
     }
     if (indexPath.section == 2 && indexPath.row == 0) [self chooseSubtype];
@@ -539,6 +543,34 @@
     textView.text = text;
     [viewer.view addSubview:textView];
     [self.navigationController pushViewController:viewer animated:YES];
+}
+
+- (void)exportPlist
+{
+    if (!self.gestaltPath) {
+        [self flash:@"尚未获得 MobileGestalt 路径"];
+        return;
+    }
+    NSString *exportDirectory = [MCMVirtualRoot()
+        stringByAppendingPathComponent:@"MobileGestalt Export"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:exportDirectory
+        withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    NSString *target = [exportDirectory
+        stringByAppendingPathComponent:@"com.apple.MobileGestalt.plist"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:target])
+        [[NSFileManager defaultManager] removeItemAtPath:target error:nil];
+    NSError *error = nil;
+    BOOL ok = [[NSFileManager defaultManager] copyItemAtPath:self.gestaltPath
+        toPath:target error:&error];
+    FFLogTag(@"Gestalt", @"export source=%@ target=%@ result=%d error=%@",
+        self.gestaltPath, target, ok, error ?: @"(nil)");
+    if (ok) {
+        [self flash:@"已导出到 设备存储/MobileGestalt Export/，可在浏览器中查看"];
+    } else {
+        [self showError:error ?: [NSError errorWithDomain:@"FuckFileExport"
+            code:-1 userInfo:@{NSLocalizedDescriptionKey: @"复制失败"}]];
+    }
 }
 
 - (void)chooseSubtype

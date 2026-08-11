@@ -161,6 +161,11 @@ MCM 的 class-13 scoped 激活在 iOS 26.6 上拿不到 token（日志：
 Documents/MobileGestalt Backup/SavedGestalt.plist
 ```
 
+> iOS 26.6 上系统组的目录枚举仍被沙箱拒绝（`Caches` 目录 `opendir` 返回 EPERM），
+> 但文件本身可读可写，所以编辑器功能不受影响。需要在浏览器里直接看这个文件时，
+> 用编辑器里的 **“导出 plist 到设备存储”**，它会复制到
+> `Device Storage/MobileGestalt Export/com.apple.MobileGestalt.plist`。
+
 ### 常用开关
 
 - **灵动岛、全天候显示、充电上限、开机提示音、相机控制、操作按钮、车祸检测、轻点唤醒、PWM 调光、Apple Intelligence、内部存储、Metal HUD、区域限制** 等。
