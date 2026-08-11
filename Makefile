@@ -10,12 +10,16 @@ APPLICATION_NAME = FuckFile
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
 	src/FFCopyEngine.m \
+	src/FFProbeViewController.m \
+	src/FFGestaltEditorViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/BadQueryProbe.m \
-	src/BadQuery.c
+	src/BadQuery.c \
+	src/PosterBoardFeature.m
 
 FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \
@@ -24,7 +28,7 @@ FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
-FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation
+FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation
 FuckFile_LIBRARIES = z
 
 FuckFile_INFOPLIST = Info.plist

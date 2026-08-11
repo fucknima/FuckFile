@@ -25,10 +25,15 @@ MCM 层移植自 [0xjohnnydev/FilzaSlop](https://github.com/0xjohnnydev/FilzaSlo
 
 ## 功能
 
-- 浏览虚拟根与容器内部（symlink 直通真实容器）
+- 首页仪表盘：存储/探针/工具状态一目了然，一键进入各功能区
+- 现代文件浏览器（UIKit + SF Symbols）：
+  - 文件夹/图片/视频/音频/压缩包/plist/数据库等类型图标与配色
+  - 长按上下文菜单、左滑操作（删除/更多）
+  - 搜索过滤、按名称/大小/修改时间排序
+  - 新建文件夹 / 新建文件 / 下拉刷新
 - 复制 / 剪切 / 粘贴（进程内剪贴板，跨容器可用，禁止粘贴进自身）
-- 删除（确认）与重命名
-- plist / 文本 / 二进制 hexdump 预览
+- 删除（确认）、重命名、分享（系统分享面板）、属性（mode/uid/gid/时间/xattr）
+- 预览：图片 / 视频 / 音频（AVKit）、plist / 文本 / 二进制 hexdump（1 MB 上限）
 - 下拉刷新；启动与操作日志输出到系统日志（`[FuckFile]`）
 - 每次启动生成 `Device Storage/ACCESS MAP.txt` 记录各 class 查询结果
 
@@ -44,6 +49,48 @@ readdir 验证）都记录到：
 - 系统日志 `[BadQueryProbe]` 前缀
 
 探针成功的路径会被 symlink 到 `Device Storage/[BadQuery] Escaped/`，可直接浏览。
+
+内置 **bad_query 控制台**（首页 → Probe Console）：
+
+- 查看结构化探针结果与分步日志
+- 一键重跑全部探针
+- 对任意绝对路径执行 `bad_query` 消费/释放 sandbox extension
+- **容器映射**：一键用 `bad_query_list` 枚举 App Data / InternalDaemon /
+  PluginKitPlugin / App Groups / System Groups，读取容器 metadata 把 UUID
+  反查成 bundle id，并以 bundle id 命名 symlink 到
+  `Device Storage/[BadQuery] Escaped/<分类>/`，可直接浏览其他 App 的
+  Documents/Library/tmp
+- 在控制台填写 **App Group sacrifice**（你签名时拥有的 group id），保存后重跑
+  即可在 iOS 26 上访问 App Group
+- 探针日志已修复为完整追加（旧版只保留最后一行）
+
+## MobileGestalt 编辑器（iOS 26+）
+
+移植自 [rooootdev/mond](https://github.com/rooootdev/mond) 的核心功能，通过 MCM
+scoped 路由（class 13 part 3 或 class 12 part-domain 回退）直接读写
+`com.apple.MobileGestalt.plist`：
+
+- 首次打开自动备份原 plist（`Documents/MobileGestalt Backup/SavedGestalt.plist`）
+- 常用开关：灵动岛、全天候显示、充电上限、开机提示音、相机控制、操作按钮、
+  车祸检测、轻点唤醒、Apple Intelligence、内部存储、Metal HUD、区域限制等
+- 设备外观：ArtworkDeviceSubType 预设（iPhone 14 Pro / 15 Pro Max / 16 Pro 等）
+- 设备型号 spoof（Apple Intelligence 资格），自定义设备名
+- Apply 使用临时文件 + 原子替换，Revert 恢复首次备份
+
+> **警告：改坏 MobileGestalt 可能软砖。空 plist 或非法 plist 时切勿重启，先 Revert。**
+
+## Wallpaper Lab（PosterBoard）
+
+移植自 FilzaSlop 的 `PosterBoardFeature`：
+
+- 首页 → Wallpaper Lab（或直接浏览 `[MHA-C2] Wallpaper Lab`）
+- 在 Lab 根目录点导航栏 **Wallpaper**：检查 PosterBoard 结构、导入 `.tendies`
+  描述符包、回滚最近一次导入
+- 把解包后的描述符包放入 `[MHA-C2] Wallpaper Lab/Imports/`
+- 导入只新增 UUID 描述符目录，不覆盖 PosterBoard 数据库；刷新偏好会先备份，
+  回滚前校验 SHA-256
+
+> 本仓库未捆绑 Cipher 示例壁纸；需要时自行放置到 Imports。
 
 iOS 26 上访问 App Group 需要"App Group sacrifice"：把你自己签名时带的
 App Group id 写进 `Documents/AppGroupSacrifice.plist`：
@@ -90,3 +137,4 @@ make FINALPACKAGE=1
 
 - MCM 机制与实现：0xjohnnydev/FilzaSlop（及其上游 FilzaJailedDS / MCM 研究成果）
 - bad_query 沙箱逃逸：forcequitOS/bad_query（Taj C）
+- MobileGestalt 编辑器概念与键位：rooootdev/mond

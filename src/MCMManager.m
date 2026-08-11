@@ -178,6 +178,61 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
     return [self activate:2 identifier:identifier group:NO error:error];
 }
 
+- (NSString *)mobileGestaltPath:(NSString **)error
+{
+    // Fast path: the escaped path may already be reachable from a previous
+    // probe run without a fresh MCM activation.
+    NSArray<NSString *> *candidates = @[
+        @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
+        @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
+    ];
+    for (NSString *candidate in candidates) {
+        if (access(candidate.fileSystemRepresentation, R_OK) == 0) return candidate;
+    }
+
+    NSArray<NSDictionary *> *routes = @[
+        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
+          @"Group": @YES, @"Part": @3, @"Domain": @"",
+          @"File": @"com.apple.MobileGestalt.plist"},
+        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
+          @"Part": @3,
+          @"Domain": @"../../../../../../containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
+          @"File": @"com.apple.MobileGestalt.plist"},
+        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
+          @"Part": @3, @"Domain": @"..",
+          @"File": @"Caches/com.apple.MobileGestalt.plist"},
+    ];
+    for (NSDictionary *route in routes) {
+        NSString *detail = nil;
+        NSString *root = [self activateScoped:[route[@"Class"] unsignedLongLongValue]
+            identifier:route[@"Identifier"] group:[route[@"Group"] boolValue]
+            part:[route[@"Part"] unsignedLongLongValue]
+            partDomain:[route[@"Domain"] length] ? route[@"Domain"] : nil
+            flags:kMCMReadWritePartFlags error:&detail];
+        if (!root) {
+            NSLog(@"[FuckFile] gestalt route failed class=%llu detail=%@",
+                [route[@"Class"] unsignedLongLongValue], detail);
+            continue;
+        }
+        NSString *path = [root stringByAppendingPathComponent:route[@"File"]];
+        struct stat status = {0};
+        if (lstat(path.fileSystemRepresentation, &status) == 0) return path;
+    }
+
+    // Last resort: the symlink bad_query creates inside Device Storage.
+    NSString *escaped = [MCMVirtualRoot() stringByAppendingPathComponent:@"[BadQuery] Escaped"];
+    NSArray<NSString *> *children = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:escaped error:nil];
+    for (NSString *child in children ?: @[]) {
+        if ([child containsString:@"MobileGestalt"]) {
+            NSString *path = [escaped stringByAppendingPathComponent:child];
+            if (access(path.fileSystemRepresentation, R_OK) == 0) return path;
+        }
+    }
+    if (error) *error = @"MobileGestalt.plist is not reachable (no MCM route granted access)";
+    return nil;
+}
+
 #pragma mark - Virtual root link installation
 
 - (void)recordLink:(NSString *)directory identifier:(NSString *)identifier target:(NSString *)target

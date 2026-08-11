@@ -20,6 +20,20 @@ FOUNDATION_EXPORT NSString *MCMWallpaperLabName(void); // kept for compat, unuse
 - (nullable NSString *)dataContainerPathForIdentifier:(NSString *)identifier
                                                 error:(NSString * _Nullable * _Nullable)error;
 
+// Activates a scoped (part/part-domain) container route. Used by the
+// MobileGestalt editor and the experimental probes.
+- (nullable NSString *)activateScoped:(uint64_t)containerClass
+                           identifier:(NSString *)identifier
+                                group:(BOOL)group
+                                 part:(uint64_t)part
+                           partDomain:(nullable NSString *)partDomain
+                                flags:(uint64_t)flags
+                                error:(NSString * _Nullable * _Nullable)error;
+
+// Resolves com.apple.MobileGestalt.plist through the MCM routes, falling
+// back to the bad_query escaped link. Returns nil if no route grants access.
+- (nullable NSString *)mobileGestaltPath:(NSString * _Nullable * _Nullable)error;
+
 // Map of category folder name -> (link name -> symlink target), refreshed by
 // -start. Used by the browser to show which roots are active.
 @property(nonatomic, readonly) NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *categoryLinks;

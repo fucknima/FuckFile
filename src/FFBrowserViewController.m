@@ -1,9 +1,17 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
+#import "MCMManager.h"
+#import "PosterBoardFeature.h"
 
+#import <AVKit/AVKit.h>
 #import <dirent.h>
+#import <fcntl.h>
+#import <limits.h>
+#import <stdlib.h>
+#import <string.h>
 #import <sys/stat.h>
 #import <sys/xattr.h>
+#import <unistd.h>
 #import <objc/runtime.h>
 
 typedef NS_ENUM(NSInteger, FFClipboardMode) {
@@ -12,24 +20,44 @@ typedef NS_ENUM(NSInteger, FFClipboardMode) {
     FFClipboardModeCut,
 };
 
+typedef NS_ENUM(NSInteger, FFSortMode) {
+    FFSortModeName = 0,
+    FFSortModeSize,
+    FFSortModeDate,
+};
+
 @interface FFEntry : NSObject
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, copy) NSString *path;
 @property(nonatomic) BOOL isDirectory;
 @property(nonatomic) BOOL isSymlink;
 @property(nonatomic, copy) NSString *linkTarget;
-@property(nonatomic, copy) NSString *detail; // size / mode / uid:gid
+@property(nonatomic, copy) NSString *detail;
+@property(nonatomic, copy) NSString *fullDetail;
 @property(nonatomic) unsigned long long size;
+@property(nonatomic, strong) NSDate *modificationDate;
+@property(nonatomic, strong) NSDate *creationDate;
+@property(nonatomic) mode_t mode;
+@property(nonatomic) uid_t uid;
+@property(nonatomic) gid_t gid;
 @end
 
 @implementation FFEntry
 @end
 
-@interface FFBrowserViewController () <UIDocumentInteractionControllerDelegate>
+@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
+@property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
 @property(nonatomic) BOOL loading;
+@property(nonatomic) BOOL hasLoaded;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
+@property(nonatomic, strong) UIBarButtonItem *sortItem;
+@property(nonatomic, strong) UISearchController *searchController;
+@property(nonatomic, copy) NSString *searchText;
+@property(nonatomic) FFSortMode sortMode;
+@property(nonatomic, strong) FFEntry *interactionItem;
+@property(nonatomic, copy) NSString *interactionText;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
@@ -44,6 +72,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     if (self) {
         _currentPath = [path copy];
         self.title = path.lastPathComponent.length ? path.lastPathComponent : @"Device Storage";
+        _sortMode = FFSortModeName;
     }
     return self;
 }
@@ -54,7 +83,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 56;
+    self.tableView.estimatedRowHeight = 58;
+    self.tableView.allowsMultipleSelectionDuringEditing = NO;
 
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
@@ -71,11 +101,37 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             });
         }];
 
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"Filter…";
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
+    self.definesPresentationContext = YES;
+
     self.pasteItem = [[UIBarButtonItem alloc] initWithTitle:@"Paste"
         style:UIBarButtonItemStylePlain target:self action:@selector(pasteAction:)];
-    self.navigationItem.rightBarButtonItems = @[self.pasteItem];
-    [self updatePasteState];
+    self.sortItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.up.arrow.down" tint:nil]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    self.sortItem.menu = [self sortMenu];
+    self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem];
 
+    UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    UIAction *newFolder = [UIAction actionWithTitle:@"New Folder" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+    UIAction *newFile = [UIAction actionWithTitle:@"New File" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+    UIAction *refresh = [UIAction actionWithTitle:@"Refresh" image:[self symbolImage:@"arrow.clockwise" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+    addItem.menu = [UIMenu menuWithTitle:@"Add" children:@[newFolder, newFile, refresh]];
+    self.toolbarItems = @[
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+        addItem,
+    ];
+    self.navigationController.toolbarHidden = NO;
+
+    [self updatePasteState];
     [self reloadEntries];
 }
 
@@ -83,8 +139,18 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     [super viewWillAppear:animated];
     [self updatePasteState];
-    [self reloadEntries];
+    if (self.hasLoaded) [self reloadEntries];
+    self.navigationController.toolbarHidden = NO;
+    PBWallpaperConfigureBrowser(self, self.currentPath);
 }
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    self.navigationController.toolbarHidden = YES;
+}
+
+#pragma mark - Clipboard state
 
 - (void)updatePasteState
 {
@@ -117,7 +183,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
+            self.hasLoaded = YES;
             self.loading = NO;
+            [self applyFilter];
             [self.tableView reloadData];
             [self.refreshControl endRefreshing];
         });
@@ -148,6 +216,11 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             [result addObject:item];
             continue;
         }
+        item.mode = status.st_mode;
+        item.uid = status.st_uid;
+        item.gid = status.st_gid;
+        item.modificationDate = [NSDate dateWithTimeIntervalSince1970:status.st_mtimespec.tv_sec];
+        item.creationDate = [NSDate dateWithTimeIntervalSince1970:status.st_birthtimespec.tv_sec];
         item.isSymlink = S_ISLNK(status.st_mode);
         if (item.isSymlink) {
             char target[PATH_MAX] = {0};
@@ -165,25 +238,106 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             item.isDirectory = S_ISDIR(status.st_mode);
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
         }
-        NSMutableArray<NSString *> *parts = [NSMutableArray array];
-        if (item.isDirectory) [parts addObject:@"dir"];
-        if (item.isSymlink) [parts addObject:@"link"];
-        [parts addObject:[NSString stringWithFormat:@"%04o", status.st_mode & 07777]];
-        [parts addObject:[NSString stringWithFormat:@"%u:%u", status.st_uid, status.st_gid]];
-        if (S_ISREG(status.st_mode))
-            [parts addObject:[self formatSize:status.st_size]];
-        if (item.linkTarget.length)
-            [parts addObject:[NSString stringWithFormat:@"-> %@", item.linkTarget]];
-        item.detail = [parts componentsJoinedByString:@"  "];
         [result addObject:item];
     }
     closedir(directory);
+    [self decorateEntries:result];
     [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
         if (left.isDirectory != right.isDirectory)
             return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        switch (self.sortMode) {
+            case FFSortModeSize:
+                if (left.size != right.size)
+                    return left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
+                break;
+            case FFSortModeDate:
+                return [right.modificationDate compare:left.modificationDate];
+            case FFSortModeName:
+            default:
+                break;
+        }
         return [left.name compare:right.name options:NSNumericSearch];
     }];
     return result;
+}
+
+- (void)decorateEntries:(NSArray<FFEntry *> *)entries
+{
+    for (FFEntry *item in entries) {
+        NSMutableArray<NSString *> *parts = [NSMutableArray array];
+        if (item.isDirectory) [parts addObject:@"dir"];
+        if (item.isSymlink) [parts addObject:@"link"];
+        [parts addObject:[NSString stringWithFormat:@"%04o", item.mode & 07777]];
+        [parts addObject:[NSString stringWithFormat:@"%u:%u", item.uid, item.gid]];
+        if (item.size > 0 || !item.isDirectory)
+            [parts addObject:[self formatSize:item.size]];
+        if (item.modificationDate)
+            [parts addObject:[self formatDate:item.modificationDate]];
+        if (item.linkTarget.length)
+            [parts addObject:[NSString stringWithFormat:@"-> %@", item.linkTarget]];
+        item.detail = [parts componentsJoinedByString:@"  "];
+
+        NSMutableArray<NSString *> *full = [NSMutableArray arrayWithArray:@[
+            [NSString stringWithFormat:@"Name: %@", item.name],
+            [NSString stringWithFormat:@"Path: %@", item.path],
+            [NSString stringWithFormat:@"Kind: %@", [self kindName:item]],
+            [NSString stringWithFormat:@"Mode: %04o", item.mode & 07777],
+            [NSString stringWithFormat:@"Owner: %u:%u", item.uid, item.gid],
+            [NSString stringWithFormat:@"Size: %@ (%llu bytes)", [self formatSize:item.size], item.size],
+        ]];
+        if (item.modificationDate)
+            [full addObject:[NSString stringWithFormat:@"Modified: %@", [self formatDate:item.modificationDate]]];
+        if (item.creationDate)
+            [full addObject:[NSString stringWithFormat:@"Created: %@", [self formatDate:item.creationDate]]];
+        if (item.isSymlink)
+            [full addObject:[NSString stringWithFormat:@"Link target: %@", item.linkTarget ?: @"?"]];
+        [full addObjectsFromArray:[self extendedAttributesForPath:item.path]];
+        item.fullDetail = [full componentsJoinedByString:@"\n"];
+    }
+}
+
+- (NSArray<NSString *> *)extendedAttributesForPath:(NSString *)path
+{
+    ssize_t size = listxattr(path.fileSystemRepresentation, NULL, 0, 0);
+    if (size <= 0) return @[];
+    NSMutableData *buffer = [NSMutableData dataWithLength:(NSUInteger)size];
+    ssize_t actual = listxattr(path.fileSystemRepresentation, buffer.mutableBytes, size, 0);
+    if (actual <= 0) return @[];
+    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithObject:@"xattrs:"];
+    const char *cursor = buffer.bytes;
+    const char *end = cursor + actual;
+    while (cursor < end) {
+        NSString *name = [NSString stringWithUTF8String:cursor];
+        if (name.length) {
+            ssize_t valueSize = getxattr(path.fileSystemRepresentation, cursor, NULL, 0, 0, 0);
+            if (valueSize >= 0)
+                [result addObject:[NSString stringWithFormat:@"  %@ (%zd bytes)", name, valueSize]];
+            else
+                [result addObject:[NSString stringWithFormat:@"  %@ (errno=%d)", name, errno]];
+        }
+        cursor += strlen(cursor) + 1;
+    }
+    return result;
+}
+
+- (NSString *)kindName:(FFEntry *)item
+{
+    if (item.isDirectory) return @"Directory";
+    if (item.isSymlink) return @"Symbolic link";
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    if (ext.length) return [NSString stringWithFormat:@"%@ file", ext.uppercaseString];
+    return @"File";
+}
+
+- (NSString *)formatDate:(NSDate *)date
+{
+    static NSDateFormatter *formatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [NSDateFormatter new];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm";
+    });
+    return [formatter stringFromDate:date];
 }
 
 - (NSString *)formatSize:(unsigned long long)bytes
@@ -197,11 +351,54 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return [NSString stringWithFormat:@"%llu B", bytes];
 }
 
+- (void)applyFilter
+{
+    if (!self.searchText.length) {
+        self.filteredEntries = self.entries;
+        return;
+    }
+    NSPredicate *predicate = [NSPredicate predicateWithFormat:
+        @"name contains[cd] %@ OR path contains[cd] %@", self.searchText, self.searchText];
+    self.filteredEntries = [self.entries filteredArrayUsingPredicate:predicate];
+}
+
+#pragma mark - Search
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    self.searchText = searchController.searchBar.text;
+    [self applyFilter];
+    [self.tableView reloadData];
+}
+
+#pragma mark - Sort menu
+
+- (UIMenu *)sortMenu
+{
+    UIAction *name = [UIAction actionWithTitle:@"Name" image:[self symbolImage:@"textformat" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeName]; }];
+    UIAction *size = [UIAction actionWithTitle:@"Size" image:[self symbolImage:@"arrow.down.right.and.arrow.up.left" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeSize]; }];
+    UIAction *date = [UIAction actionWithTitle:@"Modified" image:[self symbolImage:@"calendar" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeDate]; }];
+    name.state = self.sortMode == FFSortModeName ? UIMenuElementStateOn : UIMenuElementStateOff;
+    size.state = self.sortMode == FFSortModeSize ? UIMenuElementStateOn : UIMenuElementStateOff;
+    date.state = self.sortMode == FFSortModeDate ? UIMenuElementStateOn : UIMenuElementStateOff;
+    return [UIMenu menuWithTitle:@"Sort by" children:@[name, size, date]];
+}
+
+- (void)setSortMode:(FFSortMode)sortMode
+{
+    _sortMode = sortMode;
+    self.sortItem.menu = [self sortMenu];
+    [self reloadEntries];
+}
+
 #pragma mark - Table view
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return self.entries.count;
+    return self.filteredEntries.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -209,31 +406,93 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Cell"];
-        cell.textLabel.font = [UIFont systemFontOfSize:16];
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
-        cell.detailTextLabel.numberOfLines = 0;
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
-    FFEntry *item = self.entries[indexPath.row];
-    cell.textLabel.text = item.name;
-    cell.detailTextLabel.text = item.detail;
-    if (item.isDirectory) {
-        cell.imageView.image = [self symbolImage:@"folder" tint:[UIColor systemBlueColor]];
-    } else if (item.isSymlink) {
-        cell.imageView.image = [self symbolImage:@"link" tint:[UIColor systemTealColor]];
-    } else {
-        cell.imageView.image = [self symbolImage:@"doc" tint:[UIColor systemGrayColor]];
-    }
+    FFEntry *item = self.filteredEntries[indexPath.row];
+    UIListContentConfiguration *config = [cell defaultContentConfiguration];
+    config.text = item.name;
+    config.textProperties.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    config.secondaryText = item.detail;
+    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    config.secondaryTextProperties.numberOfLines = 0;
+    config.image = [self iconForEntry:item];
+    config.imageProperties.tintColor = [self tintForEntry:item];
+    config.imageProperties.cornerRadius = 4;
+    cell.contentConfiguration = config;
+    cell.accessoryType = item.isDirectory ? UITableViewCellAccessoryDisclosureIndicator
+                                         : UITableViewCellAccessoryNone;
     return cell;
+}
+
+- (UIImage *)iconForEntry:(FFEntry *)item
+{
+    if (item.isDirectory) return [self symbolImage:@"folder.fill" tint:nil];
+    if (item.isSymlink) return [self symbolImage:@"link" tint:nil];
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    static NSDictionary<NSString *, NSString *> *map;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        map = @{
+            @"plist": @"list.bullet.rectangle",
+            @"png": @"photo", @"jpg": @"photo", @"jpeg": @"photo", @"gif": @"photo",
+            @"heic": @"photo", @"webp": @"photo", @"tiff": @"photo", @"bmp": @"photo",
+            @"mp4": @"film", @"mov": @"film", @"m4v": @"film", @"avi": @"film", @"mkv": @"film",
+            @"mp3": @"music.note", @"m4a": @"music.note", @"wav": @"music.note",
+            @"aac": @"music.note", @"caf": @"music.note", @"flac": @"music.note",
+            @"zip": @"archivebox", @"ipa": @"archivebox", @"deb": @"archivebox",
+            @"tar": @"archivebox", @"gz": @"archivebox", @"7z": @"archivebox",
+            @"rar": @"archivebox", @"xz": @"archivebox",
+            @"db": @"internaldrive", @"sqlite": @"internaldrive", @"sqlite3": @"internaldrive",
+            @"txt": @"doc.plaintext", @"log": @"doc.plaintext", @"md": @"doc.plaintext",
+            @"json": @"curlybraces", @"xml": @"curlybraces", @"html": @"curlybraces",
+            @"c": @"chevron.left.forwardslash.chevron.right",
+            @"h": @"chevron.left.forwardslash.chevron.right",
+            @"m": @"chevron.left.forwardslash.chevron.right",
+            @"mm": @"chevron.left.forwardslash.chevron.right",
+            @"swift": @"chevron.left.forwardslash.chevron.right",
+            @"sh": @"terminal", @"command": @"terminal",
+            @"key": @"key", @"mobileconfig": @"lock.doc", @"cer": @"lock.doc",
+            @"p12": @"lock.doc", @"crt": @"lock.doc",
+            @"app": @"app.badge", @"dylib": @"shippingbox", @"bundle": @"shippingbox",
+            @"framework": @"shippingbox", @"tendies": @"photo.on.rectangle.angled",
+        };
+    });
+    NSString *symbol = map[ext];
+    if (!symbol) {
+        if ([item.name hasPrefix:@"."]) symbol = @"gearshape";
+        else symbol = @"doc";
+    }
+    return [self symbolImage:symbol tint:nil];
+}
+
+- (UIColor *)tintForEntry:(FFEntry *)item
+{
+    if (item.isDirectory) return [UIColor systemBlueColor];
+    if (item.isSymlink) return [UIColor systemTealColor];
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    if ([@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext])
+        return [UIColor systemGreenColor];
+    if ([@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext])
+        return [UIColor systemOrangeColor];
+    if ([@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext])
+        return [UIColor systemPinkColor];
+    if ([@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
+        return [UIColor systemBrownColor];
+    if ([@[@"plist", @"db", @"sqlite", @"sqlite3"] containsObject:ext])
+        return [UIColor systemPurpleColor];
+    if ([@[@"key", @"mobileconfig", @"cer", @"p12", @"crt"] containsObject:ext])
+        return [UIColor systemYellowColor];
+    return [UIColor systemGrayColor];
 }
 
 - (UIImage *)symbolImage:(NSString *)name tint:(UIColor *)tint
 {
     if (@available(iOS 13.0, *)) {
         UIImage *image = [UIImage systemImageNamed:name];
-        return [image imageWithTintColor:tint renderingMode:UIImageRenderingModeAlwaysTemplate];
+        if (!image) return nil;
+        return [image imageWithTintColor:tint ?: [UIColor systemBlueColor]
+                           renderingMode:UIImageRenderingModeAlwaysTemplate];
     }
     return nil;
 }
@@ -241,13 +500,76 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FFEntry *item = self.entries[indexPath.row];
+    FFEntry *item = self.filteredEntries[indexPath.row];
     if (item.isDirectory) {
         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
         [self.navigationController pushViewController:next animated:YES];
         return;
     }
-    [self presentActionsForEntry:item];
+    [self previewEntry:item];
+}
+
+#pragma mark - Context menu & swipe actions
+
+- (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
+    contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+    point:(CGPoint)point
+{
+    FFEntry *item = self.filteredEntries[indexPath.row];
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil
+        previewProvider:nil
+        actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+            UIAction *view = [UIAction actionWithTitle:item.isDirectory ? @"Open" : @"View"
+                image:[self symbolImage:@"eye" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) {
+                    if (item.isDirectory) {
+                        FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                        [weakSelf.navigationController pushViewController:next animated:YES];
+                    } else {
+                        [weakSelf previewEntry:item];
+                    }
+                }];
+            UIAction *copy = [UIAction actionWithTitle:@"Copy" image:[self symbolImage:@"doc.on.doc" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
+            UIAction *cut = [UIAction actionWithTitle:@"Cut" image:[self symbolImage:@"scissors" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+            UIAction *rename = [UIAction actionWithTitle:@"Rename" image:[self symbolImage:@"pencil" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
+            UIAction *share = [UIAction actionWithTitle:@"Share" image:[self symbolImage:@"square.and.arrow.up" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf shareEntry:item]; }];
+            UIAction *properties = [UIAction actionWithTitle:@"Properties" image:[self symbolImage:@"info.circle" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf showProperties:item]; }];
+            UIAction *delete = [UIAction actionWithTitle:@"Delete" image:[self symbolImage:@"trash" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
+            delete.attributes = UIMenuElementAttributesDestructive;
+            return [UIMenu menuWithTitle:item.name children:@[view, copy, cut, rename, share, properties, delete]];
+        }];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    FFEntry *item = self.filteredEntries[indexPath.row];
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"Delete" handler:^(__unused UIContextualAction *action, __unused UIView *sourceView,
+            void (^completionHandler)(BOOL)) {
+            [weakSelf deleteEntry:item];
+            completionHandler(YES);
+        }];
+    delete.image = [self symbolImage:@"trash" tint:nil];
+    UIContextualAction *more = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+        title:@"More" handler:^(__unused UIContextualAction *action, __unused UIView *sourceView,
+            void (^completionHandler)(BOOL)) {
+            [weakSelf presentActionsForEntry:item];
+            completionHandler(YES);
+        }];
+    more.image = [self symbolImage:@"ellipsis.circle" tint:nil];
+    UISwipeActionsConfiguration *configuration =
+        [UISwipeActionsConfiguration configurationWithActions:@[delete, more]];
+    configuration.performsFirstActionWithFullSwipe = YES;
+    return configuration;
 }
 
 #pragma mark - Actions
@@ -258,14 +580,26 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         message:item.detail preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"View" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) { [weakSelf viewEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:item.isDirectory ? @"Open" : @"View"
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            if (item.isDirectory) {
+                FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                [weakSelf.navigationController pushViewController:next animated:YES];
+            } else {
+                [weakSelf previewEntry:item];
+            }
+        }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cut" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf renameEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf shareEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Properties" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf showProperties:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) { [weakSelf deleteEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -333,6 +667,69 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return nil;
 }
 
+- (void)createFolder
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"New Folder"
+        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Folder name";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Create" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text;
+            if (![weakSelf validNewName:name]) return;
+            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            NSError *error = nil;
+            if (![[NSFileManager defaultManager] createDirectoryAtPath:path
+                withIntermediateDirectories:NO attributes:nil error:&error])
+                [weakSelf showError:error];
+            [weakSelf reloadEntries];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)createFile
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"New File"
+        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"File name";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Create" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text;
+            if (![weakSelf validNewName:name]) return;
+            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            int fd = open(path.fileSystemRepresentation,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
+            if (fd < 0) {
+                [weakSelf showError:[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
+                        name, strerror(errno)]}]];
+            } else {
+                close(fd);
+            }
+            [weakSelf reloadEntries];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (BOOL)validNewName:(NSString *)name
+{
+    name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (name.length == 0 || [name containsString:@"/"] || [name containsString:@"\0"]) {
+        [self flash:@"Invalid name"];
+        return NO;
+    }
+    return YES;
+}
+
 - (void)renameEntry:(FFEntry *)item
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Rename"
@@ -346,8 +743,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [alert addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
             NSString *newName = alert.textFields.firstObject.text;
-            if (newName.length == 0 || [newName containsString:@"/"]) return;
-            NSString *newPath = [self.currentPath stringByAppendingPathComponent:newName];
+            if (![weakSelf validNewName:newName]) return;
+            NSString *newPath = [weakSelf.currentPath stringByAppendingPathComponent:newName];
             NSError *error = nil;
             if (![[NSFileManager defaultManager] moveItemAtPath:item.path
                 toPath:newPath error:&error])
@@ -374,9 +771,80 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - Viewing
+- (void)shareEntry:(FFEntry *)item
+{
+    NSURL *url = [NSURL fileURLWithPath:item.path];
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[url] applicationActivities:nil];
+    activity.popoverPresentationController.sourceView = self.view;
+    activity.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2,
+        self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:activity animated:YES completion:nil];
+}
 
-- (void)viewEntry:(FFEntry *)item
+- (void)showProperties:(FFEntry *)item
+{
+    [self presentText:item.name body:item.fullDetail ?: item.detail];
+}
+
+#pragma mark - Preview
+
+- (void)previewEntry:(FFEntry *)item
+{
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    static NSSet<NSString *> *images;
+    static NSSet<NSString *> *videos;
+    static NSSet<NSString *> *audios;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        images = [NSSet setWithArray:@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"]];
+        videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"]];
+        audios = [NSSet setWithArray:@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"]];
+    });
+    if ([images containsObject:ext]) {
+        [self previewImage:item];
+        return;
+    }
+    if ([videos containsObject:ext] || [audios containsObject:ext]) {
+        [self previewMedia:item];
+        return;
+    }
+    [self previewData:item];
+}
+
+- (void)previewImage:(FFEntry *)item
+{
+    UIImage *image = [UIImage imageWithContentsOfFile:item.path];
+    if (!image) {
+        [self flash:@"Failed to decode image"];
+        return;
+    }
+    UIViewController *viewer = [UIViewController new];
+    viewer.title = item.name;
+    UIImageView *imageView = [[UIImageView alloc] initWithFrame:viewer.view.bounds];
+    imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+    imageView.backgroundColor = [UIColor systemBackgroundColor];
+    imageView.image = image;
+    imageView.userInteractionEnabled = YES;
+    [viewer.view addSubview:imageView];
+    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
+        action:@selector(shareCurrentItem:)];
+    self.interactionItem = item;
+    [self.navigationController pushViewController:viewer animated:YES];
+}
+
+- (void)previewMedia:(FFEntry *)item
+{
+    NSURL *url = [NSURL fileURLWithPath:item.path];
+    AVPlayerViewController *player = [AVPlayerViewController new];
+    player.player = [AVPlayer playerWithURL:url];
+    [self.navigationController pushViewController:player animated:YES];
+    [player.player play];
+}
+
+- (void)previewData:(FFEntry *)item
 {
     NSData *data = [NSData dataWithContentsOfFile:item.path];
     if (!data) {
@@ -386,8 +854,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     NSString *text = nil;
     NSDictionary *plist = nil;
     if (data.length > 0) {
+        NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
         plist = [NSPropertyListSerialization propertyListWithData:data
-            options:NSPropertyListImmutable format:NULL error:nil];
+            options:NSPropertyListImmutable format:&format error:nil];
         if ([plist isKindOfClass:NSDictionary.class] || [plist isKindOfClass:NSArray.class]) {
             NSError *serializationError = nil;
             NSData *xml = [NSPropertyListSerialization dataWithPropertyList:plist
@@ -397,11 +866,21 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         }
     }
     if (!text) {
-        NSString *candidate = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        NSString *candidate = [self stringFromData:data];
         if (candidate && [self looksTextual:candidate]) text = candidate;
     }
-    if (!text) text = [self hexdump:data maxBytes:4096];
+    if (!text) text = [self hexdump:data maxBytes:data.length <= 1024 * 1024 ? data.length : 1024 * 1024];
     [self presentText:item.name body:text];
+}
+
+- (NSString *)stringFromData:(NSData *)data
+{
+    NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (utf8) return utf8;
+    NSString *utf16 = [[NSString alloc] initWithData:data encoding:NSUTF16StringEncoding];
+    if (utf16) return utf16;
+    NSString *isoLatin1 = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    return isoLatin1;
 }
 
 - (BOOL)looksTextual:(NSString *)candidate
@@ -448,10 +927,30 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UITextView *textView = [[UITextView alloc] initWithFrame:viewer.view.bounds];
     textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     textView.editable = NO;
+    textView.selectable = YES;
     textView.font = [UIFont fontWithName:@"Menlo" size:12];
     textView.text = body;
+    textView.backgroundColor = [UIColor systemBackgroundColor];
     [viewer.view addSubview:textView];
+    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
+        action:@selector(shareCurrentText:)];
+    self.interactionText = body;
     [self.navigationController pushViewController:viewer animated:YES];
+}
+
+- (void)shareCurrentItem:(id)sender
+{
+    if (!self.interactionItem) return;
+    [self shareEntry:self.interactionItem];
+}
+
+- (void)shareCurrentText:(id)sender
+{
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[self.interactionText ?: @""] applicationActivities:nil];
+    activity.popoverPresentationController.sourceView = self.view;
+    [self presentViewController:activity animated:YES completion:nil];
 }
 
 #pragma mark - Helpers

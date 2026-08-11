@@ -1,7 +1,9 @@
 #import "FFAppDelegate.h"
+#import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
 #import "BadQueryProbe.h"
+#import "PosterBoardFeature.h"
 
 @implementation FFAppDelegate
 
@@ -13,6 +15,7 @@
     // bad_query probe runs right after, sharing the same queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [[MCMManager sharedManager] start];
+        PBWallpaperFeatureStart();
         BadQueryProbeRun();
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
@@ -20,11 +23,11 @@
         });
     });
 
-    FFBrowserViewController *root = [[FFBrowserViewController alloc]
-        initWithPath:MCMVirtualRoot()];
+    FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
     navigation.navigationBar.translucent = NO;
+    navigation.navigationBar.prefersLargeTitles = YES;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = navigation;
