@@ -213,8 +213,8 @@ push 到任意分支后 GitHub Actions 都会自动构建并上传：
 https://github.com/fucknima/FuckFile/actions
 ```
 
-artifact 按分支命名（如 `FuckFile-unsigned-ipa-main`、`FuckFile-unsigned-ipa-codex-gestalt-export`），
-下载 `FuckFile.ipa` 后自行重签（爱思助手 / zsign / TrollStore）。
+每个 run 的 artifact 都叫 `FuckFile-unsigned-ipa`（按 run 隔离，不会冲突），
+在 Actions 页面按分支/时间选择对应 run，下载 `FuckFile.ipa` 后自行重签（爱思助手 / zsign / TrollStore）。
 
 本地构建（需要 macOS + Theos）：
 
