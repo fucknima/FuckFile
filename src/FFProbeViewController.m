@@ -1,5 +1,6 @@
 #import "FFProbeViewController.h"
 #import "BadQueryProbe.h"
+#import "MCMManager.h"
 
 #import <sys/utsname.h>
 
@@ -105,7 +106,9 @@ static NSString *const kProbeHelpText =
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == 2 && [self.report[@"Probes"] isKindOfClass:NSArray.class])
-        return @"点击探针查看完整步骤结果。逃逸成功的路径已链接到 设备存储/[BadQuery] Escaped/。";
+        return @"点击探针查看完整步骤结果。常规探针 0/N 不代表失败：iOS 26.6 上 "
+            @"canonical 路线被拦，实际逃逸走“变体矩阵 + 枚举容器”。"
+            @"逃逸链接在 设备存储/[BadQuery] Escaped/。";
     return nil;
 }
 
@@ -129,7 +132,7 @@ static NSString *const kProbeHelpText =
                     : [NSString stringWithFormat:@"iOS %@", UIDevice.currentDevice.systemVersion];
                 break;
             case 1:
-                cell.textLabel.text = @"报告";
+                cell.textLabel.text = @"逃逸状态";
                 if (!self.report) {
                     cell.detailTextLabel.text = @"尚未运行";
                 } else {
@@ -139,8 +142,38 @@ static NSString *const kProbeHelpText =
                     for (NSDictionary *probe in probes)
                         if ([probe[@"Status"] isKindOfClass:NSString.class] &&
                             [probe[@"Status"] isEqualToString:@"escaped"]) escaped++;
-                    cell.detailTextLabel.text = [NSString stringWithFormat:
-                        @"%lu/%lu 逃逸成功", (unsigned long)escaped, (unsigned long)probes.count];
+                    NSArray *matrix = [self.report[@"VariantMatrix"] isKindOfClass:NSArray.class]
+                        ? self.report[@"VariantMatrix"] : @[];
+                    NSUInteger tokenOk = 0;
+                    for (NSDictionary *entry in matrix)
+                        if ([entry[@"Status"] isKindOfClass:NSString.class] &&
+                            [entry[@"Status"] isEqualToString:@"TOKEN-OK"]) tokenOk++;
+                    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+                    [parts addObject:[NSString stringWithFormat:
+                        @"常规探针 %lu/%lu（canonical 被拦时正常）",
+                        (unsigned long)escaped, (unsigned long)probes.count]];
+                    [parts addObject:[NSString stringWithFormat:
+                        @"变体矩阵 %lu/%lu 可签 token",
+                        (unsigned long)tokenOk, (unsigned long)matrix.count]];
+                    NSString *escapedRoot = [MCMVirtualRoot()
+                        stringByAppendingPathComponent:@"[BadQuery] Escaped"];
+                    NSDictionary *summary = [NSDictionary dictionaryWithContentsOfFile:
+                        [escapedRoot stringByAppendingPathComponent:@"Enumerate Results.plist"]];
+                    NSArray *results = [summary[@"Results"] isKindOfClass:NSArray.class]
+                        ? summary[@"Results"] : @[];
+                    NSMutableArray<NSString *> *counts = [NSMutableArray array];
+                    for (NSDictionary *result in results) {
+                        NSNumber *count = [result[@"Count"] isKindOfClass:NSNumber.class]
+                            ? result[@"Count"] : nil;
+                        if (count && count.unsignedIntegerValue > 0)
+                            [counts addObject:[NSString stringWithFormat:@"%@ %@",
+                                result[@"Name"] ?: @"?", count]];
+                    }
+                    if (counts.count) {
+                        [parts addObject:[NSString stringWithFormat:@"容器枚举：%@",
+                            [counts componentsJoinedByString:@"、"]]];
+                    }
+                    cell.detailTextLabel.text = [parts componentsJoinedByString:@"\n"];
                 }
                 break;
             case 2:
