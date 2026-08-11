@@ -246,7 +246,7 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         for (NSString *target in targets) {
             NSString *detail = nil;
             FFLogTag(@"MCM", @"gestalt bad_query consume begin target=%@", target);
-            int64_t handle = BadQueryConsumePath(target, nil, NO, &detail);
+            int64_t handle = BadQueryConsumePathForOpen(target, &detail);
             if (handle >= 0) {
                 gBadQueryGestaltHandle = handle;
                 FFLogTag(@"MCM", @"gestalt bad_query consume OK handle=%lld target=%@",

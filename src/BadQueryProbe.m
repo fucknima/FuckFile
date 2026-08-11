@@ -722,14 +722,9 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
     free(pathBuffer);
     free(groupBuffer);
     if (handle >= 0) {
-        if (BadQueryPathAccessible(path) || groupIdentifier || isGroup) {
-            FFLogTag(@"BadQueryProbe", @"consume OK canonical path=%@ handle=%lld",
-                path, handle);
-            return handle;
-        }
-        FFLogTag(@"BadQueryProbe",
-            @"consume OK canonical but NOT accessible path=%@ handle=%lld; trying matrix",
+        FFLogTag(@"BadQueryProbe", @"consume OK canonical path=%@ handle=%lld",
             path, handle);
+        return handle;
     }
 
     // iOS 26.6 fallback: the canonical flags issue no token, but the variant
@@ -767,39 +762,96 @@ int64_t BadQueryConsumePath(NSString *path, NSString *groupIdentifier,
                 [combo[@"Part"] unsignedLongLongValue],
                 [combo[@"Traversal"] boolValue]);
             if (matrixHandle >= 0) {
-                if (BadQueryPathAccessible(path)) {
-                    FFLogTag(@"BadQueryProbe",
-                        @"consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
-                        path, combo[@"Group"],
-                        [combo[@"Flags"] unsignedLongLongValue],
-                        combo[@"Part"], combo[@"Traversal"], matrixHandle);
-                    return matrixHandle;
-                }
                 FFLogTag(@"BadQueryProbe",
-                    @"consume OK matrix but NOT accessible path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld; keep trying",
+                    @"consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
                     path, combo[@"Group"],
                     [combo[@"Flags"] unsignedLongLongValue],
                     combo[@"Part"], combo[@"Traversal"], matrixHandle);
-                handle = -1;
-                continue;
+                return matrixHandle;
             }
+        }
+    }
+    if (error)
+        *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
+            handle, BadQueryCodeText(handle)];
+    return handle;
+}
+
+static NSArray<NSDictionary *> *BadQueryMatrixCombos(void)
+{
+    static NSArray<NSDictionary *> *combos;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray<NSString *> *groups = @[
+            @"systemgroup.com.apple.mobilegestaltcache",
+            @"systemgroup.com.apple.lsd.iconscache",
+            @"systemgroup.com.apple.configurationprofiles",
+            @"systemgroup.com.apple.installcoordinationd",
+        ];
+        NSArray<NSNumber *> *flags = @[
+            @(0x900000000ULL),
+            @(0x800000000ULL),
+            @(0x8100000000ULL),
+            @(0x080000000ULL),
+        ];
+        NSArray<NSNumber *> *parts = @[@0, @3];
+        NSMutableArray *all = [NSMutableArray array];
+        for (NSString *group in groups)
+            for (NSNumber *flag in flags)
+                for (NSNumber *part in parts)
+                    for (NSNumber *traversal in @[@YES, @NO])
+                        [all addObject:@{@"Group": group, @"Flags": flag,
+                                         @"Part": part, @"Traversal": traversal}];
+        combos = all;
+    });
+    return combos;
+}
+
+int64_t BadQueryConsumePathForOpen(NSString *path, NSString **error)
+{
+    if (!path.length || ![path hasPrefix:@"/"]) {
+        if (error) *error = @"path must be absolute";
+        return -255;
+    }
+    char *pathBuffer = strdup(path.UTF8String);
+    if (!pathBuffer) {
+        if (error) *error = @"out of memory";
+        return -255;
+    }
+    int64_t handle = bad_query(pathBuffer, false, NULL, false);
+    free(pathBuffer);
+    if (handle >= 0 && BadQueryPathAccessible(path)) {
+        FFLogTag(@"BadQueryProbe", @"open-consume OK canonical path=%@ handle=%lld",
+            path, handle);
+        return handle;
+    }
+    if (handle >= 0) {
+        FFLogTag(@"BadQueryProbe",
+            @"open-consume canonical handle not openable path=%@ handle=%lld; trying matrix",
+            path, handle);
+    }
+    for (NSDictionary *combo in BadQueryMatrixCombos()) {
+        int64_t matrixHandle = BadQueryConsumeCombo(path, combo[@"Group"],
+            [combo[@"Flags"] unsignedLongLongValue],
+            [combo[@"Part"] unsignedLongLongValue],
+            [combo[@"Traversal"] boolValue]);
+        if (matrixHandle < 0) continue;
+        if (BadQueryPathAccessible(path)) {
             FFLogTag(@"BadQueryProbe",
-                @"consume FAIL matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ code=%lld",
+                @"open-consume OK matrix path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld",
                 path, combo[@"Group"],
                 [combo[@"Flags"] unsignedLongLongValue],
                 combo[@"Part"], combo[@"Traversal"], matrixHandle);
-            handle = matrixHandle;
+            return matrixHandle;
         }
+        FFLogTag(@"BadQueryProbe",
+            @"open-consume matrix handle not openable path=%@ group=%@ flags=0x%llx part=%@ traversal=%@ handle=%lld; keep trying",
+            path, combo[@"Group"],
+            [combo[@"Flags"] unsignedLongLongValue],
+            combo[@"Part"], combo[@"Traversal"], matrixHandle);
     }
-    if (error) {
-        if (handle == -1) {
-            *error = @"all token-issuing matrix combos consumed, but none granted access to the path";
-        } else {
-            *error = [NSString stringWithFormat:@"bad_query failed (code=%lld: %@)",
-                handle, BadQueryCodeText(handle)];
-        }
-    }
-    return handle;
+    if (error) *error = @"no matrix combo granted open access to the path";
+    return -1;
 }
 
 void BadQueryReleaseHandle(int64_t handle)
