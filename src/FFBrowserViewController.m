@@ -208,7 +208,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             }
             if (!cached) {
                 NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(varPath, nil, NO, &error);
+                int64_t handle = BadQueryConsumePathForOpen(varPath, &error);
                 FFLogTag(@"Browser", @"escaped reconnect direct=%@ path=%@ handle=%lld error=%@",
                     varPath, self.currentPath, handle, error ?: @"(nil)");
                 if (handle >= 0) {
@@ -263,7 +263,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             // (failure is not cached) and try once more before showing the
             // error alert.
             NSString *error = nil;
-            int64_t retryHandle = BadQueryConsumePath(varPath, nil, NO, &error);
+            int64_t retryHandle = BadQueryConsumePathForOpen(varPath, &error);
             FFLogTag(@"Browser", @"escaped retry direct=%@ handle=%lld error=%@",
                 varPath, retryHandle, error ?: @"(nil)");
             loaded = [self loadDirectoryContents];

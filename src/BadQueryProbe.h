@@ -29,6 +29,14 @@ FOUNDATION_EXPORT int64_t BadQueryConsumePath(NSString *path,
                                                BOOL isGroup,
                                                NSString * _Nullable * _Nullable error);
 
+// Like BadQueryConsumePath, but only accepts a handle after access()/open()
+// on the target path actually succeeds. Use this when the caller needs to
+// opendir/open the path directly (e.g. the browser opening a real directory
+// such as the MobileGestalt Caches folder). Keeps trying matrix combos until
+// one grants real access; returns < 0 and sets *error when none does.
+FOUNDATION_EXPORT int64_t BadQueryConsumePathForOpen(NSString *path,
+                                                      NSString * _Nullable * _Nullable error);
+
 // Releases a handle returned by BadQueryConsumePath / bad_query().
 FOUNDATION_EXPORT void BadQueryReleaseHandle(int64_t handle);
 
