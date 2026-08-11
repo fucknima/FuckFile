@@ -1731,12 +1731,17 @@ static NSMutableDictionary *runCmgProbe(void)
     void (*query_free)(void *) = dlsym(mgr, "container_query_free");
     char *(*object_get_sandbox_token)(void *) = dlsym(mgr, "container_object_get_sandbox_token");
     BOOL (*object_activate)(void *, BOOL) = (BOOL (*)(void *, BOOL))dlsym(mgr, "container_object_sandbox_extension_activate");
+    void *(*object_copy)(void *) = dlsym(mgr, "container_object_copy");
     void (*object_free)(void *) = dlsym(mgr, "container_object_free");
+    char *(*copy_sandbox_token)(void *) = dlsym(mgr, "container_copy_sandbox_token");
+    int64_t (*consume_extension)(const char *) =
+        (int64_t (*)(const char *))dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
     const char *(*object_get_path)(void *) = dlsym(mgr, "container_object_get_path");
     if (!query_create || !query_set_class || !query_set_transient ||
         !query_set_group_identifiers || !query_set_platform || !query_set_flags ||
         !query_set_part || !query_get_single_result || !query_free ||
-        !object_get_sandbox_token || !object_activate || !object_free || !object_get_path) {
+        !object_get_sandbox_token || !object_copy || !copy_sandbox_token ||
+        !consume_extension || !object_free || !object_get_path) {
         dlclose(mgr);
         result[@"Status"] = @"failed";
         result[@"Stage"] = @"dlsym";
@@ -1799,7 +1804,24 @@ static NSMutableDictionary *runCmgProbe(void)
             entry[@"Token"] = dup ? [NSString stringWithUTF8String:dup] : nil;
             if (dup) free(dup);
         }
-        BOOL activated = object_activate(res, true);
+        // container_object_sandbox_extension_activate(res, true) CRASHES on
+        // iOS 26.6 (os_map_str_find on NULL) — it expects an object copied
+        // via container_object_copy. Use the proven MCM chain instead:
+        // copy -> copy_sandbox_token -> sandbox_extension_consume. The
+        // mond query parameters (platform/transient/flags/part) are what
+        // matter; the activation style is interchangeable.
+        void *activation = object_copy(res);
+        BOOL activated = NO;
+        if (activation) {
+            char *copyToken = copy_sandbox_token(activation);
+            if (copyToken) {
+                int64_t handle = consume_extension(copyToken);
+                free(copyToken);
+                activated = handle >= 0;
+                entry[@"Handle"] = @(handle);
+            }
+            object_free(activation);
+        }
         entry[@"Activated"] = @(activated);
         logStep(activated, @"cmg activate",
             [NSString stringWithFormat:@"%@ -> %@", variant[@"Name"], activated ? @"YES" : @"NO"]);
