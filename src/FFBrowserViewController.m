@@ -30,6 +30,7 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 
 @interface FFEntry : NSObject
 @property(nonatomic, copy) NSString *name;
+@property(nonatomic, copy) NSString *displayName;
 @property(nonatomic, copy) NSString *path;
 @property(nonatomic) BOOL isDirectory;
 @property(nonatomic) BOOL isSymlink;
@@ -401,6 +402,17 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             item.isDirectory = S_ISDIR(status.st_mode);
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
         }
+        // Resolve container UUIDs to their bundle identifier via the MCM
+        // metadata plist so directories show app names, not UUIDs.
+        item.displayName = item.name;
+        if (!item.isSymlink && item.isDirectory) {
+            NSString *metadataPath = [path stringByAppendingPathComponent:
+                @".com.apple.mobile_container_manager.metadata.plist"];
+            NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+            NSString *identifier = [metadata[@"MCMMetadataIdentifier"]
+                isKindOfClass:NSString.class] ? metadata[@"MCMMetadataIdentifier"] : nil;
+            if (identifier.length) item.displayName = identifier;
+        }
         [result addObject:item];
     }
     closedir(directory);
@@ -577,7 +589,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     }
     FFEntry *item = self.filteredEntries[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = item.name;
+    config.text = item.displayName.length ? item.displayName : item.name;
     config.textProperties.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
     config.secondaryText = item.detail;
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
@@ -669,6 +681,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     FFEntry *item = self.filteredEntries[indexPath.row];
     if (item.isDirectory) {
         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+        next.title = item.displayName.length ? item.displayName : item.name;
         [self.navigationController pushViewController:next animated:YES];
         return;
     }
@@ -691,6 +704,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
                 identifier:nil handler:^(__unused UIAction *action) {
                     if (item.isDirectory) {
                         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                        next.title = item.displayName.length ? item.displayName : item.name;
                         [weakSelf.navigationController pushViewController:next animated:YES];
                     } else {
                         [weakSelf previewEntry:item];
@@ -751,6 +765,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
         handler:^(__unused UIAlertAction *action) {
             if (item.isDirectory) {
                 FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                next.title = item.displayName.length ? item.displayName : item.name;
                 [weakSelf.navigationController pushViewController:next animated:YES];
             } else {
                 [weakSelf previewEntry:item];
