@@ -19,6 +19,13 @@ static const uint64_t kMCMFlags = 0x900000000ULL;
 static const uint64_t kMCMReadWritePartFlags = 0x8100000000ULL;
 static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArrest";
 
+// Private LaunchServices API used only for installed-app discovery.
+@interface NSObject (MCMLaunchServices)
++ (id)defaultWorkspace;
+- (NSArray *)allApplications;
+- (NSString *)applicationIdentifier;
+@end
+
 static NSString *const kMCMAppDataDirectoryName = @"[MHA-C2] App Data";
 static NSString *const kMCMAppGroupsDirectoryName = @"[MHA-C7] App Groups";
 static NSString *const kMCMExtensionDataDirectoryName = @"[MHA-C4] Extension Data";
