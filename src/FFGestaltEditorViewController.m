@@ -86,8 +86,12 @@
     ];
     for (NSDictionary *definition in definitions) {
         NSArray *onValues = definition[@"OnValues"] ?: @[];
-        if (onValues.count == 0)
-            onValues = [definition[@"Keys"] mapUsingBlock:^(id key) { return @1; }];
+        if (onValues.count == 0) {
+            NSMutableArray *defaultOnValues = [NSMutableArray array];
+            for (NSUInteger i = 0; i < [definition[@"Keys"] count]; i++)
+                [defaultOnValues addObject:@1];
+            onValues = defaultOnValues;
+        }
         [features addObject:[FFFeature featureWithTitle:definition[@"Title"]
             info:definition[@"Info"] ?: @"" keys:definition[@"Keys"]
             onValues:onValues destructive:NO]];
@@ -591,13 +595,4 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-@end
-
-@implementation NSArray (FFMap)
-- (NSArray *)mapUsingBlock:(id (^)(id))block
-{
-    NSMutableArray *result = [NSMutableArray arrayWithCapacity:self.count];
-    for (id object in self) [result addObject:block(object)];
-    return result;
-}
 @end
