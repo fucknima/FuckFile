@@ -7,6 +7,7 @@
 #import "FFZipExtract.h"
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
+#import "FFPdfPreviewViewController.h"
 
 #import <AVKit/AVKit.h>
 #import <CommonCrypto/CommonDigest.h>
@@ -1494,6 +1495,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     }
     if ([videos containsObject:ext] || [audios containsObject:ext]) {
         [self previewMedia:item];
+        return;
+    }
+    if ([ext isEqualToString:@"pdf"]) {
+        FFPdfPreviewViewController *viewer =
+            [[FFPdfPreviewViewController alloc] initWithPath:item.path];
+        [self.navigationController pushViewController:viewer animated:YES];
         return;
     }
     [self previewData:item];

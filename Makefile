@@ -19,6 +19,7 @@ FuckFile_FILES = \
 	src/FFZipExtract.m \
 	src/FFTextEditorViewController.m \
 	src/FFPlistEditorViewController.m \
+	src/FFPdfPreviewViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m
@@ -30,7 +31,7 @@ FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
-FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation
+FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit
 FuckFile_LIBRARIES = z
 
 FuckFile_INFOPLIST = Info.plist

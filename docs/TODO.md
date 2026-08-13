@@ -75,12 +75,12 @@
 
 ## P1 文件冲突
 
-- [ ] 文件已存在检测（当前为静默自动重命名 " copy"）
-- [ ] Replace
-- [ ] Skip
-- [ ] Keep Both
-- [ ] Apply to All
-- [ ] 自动生成新文件名（已有基础实现，需接入冲突弹窗）
+- [x] 文件已存在检测
+- [x] Replace
+- [x] Skip
+- [x] Keep Both（自动重命名）
+- [x] Apply to All（全部替换 / 全部跳过）
+- [x] 自动生成新文件名（" name copy" / " copy 2" …）
 
 ## P1 文件任务
 
