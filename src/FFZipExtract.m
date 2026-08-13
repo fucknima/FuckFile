@@ -213,7 +213,6 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         int output = open(destination.fileSystemRepresentation,
             O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         uLong fileCrc = crc32(0L, Z_NULL, 0);
-        unsigned long long fileBytes = 0;
         if (output < 0) {
             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
                 NSLocalizedDescriptionKey: [NSString stringWithFormat:
@@ -243,7 +242,6 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                 dataOffset += (off_t)chunk;
                 remaining -= (uint32_t)chunk;
                 fileCrc = crc32(fileCrc, buffer, (uInt)chunk);
-                fileBytes += chunk;
             }
         } else {
             z_stream stream = {0};
@@ -281,7 +279,6 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                     size_t produced = sizeof(outputBuffer) - stream.avail_out;
                     if (produced > 0) {
                         fileCrc = crc32(fileCrc, outputBuffer, (uInt)produced);
-                        fileBytes += produced;
                         ssize_t written = write(output, outputBuffer, produced);
                         if (written != (ssize_t)produced) {
                             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
