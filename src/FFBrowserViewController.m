@@ -271,12 +271,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
     UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithTitle:@"剪切"
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCut)];
+    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
         style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
     UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithTitle:@"删除"
         style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
     trash.tintColor = [UIColor systemRedColor];
-    return @[selectAll, copy, cut, share, trash];
+    return @[selectAll, copy, cut, zip, share, trash];
 }
 
 - (NSArray<FFEntry *> *)selectedBatchEntries
@@ -321,6 +323,52 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self flash:[NSString stringWithFormat:@"%@ %lu 个项目",
         mode == FFClipboardModeCopy ? @"已复制" : @"已剪切", (unsigned long)items.count]];
     [self setEditing:NO animated:YES];
+}
+
+- (void)batchCompress
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    [self setEditing:NO animated:YES];
+    [self compressEntries:items];
+}
+
+- (void)compressEntries:(NSArray<FFEntry *> *)items
+{
+    NSString *defaultName = items.count == 1
+        ? [NSString stringWithFormat:@"%@.zip", items.firstObject.name]
+        : @"归档.zip";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"压缩"
+        message:[NSString stringWithFormat:@"%lu 个项目，压缩到当前目录",
+            (unsigned long)items.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = defaultName;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"压缩" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text ?: defaultName;
+            if (![weakSelf validNewName:name]) return;
+            if (![name.pathExtension.lowercaseString isEqualToString:@"zip"])
+                name = [name stringByAppendingPathExtension:@"zip"];
+            NSString *destination = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+            for (FFEntry *item in items) [paths addObject:item.path];
+            FFFileTask *task = [FFFileTask new];
+            task.kind = FFFileTaskKindCompress;
+            task.displayName = [NSString stringWithFormat:@"压缩 %@", name];
+            task.sources = paths;
+            task.destination = destination;
+            [[FFFileTaskManager sharedManager] enqueueTask:task];
+            [weakSelf flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)batchShare
@@ -968,6 +1016,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                 [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
                 image:[self symbolImage:@"star" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleFavorite:item]; }];
+            UIAction *compress = [UIAction actionWithTitle:@"压缩" image:[self symbolImage:@"shippingbox" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf compressEntries:@[item]]; }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
             UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
@@ -980,7 +1030,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
             NSMutableArray *children = [NSMutableArray arrayWithArray:
-                @[view, copy, cut, duplicate, favorite, rename, copyPath, share, properties, delete]];
+                @[view, copy, cut, duplicate, favorite, compress, rename, copyPath, share, properties, delete]];
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
@@ -1042,6 +1092,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
         style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf toggleFavorite:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"压缩" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf compressEntries:@[item]]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"剪切" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault

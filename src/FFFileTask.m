@@ -30,6 +30,7 @@
         case FFFileTaskKindCopy: return @"复制";
         case FFFileTaskKindMove: return @"移动";
         case FFFileTaskKindExtract: return @"解压";
+        case FFFileTaskKindCompress: return @"压缩";
     }
     return @"";
 }

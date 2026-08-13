@@ -1,6 +1,7 @@
 #import "FFFileTaskManager.h"
 #import "FFCopyEngine.h"
 #import "FFZipExtract.h"
+#import "FFZipCreate.h"
 #import "FFLogger.h"
 
 #import <errno.h>
@@ -105,6 +106,9 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             break;
         case FFFileTaskKindExtract:
             ok = [self executeExtractTask:task];
+            break;
+        case FFFileTaskKindCompress:
+            ok = [self executeCompressTask:task];
             break;
     }
 
@@ -234,6 +238,28 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         &error);
     if (ok) {
         task.succeededCount = entries.count;
+        task.progress = 1.0;
+    } else if (!task.cancelled) {
+        task.failedCount = 1;
+        task.error = error;
+    }
+    return ok;
+}
+
+- (BOOL)executeCompressTask:(FFFileTask *)task
+{
+    __weak FFFileTask *weakTask = task;
+    NSError *error = nil;
+    BOOL ok = FFCreateZipArchive(task.sources, task.destination,
+        ^(double progress, NSString *entryName) {
+            weakTask.progress = progress;
+            weakTask.detailName = entryName;
+            [self notifyChange];
+        },
+        ^BOOL { return weakTask.cancelled; },
+        &error);
+    if (ok) {
+        task.succeededCount = 1;
         task.progress = 1.0;
     } else if (!task.cancelled) {
         task.failedCount = 1;

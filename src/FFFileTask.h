@@ -6,6 +6,7 @@ typedef NS_ENUM(NSInteger, FFFileTaskKind) {
     FFFileTaskKindCopy = 0,
     FFFileTaskKindMove,
     FFFileTaskKindExtract,
+    FFFileTaskKindCompress,
 };
 
 typedef NS_ENUM(NSInteger, FFFileTaskState) {

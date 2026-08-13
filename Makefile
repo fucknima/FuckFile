@@ -17,6 +17,7 @@ FuckFile_FILES = \
 	src/FFCopyEngine.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
+	src/FFZipCreate.m \
 	src/FFTextEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
