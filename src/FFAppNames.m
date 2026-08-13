@@ -8,6 +8,11 @@
 - (NSString *)localizedName;
 @end
 
+// LaunchServices store display names (bundle id -> localized name).
+// Populated by MCMManager from the com.apple.lsd container; the only
+// source covering third-party app names on iOS 26.
+static NSMutableDictionary<NSString *, NSString *> *FFStoreNames(void);
+
 static NSDictionary<NSString *, NSString *> *FFKnownAppNames(void)
 {
     static NSDictionary<NSString *, NSString *> *map;
