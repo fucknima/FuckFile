@@ -17,16 +17,16 @@ jobs:
         run: |
           sudo mkdir -p /opt/theos
           sudo chown "$(whoami)" /opt/theos
-          # Pinned to a specific commit; recursive clone pins the ldid
-          # submodule to the same revision so tooling never drifts.
+          # Pinned to a specific commit so tooling never drifts.
           git clone --recursive https://github.com/theos/theos.git /opt/theos
           cd /opt/theos
           git checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
           git submodule update --init --recursive
-          # Build the pinned ldid and expose it on PATH (theos signs with
-          # whatever 'ldid' resolves to).
-          make -C /opt/theos/vendor/ldid
-          sudo ln -sf /opt/theos/vendor/ldid/ldid /usr/local/bin/ldid
+          # Pin ldid to a fixed release instead of brewing the latest.
+          curl -fL -o /tmp/ldid \
+            https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_macosx_arm64
+          chmod +x /tmp/ldid
+          sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
       - name: Build
