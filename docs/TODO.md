@@ -11,10 +11,17 @@
 > 文档中的 Swift 命名（FileItem 等）对应实现见 ARCHITECTURE.md「当前实现映射」。
 >
 > **范围收敛（2026-08-13）**：产品聚焦 App Data 读取。除 class-2
-> （App Data）外的所有容器类别（App Groups / Service / System /
-> VPN / Extension / Protected / Experimental）已从 MCM start 移除，
-> 浏览器只展示 App 数据（含 FuckFile 自身沙盒）。其余 TODO 组按
-> 原规划保留，但不再按「读取类别」推进。
+> （App Data）外的所有容器类别已从 MCM start 移除，浏览器只展示
+> App 数据（含 FuckFile 自身沙盒）。
+>
+> **UI/交互改造（2026-08-13）**：
+> - 多选逻辑修复（点击仅切换选中）、列表精简（图标/名称/大小/时间）
+> - 首页重设计（App 数据主入口 + 快捷访问 + 设置）、导航栏「更多」菜单
+> - 粘贴横幅、冲突底部 sheet（应用于后续）、空/加载/错误状态视图
+> - 搜索/收藏/最近直达预览或目录、文件不可用处理
+> - 任务中心：速度/ETA/失败原因/左滑重试
+> - 待办：文本编辑器未保存提示、大文件分段预览、plist 深层安全、
+>   列表/网格切换、设置页完善、Dynamic Type/iPad
 
 ## P0 架构初始化
 
