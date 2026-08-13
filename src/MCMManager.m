@@ -8,7 +8,6 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
-#import "FFAppNames.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -714,17 +713,6 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         // App Group candidates from the same store (extracted now;
         // confirmed below once the group identifier set exists).
         groupCandidates = FFLSDiscoverGroupIdentifiers(lsdContainer, 65536);
-
-        // Extract bundle-id -> display-name pairs from the same store and
-        // register them for the app-name resolution chain (this is the
-        // only source covering third-party apps on iOS 26).
-        NSDictionary<NSString *, NSString *> *storeNames =
-            FFLSDiscoverAppNames(lsdContainer, 20000);
-        if (storeNames.count) {
-            FFAppNamesRegisterStoreNames(storeNames);
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
-        }
     }
 
     NSMutableOrderedSet *groupIdentifiers =

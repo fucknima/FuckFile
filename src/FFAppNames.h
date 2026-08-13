@@ -12,11 +12,6 @@ NSString *FFAppDisplayName(NSString *identifier);
 // when the container has no readable metadata.
 NSString * _Nullable FFAppContainerItemName(NSString *containerPath);
 
-// Registers a bundle-id -> display-name map extracted from the
-// LaunchServices store (see FFLSDiscoverAppNames). Merged into the
-// resolution chain after the static map; thread-safe.
-void FFAppNamesRegisterStoreNames(NSDictionary<NSString *, NSString *> *names);
-
 // YES for 8-4-4-4-12 container UUID directory names (36 chars, dashes).
 BOOL FFIsUUIDShapedName(NSString *name);
 

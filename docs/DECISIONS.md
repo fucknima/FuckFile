@@ -128,3 +128,25 @@ V0.4（压缩与编辑）完成后，跳过 V0.5（网络文件：SMB/WebDAV/SFT
   无需新依赖，能保持"稳定性 > 数据安全 > 功能数量"的节奏。
 
 网络功能待 StorageProvider 抽象与协议库方案确定后重新排期。
+
+## ADR-009
+
+日期：2026-08-13
+
+决定：
+
+回退 9507bca（「App names: extract third-party display names from the LS csstore」），
+移除 FFLSDiscoverAppNames 与 FFAppNamesRegisterStoreNames 整条链路。
+
+原因：
+
+- 该实现直接对 com.apple.LaunchServices-*-v2.csstore 二进制做字节扫描，
+  在每个 bundle id 后的 256 字节窗口内取"第一个看起来像名字"的字节串作为显示名。
+- csstore 中 id 之后是二进制偏移/长度表，抓到的多为无关字节片段，
+  导致 App Data 列表中大量显示名变成乱码（如 `R%b`、
+  `(UNDaemonShouldReceiveBackgroundResponses^UNHideSettings_`、
+  `!"#$%$$2$$+_`、`!QdQfQcS1.6`），且配对本身不可靠（英文单词同样可能配错）。
+- 日志佐证：`name extraction complete entries=18583`，19k 条"名字"几乎全是噪声，
+  说明启发式过滤（FFLSPlausibleName）基本无效。
+- 显示名解析链恢复为：静态映射 → LSApplicationWorkspace → iTunesMetadata
+  itemName → bundle id 兜底。第三方应用名待后续用正式 API 方案再补。
