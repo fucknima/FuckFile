@@ -84,7 +84,7 @@
     if (!self.pdfView.documentView) return;
     PDFThumbnailView *thumbnail = [PDFThumbnailView new];
     thumbnail.translatesAutoresizingMaskIntoConstraints = NO;
-    thumbnail.pdfView = self.pdfView;
+    thumbnail.PDFView = self.pdfView;
     thumbnail.thumbnailSize = CGSizeMake(72, 96);
     thumbnail.layoutMode = PDFThumbnailLayoutModeVertical;
     thumbnail.backgroundColor = [UIColor systemGroupedBackgroundColor];
