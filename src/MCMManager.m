@@ -588,6 +588,7 @@ static NSDictionary *MCMCustomIdentifiers(void)
     if (!lsdContainer.length) {
         FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
                  lsdError ?: @"(nil)");
+        [self finishScan];
     } else {
         NSArray<NSString *> *candidates =
             FFLSDiscoverInstalledIdentifiers(lsdContainer, 65536);
@@ -620,8 +621,6 @@ static NSDictionary *MCMCustomIdentifiers(void)
             [self postScanProgress:1.0 linked:confirmed total:total scanning:NO];
             [self finishScan];
         });
-    } else {
-        [self finishScan];
     }
 
     [self writeAccessMap:root];
