@@ -116,20 +116,31 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         MCMLease *lease = [MCMLease leaseForClass:containerClass identifier:identifier
             group:group part:0 flags:kMCMFlags error:&detail];
         BOOL activated = lease && [lease activate:&detail];
-        if (!lease || !activated) {
-            [lease invalidate];
+        if (!lease) {
             if (error) *error = detail ?: @"MCM activation failed";
             return nil;
         }
+        // iOS 26 containermanagerd lacks genericExtensionsAllowedForAll: it
+        // refuses sandbox tokens for callers outside the per-class allowed
+        // set, but the returned container path can still be valid. Try
+        // opening it before giving up on an activation failure.
         int descriptor = open(lease.rootPath.fileSystemRepresentation,
                               O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (descriptor < 0) {
+            if (!activated) {
+                if (error) *error = detail ?: @"MCM activation failed";
+                [lease invalidate];
+                return nil;
+            }
             if (error) *error = [NSString stringWithFormat:
                 @"container root open failed errno=%d", errno];
             [lease invalidate];
             return nil;
         }
         close(descriptor);
+        if (!activated)
+            FFLogTag(@"MCM", @"activation token-less but path opens class=%llu id=%@ root=%@",
+                     containerClass, identifier, lease.rootPath);
         _leases[MCMKey(containerClass, identifier)] = lease;
         return lease.rootPath;
     }
@@ -155,25 +166,33 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         containerClass, identifier, part, partDomain ?: @"", flags];
     @synchronized (_leases) {
         MCMLease *existing = _leases[key];
-        if (existing && existing.activated) return existing.rootPath;
+        if (existing && existing.rootPath.length) return existing.rootPath;
         NSString *detail = nil;
         MCMLease *lease = [MCMLease leaseForClass:containerClass
             identifier:identifier group:group part:part partDomain:partDomain
             flags:flags error:&detail];
-        if (!lease || ![lease activate:&detail]) {
-            [lease invalidate];
+        BOOL activated = lease && [lease activate:&detail];
+        if (!lease) {
             if (error) *error = detail ?: @"scoped MCM activation failed";
             return nil;
         }
         int descriptor = open(lease.rootPath.fileSystemRepresentation,
                               O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (descriptor < 0) {
+            if (!activated) {
+                if (error) *error = detail ?: @"scoped MCM activation failed";
+                [lease invalidate];
+                return nil;
+            }
             if (error) *error = [NSString stringWithFormat:
                 @"scoped directory open failed errno=%d", errno];
             [lease invalidate];
             return nil;
         }
         close(descriptor);
+        if (!activated)
+            FFLogTag(@"MCM", @"scoped activation token-less but path opens class=%llu id=%@ part=%llu root=%@",
+                     containerClass, identifier, part, lease.rootPath);
         _leases[key] = lease;
         return lease.rootPath;
     }
