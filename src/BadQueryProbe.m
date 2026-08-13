@@ -2230,7 +2230,13 @@ NSDictionary *BadQueryReconnectEscapedRoots(void)
 
 NSArray<NSDictionary *> *BadQueryEscapedIndexEntries(NSString *folderName)
 {
-    if (!BadQuerySafeLinkName(folderName)) return @[];
+    // folderName is an internal constant ("App Data", "App Groups", …) so
+    // only guard against traversal, not the symlink-name character set
+    // (which rejected the space in "App Data" and silently disabled the
+    // App Data union).
+    if (folderName.length == 0 || [folderName containsString:@"/"] ||
+        [folderName containsString:@".."])
+        return @[];
     NSString *indexPath = [[BadQueryEscapedRoot()
         stringByAppendingPathComponent:folderName]
         stringByAppendingPathComponent:@"INDEX.plist"];

@@ -769,8 +769,8 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         [self recordLink:apps identifier:identifier target:target];
         unionLinks++;
     }
-    if (unionLinks)
-        FFLogTag(@"MCM", @"bad_query union links added=%lu", (unsigned long)unionLinks);
+    FFLogTag(@"MCM", @"bad_query union index=%lu links added=%lu",
+             (unsigned long)escapedIndex.count, (unsigned long)unionLinks);
 
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},
