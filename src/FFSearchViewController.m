@@ -89,7 +89,7 @@
     FFLogTag(@"Search", @"begin query=%@ root=%@", query, MCMVirtualRoot());
 
     __weak typeof(self) weakSelf = self;
-    NSString *searchRoot = MCMVirtualRoot();
+    NSString *searchRoot = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
     [[FFSearchService sharedService] startSearch:query
         underRoot:searchRoot
         batch:^(NSArray<FFFoundItem *> *batch) {

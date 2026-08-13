@@ -523,10 +523,12 @@ static NSDictionary *MCMCustomIdentifiers(void)
     [fm createDirectoryAtPath:root withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-    // Scope: App Data only, linked directly into our own container root
-    // so app links live next to the log file. All other container
+    // Scope: App Data only. Links live in an "App Data" folder next to
+    // the log file inside our own container root. All other container
     // classes are intentionally not probed anymore.
-    NSString *apps = root;
+    NSString *apps = [root stringByAppendingPathComponent:@"App Data"];
+    [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions: @0700} error:nil];
     [self removeLegacyDirectoriesUnder:root];
 
     NSMutableOrderedSet *appIdentifiers =

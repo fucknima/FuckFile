@@ -69,15 +69,9 @@
 - (void)reloadStatus
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *root = MCMVirtualRoot();
+        NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
         NSFileManager *manager = NSFileManager.defaultManager;
-        NSUInteger links = 0;
-        for (NSString *name in [manager contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
-            NSString *path = [root stringByAppendingPathComponent:name];
-            BOOL isDirectory = NO;
-            if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory)
-                links++;
-        }
+        NSUInteger links = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.categoryCount = 1;
             self.linkCount = links;
@@ -194,8 +188,8 @@
     switch (indexPath.section) {
         case 0:
             if (indexPath.row == 0) {
-                // App links live directly in our container root.
-                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+                NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
+                next = [[FFBrowserViewController alloc] initWithPath:appData];
             } else if (indexPath.row == 1) {
                 next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
             } else {
