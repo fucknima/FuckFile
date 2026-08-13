@@ -1,6 +1,8 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
 #import "FFConflictPolicy.h"
+#import "FFFileTask.h"
+#import "FFFileTaskManager.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 #import "FFAppNames.h"
@@ -1067,76 +1069,21 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardSources = nil;
     FFClipboardMode mode = gClipboardMode;
     gClipboardMode = FFClipboardModeNone;
-    [self performCopyOfSources:sources mode:mode];
-}
 
-// Copy/move loop with the conflict system: when a destination already
-// exists the user chooses Replace / Skip / Keep Both / Replace All /
-// Skip All (applied to the rest of the batch). Every decision runs on
-// the main thread; the background thread waits on a semaphore.
-- (void)performCopyOfSources:(NSArray<NSString *> *)sources mode:(FFClipboardMode)mode
-{
+    FFFileTask *task = [FFFileTask new];
+    task.kind = mode == FFClipboardModeCut ? FFFileTaskKindMove : FFFileTaskKindCopy;
+    task.displayName = [NSString stringWithFormat:@"%@ %lu 个项目",
+        task.kindText, (unsigned long)sources.count];
+    task.sources = sources;
+    task.destination = self.currentPath;
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        __block FFConflictAction applyAll = FFConflictActionAsk;
-        NSUInteger failures = 0;
-        NSUInteger skipped = 0;
-        for (NSString *source in sources) {
-            NSString *name = source.lastPathComponent;
-            NSString *destination = [weakSelf.currentPath stringByAppendingPathComponent:name];
-            struct stat existing = {0};
-            BOOL conflict = lstat(destination.fileSystemRepresentation, &existing) == 0;
-            if (conflict) {
-                FFConflictAction action = applyAll != FFConflictActionAsk
-                    ? applyAll
-                    : [weakSelf askConflictForName:name];
-                if (action == FFConflictActionSkip || action == FFConflictActionSkipAll) {
-                    if (action == FFConflictActionSkipAll) applyAll = action;
-                    skipped++;
-                    FFLogTag(@"Browser", @"conflict skip %@", name);
-                    continue;
-                }
-                if (action == FFConflictActionReplaceAll) applyAll = action;
-                if (action == FFConflictActionReplace || action == FFConflictActionReplaceAll) {
-                    NSError *removeError = nil;
-                    if (![[NSFileManager defaultManager] removeItemAtPath:destination
-                                                                     error:&removeError]) {
-                        failures++;
-                        FFLogTag(@"Browser", @"conflict replace failed %@ error=%@",
-                                 name, removeError);
-                        continue;
-                    }
-                } else {
-                    // Keep Both -> auto-renamed sibling.
-                    destination = [weakSelf uniqueDestinationForName:name];
-                    if (!destination) {
-                        failures++;
-                        continue;
-                    }
-                }
-            }
-            NSError *error = nil;
-            BOOL ok = [FFCopyEngine copyItemAtPath:source toPath:destination error:&error];
-            if (ok && mode == FFClipboardModeCut) {
-                NSError *removeError = nil;
-                [[NSFileManager defaultManager] removeItemAtPath:source error:&removeError];
-                if (removeError) ok = NO;
-            }
-            if (!ok) {
-                failures++;
-                FFLogTag(@"Browser", @"paste FAIL source=%@ error=%@", source, error);
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *summary = failures == 0 && skipped == 0 ? @"粘贴完成"
-                : [NSString stringWithFormat:@"粘贴完成：%lu 成功，%lu 跳过，%lu 失败",
-                    (unsigned long)(sources.count - failures - skipped),
-                    (unsigned long)skipped, (unsigned long)failures];
-            [weakSelf flash:summary];
-            [weakSelf reloadEntries];
-            [weakSelf updatePasteState];
-        });
-    });
+    [[FFFileTaskManager sharedManager] setConflictHandler:^FFConflictAction(NSString *name) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        return strongSelf ? [strongSelf askConflictForName:name] : FFConflictActionSkip;
+    }];
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+    [self updatePasteState];
 }
 
 // Blocks the calling (background) thread until the user picks a
@@ -1366,50 +1313,26 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     if (stem.length == 0) stem = @"archive";
     NSString *sibling = [self.currentPath stringByAppendingPathComponent:
         [stem stringByAppendingString:@" (解压)"]];
-    [self flash:@"正在解压…"];
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSError *error = nil;
-        NSArray<NSString *> *entries = nil;
-        NSString *destination = sibling;
-        if (!FFZipExtract(item.path, sibling, &entries, &error)) {
-            // Sandbox-denied destinations fall back to the app's Documents.
-            NSString *documents = NSSearchPathForDirectoriesInDomains(
-                NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *extracted = [[documents stringByAppendingPathComponent:@"Device Storage"]
-                stringByAppendingPathComponent:@"Extracted"];
-            destination = [extracted stringByAppendingPathComponent:
-                [stem stringByAppendingFormat:@"-%@",
-                    [[[NSUUID UUID] UUIDString] substringToIndex:8]]];
-            NSError *fallbackError = nil;
-            if (!FFZipExtract(item.path, destination, &entries, &fallbackError))
-                error = fallbackError;
-            else
-                error = nil;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error) {
-                [weakSelf showError:error];
-                return;
-            }
-            FFLogTag(@"Browser", @"extracted %@ -> %@ (%lu files)", item.path,
-                destination, (unsigned long)(entries ? entries.count : 0));
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"解压完成"
-                message:[NSString stringWithFormat:@"%lu 个文件\n%@",
-                    (unsigned long)(entries ? entries.count : 0), destination]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault
-                handler:^(__unused UIAlertAction *action) {
-                    FFBrowserViewController *next =
-                        [[FFBrowserViewController alloc] initWithPath:destination];
-                    next.title = destination.lastPathComponent;
-                    [weakSelf.navigationController pushViewController:next animated:YES];
-                }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
-            [weakSelf reloadEntries];
-        });
-    });
+    NSString *documents = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *extractedRoot = [[documents stringByAppendingPathComponent:@"Device Storage"]
+        stringByAppendingPathComponent:@"Extracted"];
+    NSString *fallbackDestination = [extractedRoot stringByAppendingPathComponent:
+        [stem stringByAppendingFormat:@"-%@",
+            [[[NSUUID UUID] UUIDString] substringToIndex:8]]];
+
+    FFFileTask *task = [FFFileTask new];
+    task.kind = FFFileTaskKindExtract;
+    task.displayName = [NSString stringWithFormat:@"解压 %@", item.name];
+    task.sources = @[item.path];
+    // Prefer the sibling folder; sandbox-denied destinations fall back
+    // to the app's own Documents on the next attempt (sibling write
+    // failures leave the fallback path stored on the task).
+    task.destination = sibling;
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    FFLogTag(@"Browser", @"extract task queued archive=%@ sibling=%@ fallback=%@",
+             item.path, sibling, fallbackDestination);
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
 }
 
 - (void)showProperties:(FFEntry *)item

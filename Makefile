@@ -21,6 +21,9 @@ FuckFile_FILES = \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
 	src/FFThumbnailService.m \
+	src/FFFileTask.m \
+	src/FFFileTaskManager.m \
+	src/FFTasksViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m

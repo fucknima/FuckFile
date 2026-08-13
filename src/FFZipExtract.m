@@ -39,6 +39,15 @@ static BOOL FFZipEnsureParent(NSString *directory, NSString *relative)
 BOOL FFZipExtract(NSString *archivePath, NSString *destDir,
                   NSArray<NSString *> **entryNames, NSError **error)
 {
+    return FFZipExtractWithProgress(archivePath, destDir, entryNames, nil, nil, error);
+}
+
+BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
+                  NSArray<NSString *> **entryNames,
+                  void (^progressBlock)(double, NSString *),
+                  BOOL (^shouldCancel)(void),
+                  NSError **error)
+{
     if (entryNames) *entryNames = nil;
     int fd = open(archivePath.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -104,8 +113,24 @@ BOOL FFZipExtract(NSString *archivePath, NSString *destDir,
         withIntermediateDirectories:YES attributes:nil error:nil];
     NSMutableArray<NSString *> *entries = [NSMutableArray array];
 
+    // First pass: sum compressed bytes for progress reporting.
+    unsigned long long totalCompressed = 0;
+    {
+        size_t scan = 0;
+        while (scan + 46 <= cdSize) {
+            const uint8_t *record = directory + scan;
+            if (FFZipU32(record) != 0x02014b50) break;
+            totalCompressed += FFZipU32(record + 20);
+            uint16_t nLen = FFZipU16(record + 28);
+            uint16_t eLen = FFZipU16(record + 30);
+            uint16_t cLen = FFZipU16(record + 32);
+            scan += 46 + nLen + eLen + cLen;
+        }
+    }
+
     size_t cursor = 0;
     BOOL ok = YES;
+    unsigned long long extractedCompressed = 0;
     while (cursor + 46 <= cdSize) {
         const uint8_t *entry = directory + cursor;
         if (FFZipU32(entry) != 0x02014b50) break; // end of directory / corruption
@@ -244,11 +269,21 @@ BOOL FFZipExtract(NSString *archivePath, NSString *destDir,
             inflateEnd(&stream);
         }
         close(output);
+        extractedCompressed += compressedSize;
         if (!ok) {
             unlink(destination.fileSystemRepresentation);
             break;
         }
         [entries addObject:name];
+        if (progressBlock && totalCompressed > 0)
+            progressBlock((double)extractedCompressed / (double)totalCompressed, name);
+        if (shouldCancel && shouldCancel()) {
+            if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain
+                code:NSUserCancelledError userInfo:@{
+                    NSLocalizedDescriptionKey: @"解压已取消"}];
+            ok = NO;
+            break;
+        }
     }
 
     free(directory);

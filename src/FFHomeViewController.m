@@ -1,6 +1,7 @@
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
 #import "FFLogViewController.h"
+#import "FFTasksViewController.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -81,7 +82,7 @@
 {
     switch (section) {
         case 0: return 1;
-        case 1: return 1;
+        case 1: return 2;
         case 2: return 2;
         default: return 0;
     }
@@ -118,9 +119,15 @@
             break;
         }
         case 1: {
-            cell.textLabel.text = @"运行日志";
-            cell.detailTextLabel.text = @"查看、分享、重跑探针";
-            cell.imageView.image = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"任务中心";
+                cell.detailTextLabel.text = @"复制 / 移动 / 解压任务与进度";
+                cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
+            } else {
+                cell.textLabel.text = @"运行日志";
+                cell.detailTextLabel.text = @"查看、分享、重跑扫描、清缓存";
+                cell.imageView.image = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
+            }
             break;
         }
         case 2: {
@@ -152,7 +159,11 @@
             next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             break;
         case 1:
-            next = [FFLogViewController new];
+            if (indexPath.row == 0) {
+                next = [FFTasksViewController new];
+            } else {
+                next = [FFLogViewController new];
+            }
             break;
         case 2:
             if (indexPath.row == 1) {
