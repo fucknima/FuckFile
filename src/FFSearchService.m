@@ -2,6 +2,7 @@
 #import "FFLogger.h"
 
 #import <dirent.h>
+#import <limits.h>
 #import <string.h>
 #import <sys/stat.h>
 
@@ -16,6 +17,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 @interface FFSearchService ()
 @property(nonatomic, strong) dispatch_queue_t workQueue;
 @property(nonatomic) BOOL cancelled;
+@property(nonatomic, strong) NSMutableSet<NSString *> *visitedRealPaths;
 @end
 
 @implementation FFSearchService
@@ -49,6 +51,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         return;
     }
     self.cancelled = NO;
+    self.visitedRealPaths = [NSMutableSet set];
     dispatch_async(self.workQueue, ^{
         BOOL finished = [self searchFor:needle underPath:root depth:0
                                    batch:batch];
@@ -80,9 +83,11 @@ static const NSUInteger kFFSearchMaxDepth = 16;
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
         if (!name || [name hasPrefix:@"."]) continue;
         NSString *child = [path stringByAppendingPathComponent:name];
+        // stat() follows symlinks so app-container links are traversed;
+        // realpath dedupe prevents cycles.
         struct stat status = {0};
-        if (lstat(child.fileSystemRepresentation, &status) != 0) continue;
-        BOOL isDirectory = S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode);
+        if (stat(child.fileSystemRepresentation, &status) != 0) continue;
+        BOOL isDirectory = S_ISDIR(status.st_mode);
         BOOL matches = [name.lowercaseString containsString:needle];
         if (matches) {
             FFFoundItem *item = [FFFoundItem new];
@@ -103,10 +108,13 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     }
     closedir(directory);
 
-    // Depth-first into subdirectories (skips symlinked dirs to avoid
-    // cycles; MCM link folders are the traversal roots themselves).
     for (NSString *sub in subdirectories) {
         if (self.cancelled) break;
+        char resolved[PATH_MAX] = {0};
+        if (!realpath(sub.fileSystemRepresentation, resolved)) continue;
+        NSString *key = [NSString stringWithUTF8String:resolved];
+        if ([self.visitedRealPaths containsObject:key]) continue;
+        [self.visitedRealPaths addObject:key];
         [self searchFor:needle underPath:sub depth:depth + 1 batch:batch];
     }
 

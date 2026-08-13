@@ -3,6 +3,7 @@
 #import "FFBrowserViewController.h"
 #import "FFLogger.h"
 #import "MCMManager.h"
+#import "FFAppNames.h"
 
 @interface FFSearchViewController () <UISearchBarDelegate>
 @property(nonatomic, strong) UISearchBar *searchBar;
@@ -141,7 +142,7 @@
     }
     FFFoundItem *item = self.results[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = item.name;
+    config.text = FFAppDisplayName(item.name);
     config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     config.secondaryText = item.path;
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
