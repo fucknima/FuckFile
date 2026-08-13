@@ -45,16 +45,74 @@
     save.enabled = NO;
     self.navigationItem.rightBarButtonItem = save;
 
+    // 自定义返回键：有未保存修改时先询问，而不是直接丢失。
+    UIBarButtonItem *back = [[UIBarButtonItem alloc] initWithTitle:@"返回"
+        style:UIBarButtonItemStylePlain target:self action:@selector(backTapped)];
+    self.navigationItem.leftBarButtonItem = back;
+    self.navigationController.interactivePopGestureRecognizer.delegate =
+        (id<UIGestureRecognizerDelegate>)self;
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSData *data = [NSData dataWithContentsOfFile:self.filePath];
+        // 大文件不能一次全部读入内存：>4MB 只读，仅加载前 256KB。
+        unsigned long long fileSize = 0;
+        NSDictionary *attrs = [NSFileManager.defaultManager
+            attributesOfItemAtPath:self.filePath error:nil];
+        fileSize = [attrs[NSFileSize] unsignedLongLongValue];
+        BOOL large = fileSize > 4 * 1024 * 1024;
+        NSData *data = nil;
+        if (large) {
+            NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:self.filePath];
+            data = [handle readDataOfLength:256 * 1024];
+            [handle closeFile];
+        } else {
+            data = [NSData dataWithContentsOfFile:self.filePath];
+        }
         NSString *text = data
             ? [self stringFromData:data] ?: @"（二进制内容，不能编辑）"
             : @"（读取失败）";
+        if (large && text)
+            text = [text stringByAppendingFormat:
+                @"\n\n… 文件较大（%@），仅显示前 256 KB，只读预览。",
+                [NSByteCountFormatter stringFromByteCount:(long long)fileSize
+                    countStyle:NSByteCountFormatterCountStyleFile]];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.textView.text = text;
             if (data.length < 4 * 1024 * 1024) self.textView.editable = YES;
+            else self.textView.editable = NO;
         });
     });
+}
+
+// 返回时若存在未保存内容，提示保存 / 放弃 / 取消。
+- (void)backTapped
+{
+    if (!self.changed) {
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未保存的修改"
+        message:@"是否保存对此文件的修改？"
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf save]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"放弃" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [weakSelf.navigationController popViewControllerAnimated:YES];
+        }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// 拦截左滑返回：有未保存修改时走确认弹窗。
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
+{
+    if (self.changed && gestureRecognizer ==
+        self.navigationController.interactivePopGestureRecognizer) {
+        [self backTapped];
+        return NO;
+    }
+    return YES;
 }
 
 - (NSString *)stringFromData:(NSData *)data
