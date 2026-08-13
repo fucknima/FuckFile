@@ -48,4 +48,10 @@ FOUNDATION_EXPORT NSDictionary * _Nullable BadQueryEnumerateAllContainers(void);
 // stay reachable even after the app was restarted.
 FOUNDATION_EXPORT NSDictionary * _Nullable BadQueryReconnectEscapedRoots(void);
 
+// Returns the entries ({UUID, Identifier, Path}) recorded by the last
+// successful enumeration of one Escaped subfolder (e.g. "App Data"),
+// or an empty array when the INDEX.plist does not exist yet.
+FOUNDATION_EXPORT NSArray<NSDictionary *> * _Nullable
+    BadQueryEscapedIndexEntries(NSString *folderName);
+
 NS_ASSUME_NONNULL_END

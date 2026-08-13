@@ -167,6 +167,18 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             });
         }];
 
+    // Reload when the background LaunchServices confirmation pass installs
+    // new MCM App Data links (iOS 26 third-party app discovery).
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (![strongSelf.currentPath hasPrefix:MCMVirtualRoot()]) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf reloadEntries];
+            });
+        }];
+
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;

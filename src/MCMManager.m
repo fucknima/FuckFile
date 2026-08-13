@@ -22,6 +22,9 @@ static const uint64_t kMCMFlags = 0x900000000ULL;
 static const uint64_t kMCMReadWritePartFlags = 0x8100000000ULL;
 static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArrest";
 
+NSNotificationName const FFMCMAppLinksUpdatedNotification =
+    @"FFMCMAppLinksUpdatedNotification";
+
 // Sandbox handle consumed through the bad_query variant matrix for the
 // MobileGestalt group. Kept alive for the whole process: releasing it would
 // revoke the escape and the editor would go empty again.
@@ -689,6 +692,10 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     // lists every installed identifier. Extract candidates and confirm each
     // with a direct class-2 lookup; failures are silent because the store
     // scan yields thousands of stale candidates.
+    //
+    // Runs on a background queue: confirming thousands of candidates can
+    // take seconds, and app startup must not block on it. Observers get
+    // FFMCMAppLinksUpdatedNotification when the pass completes.
     NSString *lsdError = nil;
     NSString *lsdContainer = [self activate:10 identifier:@"com.apple.lsd"
         group:NO error:&lsdError];
@@ -696,19 +703,28 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
                  lsdError ?: @"(nil)");
     } else {
-        NSArray<NSString *> *launchServicesIdentifiers =
+        NSArray<NSString *> *candidates =
             FFLSDiscoverInstalledIdentifiers(lsdContainer, 4096);
-        NSUInteger confirmed = 0;
-        for (NSString *identifier in launchServicesIdentifiers) {
-            if ([appIdentifiers containsObject:identifier]) continue;
-            if ([self activate:2 identifier:identifier group:NO error:nil])
-                confirmed++;
-            [self installLink:apps identifier:identifier containerClass:2
-                        group:NO logFailure:NO];
-        }
-        FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
-                 (unsigned long)launchServicesIdentifiers.count,
-                 (unsigned long)confirmed);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSUInteger confirmed = 0;
+            for (NSString *identifier in candidates) {
+                @synchronized (appIdentifiers) {
+                    if ([appIdentifiers containsObject:identifier]) continue;
+                }
+                if ([self activate:2 identifier:identifier group:NO error:nil]) {
+                    @synchronized (appIdentifiers) {
+                        [appIdentifiers addObject:identifier];
+                    }
+                    confirmed++;
+                }
+                [self installLink:apps identifier:identifier containerClass:2
+                            group:NO logFailure:NO];
+            }
+            FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
+                     (unsigned long)candidates.count, (unsigned long)confirmed);
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+        });
     }
 
     NSMutableOrderedSet *groupIdentifiers =
@@ -736,6 +752,27 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     [self installDirectFilesystemLinks:apps containerRoot:@"/private/var/mobile/Containers/Data/Application"];
     [self installDirectFilesystemLinks:groups containerRoot:@"/private/var/mobile/Containers/Shared/AppGroup"];
     [self installDirectFilesystemLinks:extensions containerRoot:@"/private/var/mobile/Containers/Data/PluginKitPlugin"];
+
+    // Union with the bad_query path-first enumeration: container UUIDs
+    // resolved to bundle identifiers by fsgetpath + metadata plists become
+    // bundle-id links here even when the class-2 direct lookup is denied.
+    NSArray<NSDictionary *> *escapedIndex =
+        BadQueryEscapedIndexEntries(@"App Data");
+    NSUInteger unionLinks = 0;
+    for (NSDictionary *entry in escapedIndex) {
+        NSString *identifier = entry[@"Identifier"];
+        NSString *target = entry[@"Path"];
+        if (!MCMSafeIdentifier(identifier) || !target.length) continue;
+        NSString *link = [apps stringByAppendingPathComponent:identifier];
+        struct stat status = {0};
+        if (lstat(link.fileSystemRepresentation, &status) == 0) continue;
+        if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
+            continue;
+        [self recordLink:apps identifier:identifier target:target];
+        unionLinks++;
+    }
+    if (unionLinks)
+        FFLogTag(@"MCM", @"bad_query union links added=%lu", (unsigned long)unionLinks);
 
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},

@@ -2227,3 +2227,22 @@ NSDictionary *BadQueryReconnectEscapedRoots(void)
     logStep(YES, @"reconnect all roots", summaryPath);
     return summary;
 }
+
+NSArray<NSDictionary *> *BadQueryEscapedIndexEntries(NSString *folderName)
+{
+    if (!BadQuerySafeLinkName(folderName)) return @[];
+    NSString *indexPath = [[BadQueryEscapedRoot()
+        stringByAppendingPathComponent:folderName]
+        stringByAppendingPathComponent:@"INDEX.plist"];
+    NSArray *entries = [NSArray arrayWithContentsOfFile:indexPath];
+    if (![entries isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray *safe = [NSMutableArray arrayWithCapacity:entries.count];
+    for (NSDictionary *entry in entries) {
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        if (![entry[@"Path"] isKindOfClass:NSString.class] ||
+            ![entry[@"Identifier"] isKindOfClass:NSString.class])
+            continue;
+        [safe addObject:entry];
+    }
+    return safe;
+}
