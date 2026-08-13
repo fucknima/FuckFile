@@ -18,7 +18,6 @@
 #import <unistd.h>
 
 static const uint64_t kMCMFlags = 0x900000000ULL;
-static const uint64_t kMCMReadWritePartFlags = 0x8100000000ULL;
 static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArrest";
 
 NSNotificationName const FFMCMAppLinksUpdatedNotification =
@@ -33,16 +32,6 @@ NSNotificationName const FFMCMAppLinksUpdatedNotification =
 @end
 
 static NSString *const kMCMAppDataDirectoryName = @"[MHA-C2] App Data";
-static NSString *const kMCMAppGroupsDirectoryName = @"[MHA-C7] App Groups";
-static NSString *const kMCMExtensionDataDirectoryName = @"[MHA-C4] Extension Data";
-static NSString *const kMCMVPNDataDirectoryName = @"[MHA-C6] VPN Data";
-static NSString *const kMCMServiceDataDirectoryName = @"[MHA-C10] Service Data";
-static NSString *const kMCMSystemDataDirectoryName = @"[MHA-C12] System Data";
-static NSString *const kMCMSystemGroupsDirectoryName = @"[MHA-C13] System Groups";
-static NSString *const kMCMProtectedDataDirectoryName = @"[MHA-C15] Protected Data";
-static NSString *const kMCMAdditionalLocationsDirectoryName =
-    @"[MHA-C13 Scoped] Additional Locations";
-static NSString *const kMCMExperimentalDirectoryName = @"[MHA-Mixed EXP] Experimental";
 
 NSString *MCMVirtualRoot(void)
 {
@@ -294,16 +283,17 @@ static NSString *MCMNormalizedPath(NSString *path)
     return nil;
 }
 
-- (void)installLinkClass2Matrix:(NSString *)directory identifier:(NSString *)identifier
+- (BOOL)installLinkClass2Matrix:(NSString *)directory identifier:(NSString *)identifier
 {
     NSString *error = nil;
     NSString *target = [self activateClass2WithMatrix:identifier error:&error];
     if (!target.length) {
         FFLogTag(@"MCM", @"class-2 matrix FAIL id=%@ error=%@", identifier, error ?: @"(nil)");
-        return;
+        return NO;
     }
     [self installLinkForTarget:target directory:directory identifier:identifier
         containerClass:2];
+    return YES;
 }
 
 - (void)installLinkForTarget:(NSString *)target directory:(NSString *)directory
@@ -327,74 +317,6 @@ static NSString *MCMNormalizedPath(NSString *path)
     }
     [self recordLink:directory identifier:identifier target:target];
     FFLogTag(@"MCM", @"link OK class=%llu id=%@ target=%@", containerClass, identifier, target);
-}
-
-- (void)installDirectFilesystemLinks:(NSString *)directory containerRoot:(NSString *)containerRoot
-{
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSArray<NSString *> *children = [manager contentsOfDirectoryAtPath:containerRoot error:nil];
-    for (NSString *child in children ?: @[]) {
-        if (!MCMSafeIdentifier(child)) continue;
-        NSString *target = [containerRoot stringByAppendingPathComponent:child];
-        BOOL isDirectory = NO;
-        if (![manager fileExistsAtPath:target isDirectory:&isDirectory] || !isDirectory)
-            continue;
-        NSString *metadataPath = [target stringByAppendingPathComponent:
-            @".com.apple.mobile_container_manager.metadata.plist"];
-        NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
-        NSString *identifier = [metadata[@"MCMMetadataIdentifier"] isKindOfClass:NSString.class]
-            ? metadata[@"MCMMetadataIdentifier"] : nil;
-        if (!MCMSafeIdentifier(identifier)) identifier = child;
-        NSString *link = [directory stringByAppendingPathComponent:identifier];
-        struct stat status = {0};
-        if (lstat(link.fileSystemRepresentation, &status) == 0) {
-            if (!S_ISLNK(status.st_mode)) continue;
-            unlink(link.fileSystemRepresentation);
-        }
-        if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-            FFLogTag(@"MCM", @"direct symlink FAIL id=%@ target=%@ errno=%d",
-                     identifier, target, errno);
-        else {
-            [self recordLink:directory identifier:identifier target:target];
-            FFLogTag(@"MCM", @"direct link OK id=%@ target=%@", identifier, target);
-        }
-    }
-}
-
-- (void)installScopedLink:(NSString *)directory linkName:(NSString *)linkName
-    containerClass:(uint64_t)containerClass identifier:(NSString *)identifier
-    group:(BOOL)group part:(uint64_t)part partDomain:(NSString *)partDomain
-{
-    NSString *link = [directory stringByAppendingPathComponent:linkName];
-    NSString *error = nil;
-    NSString *target = [self activateScoped:containerClass identifier:identifier
-        group:group part:part partDomain:partDomain flags:kMCMReadWritePartFlags
-        error:&error];
-    if (!target) {
-        struct stat stale = {0};
-        if (lstat(link.fileSystemRepresentation, &stale) == 0 && S_ISLNK(stale.st_mode))
-            unlink(link.fileSystemRepresentation);
-        FFLogTag(@"MCM", @"scoped activation FAIL class=%llu id=%@ part=%llu domain=%@ error=%@",
-                 containerClass, identifier, part, partDomain, error ?: @"(nil)");
-        return;
-    }
-    struct stat status = {0};
-    if (lstat(link.fileSystemRepresentation, &status) == 0) {
-        if (!S_ISLNK(status.st_mode)) return;
-        char current[PATH_MAX] = {0};
-        ssize_t count = readlink(link.fileSystemRepresentation, current, sizeof(current) - 1);
-        if (count > 0 && [[NSString stringWithUTF8String:current] isEqualToString:target]) {
-            [self recordLink:directory identifier:linkName target:target];
-            return;
-        }
-        unlink(link.fileSystemRepresentation);
-    }
-    if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        FFLogTag(@"MCM", @"scoped symlink FAIL name=%@ errno=%d", linkName, errno);
-    else {
-        FFLogTag(@"MCM", @"scoped path OK name=%@ target=%@", linkName, target);
-        [self recordLink:directory identifier:linkName target:target];
-    }
 }
 
 #pragma mark - Identifier discovery
@@ -483,10 +405,7 @@ static NSDictionary *MCMCustomIdentifiers(void)
         stringByAppendingPathComponent:@"MCMIdentifiers.plist"];
     NSString *bundlePath = [NSBundle.mainBundle pathForResource:@"MCMIdentifiers"
                                                          ofType:@"plist"];
-    NSArray<NSString *> *keys = @[
-        @"AppData", @"AppGroups", @"ExtensionData", @"VPNData", @"ServiceData",
-        @"SystemData", @"SystemGroups", @"ProtectedData",
-    ];
+    NSArray<NSString *> *keys = @[ @"AppData" ];
     NSMutableDictionary *merged = [NSMutableDictionary dictionary];
     for (NSString *key in keys)
         merged[key] = [NSMutableOrderedSet orderedSet];
@@ -503,72 +422,6 @@ static NSDictionary *MCMCustomIdentifiers(void)
     for (NSString *key in keys)
         merged[key] = [merged[key] array];
     return merged;
-}
-
-#pragma mark - Experimental scoped probes
-
-static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *directory,
-                                              NSDictionary *probe)
-{
-    NSString *name = [probe[@"Name"] isKindOfClass:NSString.class] ? probe[@"Name"] : @"Unnamed";
-    uint64_t containerClass = [probe[@"Class"] unsignedLongLongValue];
-    NSString *identifier = [probe[@"Identifier"] isKindOfClass:NSString.class]
-        ? probe[@"Identifier"] : @"";
-    BOOL group = [probe[@"Group"] boolValue];
-    uint64_t part = [probe[@"Part"] unsignedLongLongValue];
-    uint64_t flags = [probe[@"Flags"] unsignedLongLongValue];
-    NSString *partDomain = [probe[@"PartDomain"] isKindOfClass:NSString.class]
-        ? probe[@"PartDomain"] : nil;
-    NSArray *expected = [probe[@"Expected"] isKindOfClass:NSArray.class] ? probe[@"Expected"] : @[];
-    NSString *linkPath = [directory stringByAppendingPathComponent:name];
-
-    NSMutableDictionary *result = [probe mutableCopy];
-    result[@"FlagsHex"] = [NSString stringWithFormat:@"0x%llx", flags];
-    [result removeObjectForKey:@"Flags"];
-    NSString *detail = nil;
-    NSString *target = [manager activateScoped:containerClass identifier:identifier
-        group:group part:part partDomain:partDomain flags:flags error:&detail];
-    if (!target) {
-        struct stat status = {0};
-        if (lstat(linkPath.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode))
-            unlink(linkPath.fileSystemRepresentation);
-        result[@"Status"] = @"failed";
-        result[@"Error"] = detail ?: @"activation failed";
-        FFLogTag(@"MCM", @"experimental FAIL name=%@ error=%@", name, detail ?: @"(nil)");
-        return result;
-    }
-    result[@"ReturnedPath"] = target;
-    NSMutableArray *subpaths = [NSMutableArray array];
-    for (id relativeValue in expected) {
-        if (![relativeValue isKindOfClass:NSString.class]) continue;
-        NSString *expectedPath = [target stringByAppendingPathComponent:relativeValue];
-        NSMutableDictionary *status = [NSMutableDictionary dictionary];
-        status[@"RelativePath"] = relativeValue;
-        struct stat st = {0};
-        errno = 0;
-        BOOL exists = lstat(expectedPath.fileSystemRepresentation, &st) == 0;
-        status[@"Exists"] = @(exists);
-        status[@"Errno"] = @(exists ? 0 : errno);
-        if (exists) {
-            status[@"Mode"] = [NSString stringWithFormat:@"%04o", st.st_mode & 07777];
-            errno = 0;
-            int fd = open(expectedPath.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-            status[@"Open"] = @(fd >= 0);
-            status[@"OpenErrno"] = @(fd >= 0 ? 0 : errno);
-            if (fd >= 0) close(fd);
-        }
-        [subpaths addObject:status];
-    }
-    result[@"ExpectedPathStatus"] = subpaths;
-    struct stat status = {0};
-    if (lstat(linkPath.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode))
-        unlink(linkPath.fileSystemRepresentation);
-    if (symlink(target.fileSystemRepresentation, linkPath.fileSystemRepresentation) != 0)
-        result[@"LinkError"] = [NSString stringWithFormat:@"errno=%d", errno];
-    result[@"Status"] = @"linked";
-    FFLogTag(@"MCM", @"experimental OK name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@",
-             name, containerClass, identifier, part, partDomain, result[@"Status"], target);
-    return result;
 }
 
 #pragma mark - Startup
@@ -593,17 +446,6 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
             [map appendFormat:@"  %@\n    root: %@\n", name, links[name]];
         [map appendString:@"\n"];
     }
-    NSString *experimental = [root stringByAppendingPathComponent:kMCMExperimentalDirectoryName];
-    NSString *resultsPath = [experimental stringByAppendingPathComponent:@"Probe Results.plist"];
-    NSArray *results = [NSArray arrayWithContentsOfFile:resultsPath];
-    if (results.count > 0) {
-        [map appendString:@"Experimental returned paths:\n"];
-        for (NSDictionary *result in results) {
-            [map appendFormat:@"  %@ — %@\n", result[@"Name"], result[@"Status"]];
-            if ([result[@"ReturnedPath"] isKindOfClass:NSString.class])
-                [map appendFormat:@"    root: %@\n", result[@"ReturnedPath"]];
-        }
-    }
     [map writeToFile:[root stringByAppendingPathComponent:@"ACCESS MAP.txt"]
           atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
@@ -613,6 +455,43 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         [self startOnce];
+    });
+}
+
+#pragma mark - App Data scan progress
+
+// Cleans up virtual-root directories from earlier releases that are no
+// longer in scope (App Groups, Service Data, …) so the browser only
+// ever sees the App Data folder.
+- (void)removeLegacyDirectoriesUnder:(NSString *)root except:(NSString *)keep
+{
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:root error:nil];
+    for (NSString *name in names ?: @[]) {
+        NSString *path = [root stringByAppendingPathComponent:name];
+        if ([path isEqualToString:keep]) continue;
+        BOOL isDirectory = NO;
+        if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory &&
+            [name hasPrefix:@"[MHA-"])
+            [manager removeItemAtPath:path error:nil];
+    }
+}
+
+// Publishes App Data scan progress so the home screen can show the
+// current state instead of a silent gap during the LS confirmation.
+- (void)postScanProgress:(double)progress linked:(NSUInteger)linked
+                   total:(NSUInteger)total scanning:(BOOL)scanning
+{
+    NSDictionary *userInfo = @{
+        @"Progress": @(progress),
+        @"Linked": @(linked),
+        @"Total": @(total),
+        @"Scanning": @(scanning),
+    };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:FFMCMAppLinksUpdatedNotification
+                          object:self userInfo:userInfo];
     });
 }
 
@@ -641,42 +520,37 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = MCMVirtualRoot();
     NSString *apps = [root stringByAppendingPathComponent:kMCMAppDataDirectoryName];
-    NSString *groups = [root stringByAppendingPathComponent:kMCMAppGroupsDirectoryName];
-    NSString *extensions = [root stringByAppendingPathComponent:kMCMExtensionDataDirectoryName];
-    NSString *vpnData = [root stringByAppendingPathComponent:kMCMVPNDataDirectoryName];
-    NSString *serviceData = [root stringByAppendingPathComponent:kMCMServiceDataDirectoryName];
-    NSString *systemData = [root stringByAppendingPathComponent:kMCMSystemDataDirectoryName];
-    NSString *systemGroups = [root stringByAppendingPathComponent:kMCMSystemGroupsDirectoryName];
-    NSString *protectedData = [root stringByAppendingPathComponent:kMCMProtectedDataDirectoryName];
-    NSString *additionalLocations = [root stringByAppendingPathComponent:kMCMAdditionalLocationsDirectoryName];
-    NSString *experimental = [root stringByAppendingPathComponent:kMCMExperimentalDirectoryName];
-    for (NSString *directory in @[root, apps, groups, extensions, vpnData, serviceData,
-                                  systemData, systemGroups, protectedData,
-                                  additionalLocations, experimental])
-        [fm createDirectoryAtPath:directory withIntermediateDirectories:YES
-                       attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions: @0700} error:nil];
+
+    // Scope: App Data only. All other container classes (groups, service,
+    // system, VPN, extension, protected, experimental) are intentionally
+    // not probed anymore — the value they add is outweighed by the bug
+    // surface they create on a per-OS-build basis.
+    [self removeLegacyDirectoriesUnder:root except:apps];
 
     NSMutableOrderedSet *appIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(2)];
-    __block NSArray<NSString *> *groupCandidates = @[];
     [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
     [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
     NSDictionary *custom = MCMCustomIdentifiers();
     for (id value in [custom[@"AppData"] isKindOfClass:NSArray.class] ? custom[@"AppData"] : @[])
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
             [appIdentifiers addObject:value];
+    NSUInteger seeded = appIdentifiers.count;
+    NSUInteger linkedSeeded = 0;
     for (NSString *identifier in appIdentifiers)
-        [self installLinkClass2Matrix:apps identifier:identifier];
+        if ([self installLinkClass2Matrix:apps identifier:identifier])
+            linkedSeeded++;
+    FFLogTag(@"MCM", @"seeded app identifiers=%lu linked=%lu",
+             (unsigned long)seeded, (unsigned long)linkedSeeded);
+    [self postScanProgress:1.0 linked:linkedSeeded total:seeded scanning:NO];
 
     // iOS 26 hides third-party apps from ContainerManager/LaunchServices
     // enumeration, but the LaunchServices store inside com.apple.lsd still
-    // lists every installed identifier. Extract candidates and confirm each
-    // with a direct class-2 lookup; failures are silent because the store
-    // scan yields thousands of stale candidates.
-    //
-    // Runs on a background queue: confirming thousands of candidates can
-    // take seconds, and app startup must not block on it. Observers get
-    // FFMCMAppLinksUpdatedNotification when the pass completes.
+    // lists every installed identifier. Confirm each candidate with a
+    // class-2 lookup on a background queue, reporting progress so the UI
+    // can show the scan state.
     NSString *lsdError = nil;
     NSString *lsdContainer = [self activate:10 identifier:@"com.apple.lsd"
         group:NO error:&lsdError];
@@ -684,186 +558,37 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
                  lsdError ?: @"(nil)");
     } else {
-        // Full-store confirmation: every candidate the csstore byte scan
-        // produced is confirmed with a class-2 direct lookup. Failures
-        // are silent (the store yields thousands of stale strings).
         NSArray<NSString *> *candidates =
             FFLSDiscoverInstalledIdentifiers(lsdContainer, 65536);
+        NSUInteger total = candidates.count;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSUInteger confirmed = 0;
+            NSUInteger index = 0;
             for (NSString *identifier in candidates) {
+                index++;
+                BOOL known = NO;
                 @synchronized (appIdentifiers) {
-                    if ([appIdentifiers containsObject:identifier]) continue;
+                    known = [appIdentifiers containsObject:identifier];
                 }
-                if ([self activate:2 identifier:identifier group:NO error:nil]) {
+                if (!known &&
+                    [self activate:2 identifier:identifier group:NO error:nil]) {
                     @synchronized (appIdentifiers) {
                         [appIdentifiers addObject:identifier];
                     }
                     confirmed++;
                 }
-                [self installLink:apps identifier:identifier containerClass:2
-                            group:NO logFailure:NO];
+                if (!known)
+                    [self installLink:apps identifier:identifier containerClass:2
+                                group:NO logFailure:NO];
+                if (index % 50 == 0 || index == total)
+                    [self postScanProgress:total > 0 ? (double)index / (double)total : 1.0
+                                    linked:confirmed total:total scanning:index < total];
             }
             FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
-                     (unsigned long)candidates.count, (unsigned long)confirmed);
-
+                     (unsigned long)total, (unsigned long)confirmed);
+            [self postScanProgress:1.0 linked:confirmed total:total scanning:NO];
         });
-
-        // App Group candidates from the same store (extracted now;
-        // confirmed below once the group identifier set exists).
-        groupCandidates = FFLSDiscoverGroupIdentifiers(lsdContainer, 65536);
     }
-
-    NSMutableOrderedSet *groupIdentifiers =
-        [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(7)];
-    [groupIdentifiers addObjectsFromArray:@[
-        @"group.com.apple.notes",
-        @"group.com.apple.safari",
-        @"group.com.apple.weather",
-        @"group.com.apple.stocks",
-    ]];
-    for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
-        if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-            [groupIdentifiers addObject:value];
-    for (NSString *identifier in groupIdentifiers)
-        [self installLink:groups identifier:identifier containerClass:7 group:YES];
-
-    // Confirm each "group.<team>.<name>" candidate with a class-7 lookup
-    // on a background queue; links appear via the updated notification.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSUInteger confirmed = 0;
-        for (NSString *identifier in groupCandidates) {
-            @synchronized (groupIdentifiers) {
-                if ([groupIdentifiers containsObject:identifier]) continue;
-            }
-            if ([self activate:7 identifier:identifier group:YES error:nil]) {
-                @synchronized (groupIdentifiers) {
-                    [groupIdentifiers addObject:identifier];
-                }
-                confirmed++;
-            }
-            [self installLink:groups identifier:identifier containerClass:7
-                        group:YES logFailure:NO];
-        }
-        FFLogTag(@"MCM", @"LaunchServices group candidates=%lu newly-linked=%lu",
-                 (unsigned long)groupCandidates.count, (unsigned long)confirmed);
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
-    });
-
-    NSMutableOrderedSet *extensionIdentifiers =
-        [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(4)];
-    for (id value in [custom[@"ExtensionData"] isKindOfClass:NSArray.class] ? custom[@"ExtensionData"] : @[])
-        if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-            [extensionIdentifiers addObject:value];
-    for (NSString *identifier in extensionIdentifiers)
-        [self installLink:extensions identifier:identifier containerClass:4 group:NO];
-
-    [self installDirectFilesystemLinks:apps containerRoot:@"/private/var/mobile/Containers/Data/Application"];
-    [self installDirectFilesystemLinks:groups containerRoot:@"/private/var/mobile/Containers/Shared/AppGroup"];
-    [self installDirectFilesystemLinks:extensions containerRoot:@"/private/var/mobile/Containers/Data/PluginKitPlugin"];
-
-    NSArray<NSDictionary *> *additionalCategories = @[
-        @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},
-        @{@"Directory": serviceData, @"Class": @10, @"Group": @(NO), @"CustomKey": @"ServiceData",
-          @"Fallback": @[@"com.apple.swcd", @"com.apple.familycircled", @"com.apple.locationd",
-                         @"com.apple.lsd", @"com.apple.installd", @"com.apple.accountsd",
-                         @"com.apple.itunescloudd", @"com.apple.nanonewscd"]},
-        @{@"Directory": systemData, @"Class": @12, @"Group": @(NO), @"CustomKey": @"SystemData",
-          @"Fallback": @[@"com.apple.eligibilityd", @"com.apple.geod", @"com.apple.springboard"]},
-        @{@"Directory": systemGroups, @"Class": @13, @"Group": @(YES), @"CustomKey": @"SystemGroups",
-          @"Fallback": @[@"systemgroup.com.apple.configurationprofiles",
-                         @"systemgroup.com.apple.pisco.suinfo",
-                         @"systemgroup.com.apple.lsd.iconscache",
-                         @"systemgroup.com.apple.icloud.findmydevice.managed",
-                         @"systemgroup.com.apple.ondemandresources",
-                         @"systemgroup.com.apple.mobilegestaltcache",
-                         @"systemgroup.com.apple.nsurlstoragedresources",
-                         @"systemgroup.com.apple.installcoordinationd",
-                         @"systemgroup.com.apple.osanalytics",
-                         @"systemgroup.com.apple.ContainerManagerTest.fixed"]},
-        @{@"Directory": protectedData, @"Class": @15, @"Group": @(NO), @"CustomKey": @"ProtectedData",
-          @"Fallback": @[@"com.apple.appmanagedfeaturesd"]},
-    ];
-    for (NSDictionary *category in additionalCategories) {
-        uint64_t containerClass = [category[@"Class"] unsignedLongLongValue];
-        NSMutableOrderedSet *identifiers =
-            [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(containerClass)];
-        [identifiers addObjectsFromArray:category[@"Fallback"]];
-        NSString *customKey = category[@"CustomKey"];
-        for (id value in [custom[customKey] isKindOfClass:NSArray.class] ? custom[customKey] : @[])
-            if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-                [identifiers addObject:value];
-        for (NSString *identifier in identifiers)
-            [self installLink:category[@"Directory"] identifier:identifier
-                containerClass:containerClass group:[category[@"Group"] boolValue]];
-    }
-
-    [self installDirectFilesystemLinks:vpnData containerRoot:@"/private/var/mobile/Containers/Data/VPNPlugin"];
-    [self installDirectFilesystemLinks:serviceData containerRoot:@"/private/var/mobile/Containers/Data/InternalDaemon"];
-    [self installDirectFilesystemLinks:systemData containerRoot:@"/private/var/mobile/Containers/Data/System"];
-    [self installDirectFilesystemLinks:systemGroups containerRoot:@"/private/var/mobile/Containers/Shared/SystemGroup"];
-    [self installDirectFilesystemLinks:protectedData containerRoot:@"/private/var/mobile/Containers/Data/Protected"];
-
-    [self installScopedLink:additionalLocations linkName:@"[MHA-C13] Install Coordination"
-        containerClass:13 identifier:@"systemgroup.com.apple.installcoordinationd"
-        group:YES part:3 partDomain:@"../InstallCoordination"];
-    [self installScopedLink:additionalLocations linkName:@"[MHA-C13] Configuration Profiles"
-        containerClass:13 identifier:@"systemgroup.com.apple.configurationprofiles"
-        group:YES part:0 partDomain:nil];
-    [self installScopedLink:additionalLocations linkName:@"[MHA-C13] MobileGestalt Cache"
-        containerClass:13 identifier:@"systemgroup.com.apple.mobilegestaltcache"
-        group:YES part:3 partDomain:nil];
-
-    NSArray<NSDictionary *> *probes = @[
-        @{@"Name": @"01 [MHA-C13] Install Coordination", @"Class": @13,
-          @"Identifier": @"systemgroup.com.apple.installcoordinationd", @"Group": @YES,
-          @"Part": @3, @"PartDomain": @"../InstallCoordination",
-          @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"Coordinators", @"DataPromises", @"PromiseStaging"]},
-        @{@"Name": @"02 [MHA-C13] MobileGestalt Cache", @"Class": @13,
-          @"Identifier": @"systemgroup.com.apple.mobilegestaltcache", @"Group": @YES,
-          @"Part": @3, @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"com.apple.MobileGestalt.plist"]},
-        @{@"Name": @"03 [MHA-C12] Eligibility Overrides", @"Class": @12,
-          @"Identifier": @"com.apple.eligibilityd", @"Group": @NO,
-          @"Part": @3, @"PartDomain": @"NeverRestore", @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"eligibility_overrides.data"]},
-        @{@"Name": @"04 [MHA-C15] App Managed Data", @"Class": @15,
-          @"Identifier": @"com.apple.appmanagedfeaturesd", @"Group": @NO,
-          @"Part": @0, @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"com.apple.appmanagedfeaturesd/ConfigurationPersistence"]},
-        @{@"Name": @"05 [MHA-C13] Configuration Profiles Root", @"Class": @13,
-          @"Identifier": @"systemgroup.com.apple.configurationprofiles", @"Group": @YES,
-          @"Part": @0, @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"Library/ConfigurationProfiles/PayloadManifest.plist"]},
-        @{@"Name": @"06 [MHA-C10] Shared Web Credentials Root", @"Class": @10,
-          @"Identifier": @"com.apple.swcd", @"Group": @NO,
-          @"Part": @0, @"Flags": @(kMCMFlags),
-          @"Expected": @[@"com.apple.SharedWebCredentials/swc.db"]},
-        @{@"Name": @"07 [MHA-C12] System Data Library Control", @"Class": @12,
-          @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3, @"PartDomain": @"..", @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"Caches", @"Preferences"]},
-        @{@"Name": @"08 [MHA-C12] MobileGestalt via System Data", @"Class": @12,
-          @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3,
-          @"PartDomain": @"../../../../../../containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-          @"Flags": @(kMCMReadWritePartFlags),
-          @"Expected": @[@"com.apple.MobileGestalt.plist"]},
-    ];
-    NSMutableArray *results = [NSMutableArray array];
-    for (NSDictionary *probe in probes)
-        [results addObject:MCMRunExperimentalProbe(self, experimental, probe)];
-    [results writeToFile:[experimental stringByAppendingPathComponent:@"Probe Results.plist"]
-              atomically:YES];
-
-    NSString *readme = @"Experimental consumer traversal\n\n"
-        @"MHA-MCM: MobileHouseArrest identity-trust bypass. C10/C12/C13/C15 identify the ContainerManager class.\n"
-        @"Links appear only after a token, activation, and a read-only directory open all succeed.\n"
-        @"The links point at live system directories. Viewing is safest; edit at your own risk.\n";
-    [readme writeToFile:[experimental stringByAppendingPathComponent:@"README.txt"]
-              atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
     [self writeAccessMap:root];
     _started = YES;

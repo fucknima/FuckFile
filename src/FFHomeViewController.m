@@ -10,6 +10,10 @@
 @interface FFHomeViewController ()
 @property(nonatomic) NSUInteger categoryCount;
 @property(nonatomic) NSUInteger linkCount;
+@property(nonatomic) BOOL scanInProgress;
+@property(nonatomic) double scanProgress;
+@property(nonatomic) NSUInteger scanTotal;
+@property(nonatomic) NSUInteger scanLinked;
 @end
 
 @implementation FFHomeViewController
@@ -37,8 +41,20 @@
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
     [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
-        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
+        object:nil queue:nil usingBlock:^(NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSDictionary *info = note.userInfo;
+                if ([info[@"Scanning"] isKindOfClass:NSNumber.class]) {
+                    weakSelf.scanInProgress = [info[@"Scanning"] boolValue];
+                    weakSelf.scanProgress = [info[@"Progress"] isKindOfClass:NSNumber.class]
+                        ? [info[@"Progress"] doubleValue] : 0;
+                    weakSelf.scanTotal = [info[@"Total"] isKindOfClass:NSNumber.class]
+                        ? [info[@"Total"] unsignedIntegerValue] : 0;
+                    weakSelf.scanLinked = [info[@"Linked"] isKindOfClass:NSNumber.class]
+                        ? [info[@"Linked"] unsignedIntegerValue] : 0;
+                }
+                [weakSelf reloadStatus];
+            });
         }];
     [self reloadStatus];
 }
@@ -53,18 +69,11 @@
 - (void)reloadStatus
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *root = MCMVirtualRoot();
+        NSString *appData = [MCMVirtualRoot()
+            stringByAppendingPathComponent:@"[MHA-C2] App Data"];
         NSFileManager *manager = NSFileManager.defaultManager;
-        NSUInteger categories = 0;
-        NSUInteger links = 0;
-        for (NSString *name in [manager contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
-            NSString *path = [root stringByAppendingPathComponent:name];
-            BOOL isDirectory = NO;
-            if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
-                categories++;
-                links += [[manager contentsOfDirectoryAtPath:path error:nil] count];
-            }
-        }
+        NSUInteger categories = 1;
+        NSUInteger links = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.categoryCount = categories;
             self.linkCount = links;
@@ -114,10 +123,18 @@
     switch (indexPath.section) {
         case 0: {
             if (indexPath.row == 0) {
-                cell.textLabel.text = @"设备存储";
-                cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"%lu 个分类目录 · %lu 个已逃逸链接", (unsigned long)self.categoryCount,
-                    (unsigned long)self.linkCount];
+                cell.textLabel.text = @"App 数据";
+                if (self.scanInProgress) {
+                    cell.detailTextLabel.text = [NSString stringWithFormat:
+                        @"正在扫描 %lu/%lu … %lu 个 App",
+                        (unsigned long)self.scanTotal, (unsigned long)self.scanTotal,
+                        (unsigned long)self.scanLinked];
+                } else {
+                    cell.detailTextLabel.text = [NSString stringWithFormat:
+                        @"%lu 个 App 容器 · %lu 个已逃逸链接",
+                        (unsigned long)self.categoryCount,
+                        (unsigned long)self.linkCount];
+                }
                 cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
             } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"收藏";
@@ -173,7 +190,10 @@
     switch (indexPath.section) {
         case 0:
             if (indexPath.row == 0) {
-                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+                // App Data is the only scope: enter the folder directly.
+                NSString *appData = [MCMVirtualRoot()
+                    stringByAppendingPathComponent:@"[MHA-C2] App Data"];
+                next = [[FFBrowserViewController alloc] initWithPath:appData];
             } else if (indexPath.row == 1) {
                 next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
             } else {

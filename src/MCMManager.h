@@ -7,8 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *MCMVirtualRoot(void);
 
-// Posted after the background LaunchServices confirmation pass finishes
-// installing App Data links. Browsers observing this can auto-refresh.
+// Posted while the LaunchServices confirmation pass runs and when it
+// finishes installing App Data links. userInfo carries Progress
+// (0-1), Linked, Total, and Scanning flags for the home screen.
 FOUNDATION_EXPORT NSNotificationName const FFMCMAppLinksUpdatedNotification;
 
 @interface MCMManager : NSObject
