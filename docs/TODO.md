@@ -106,13 +106,13 @@
 
 ## P1 缩略图
 
-- [ ] ThumbnailService
-- [ ] 图片缩略图
-- [ ] 视频缩略图
-- [ ] PDF缩略图
-- [ ] Memory Cache
-- [ ] Disk Cache
-- [ ] Cache Cleanup
+- [x] ThumbnailService（串行生成队列 + 请求合并）
+- [x] 图片缩略图（CGImageSource 降采样）
+- [x] 视频缩略图（AVAssetImageGenerator）
+- [x] PDF缩略图（PDFKit 首页渲染）
+- [x] Memory Cache（NSCache，600 项 / 48MB）
+- [x] Disk Cache（Caches/Thumbnails，SHA1 key）
+- [x] Cache Cleanup（日志页「清缓存」+ clearCaches API）
 
 ## P1 搜索
 
