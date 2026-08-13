@@ -464,17 +464,37 @@ static NSDictionary *MCMCustomIdentifiers(void)
 // ever sees the App Data folder.
 - (void)removeLegacyDirectoriesUnder:(NSString *)root
 {
-    // Remove every [MHA-*] folder from earlier releases (including the
-    // old "[MHA-C2] App Data" wrapper) — app links now live directly in
-    // the container root next to the log file.
+    // Remove every [MHA-*] folder from earlier releases and any stray
+    // app symlinks left flat in the root by the intermediate build that
+    // linked without the App Data folder.
     NSFileManager *manager = NSFileManager.defaultManager;
     NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:root error:nil];
     for (NSString *name in names ?: @[]) {
-        if (![name hasPrefix:@"[MHA-"]) continue;
         NSString *path = [root stringByAppendingPathComponent:name];
         BOOL isDirectory = NO;
-        if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory)
-            [manager removeItemAtPath:path error:nil];
+        if ([manager fileExistsAtPath:path isDirectory:&isDirectory]) {
+            if (isDirectory && [name hasPrefix:@"[MHA-"]) {
+                [manager removeItemAtPath:path error:nil];
+                continue;
+            }
+            // Flat symlinks from the pre-folder build point into the
+            // real container tree; drop them so the root only shows the
+            // App Data folder and the log file.
+            if (!isDirectory) {
+                struct stat status = {0};
+                if (lstat(path.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode)) {
+                    char target[PATH_MAX] = {0};
+                    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
+                    if (length > 0) {
+                        target[length] = '\0';
+                        NSString *targetPath = [NSString stringWithUTF8String:target];
+                        if ([targetPath hasPrefix:@"/private/var/"] ||
+                            [targetPath hasPrefix:@"/var/"])
+                            [manager removeItemAtPath:path error:nil];
+                    }
+                }
+            }
+        }
     }
 }
 
