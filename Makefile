@@ -13,14 +13,25 @@ FuckFile_FILES = \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
+	src/FFLogViewController.m \
 	src/FFCopyEngine.m \
-	src/FFProbeViewController.m \
-	src/FFGestaltEditorViewController.m \
+	src/FFAppNames.m \
+	src/FFZipExtract.m \
+	src/FFZipCreate.m \
+	src/FFTextEditorViewController.m \
+	src/FFPlistEditorViewController.m \
+	src/FFPdfPreviewViewController.m \
+	src/FFThumbnailService.m \
+	src/FFFileTask.m \
+	src/FFFileTaskManager.m \
+	src/FFTasksViewController.m \
+	src/FFSearchService.m \
+	src/FFSearchViewController.m \
+	src/FFBookmarksService.m \
+	src/FFBookmarksViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
-	src/BadQueryProbe.m \
-	src/BadQuery.c \
-	src/PosterBoardFeature.m
+	src/FFLSDiscovery.m
 
 FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \
@@ -29,7 +40,7 @@ FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
-FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation
+FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit
 FuckFile_LIBRARIES = z
 
 FuckFile_INFOPLIST = Info.plist

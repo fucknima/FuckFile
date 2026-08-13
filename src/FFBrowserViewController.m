@@ -1,11 +1,20 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
+#import "FFConflictPolicy.h"
+#import "FFFileTask.h"
+#import "FFFileTaskManager.h"
 #import "MCMManager.h"
-#import "BadQueryProbe.h"
 #import "FFLogger.h"
-#import "PosterBoardFeature.h"
+#import "FFAppNames.h"
+#import "FFZipExtract.h"
+#import "FFTextEditorViewController.h"
+#import "FFPlistEditorViewController.h"
+#import "FFPdfPreviewViewController.h"
+#import "FFThumbnailService.h"
+#import "FFBookmarksService.h"
 
 #import <AVKit/AVKit.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <dirent.h>
 #import <fcntl.h>
 #import <limits.h>
@@ -26,10 +35,22 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
     FFSortModeName = 0,
     FFSortModeSize,
     FFSortModeDate,
+    FFSortModeKind,
+};
+
+typedef NS_ENUM(NSInteger, FFFilterMode) {
+    FFFilterModeAll = 0,
+    FFFilterModeImages,
+    FFFilterModeVideos,
+    FFFilterModeAudio,
+    FFFilterModeDocuments,
+    FFFilterModeArchives,
+    FFFilterModeCode,
 };
 
 @interface FFEntry : NSObject
 @property(nonatomic, copy) NSString *name;
+@property(nonatomic, copy) NSString *displayName;
 @property(nonatomic, copy) NSString *path;
 @property(nonatomic) BOOL isDirectory;
 @property(nonatomic) BOOL isSymlink;
@@ -42,11 +63,14 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @property(nonatomic) mode_t mode;
 @property(nonatomic) uid_t uid;
 @property(nonatomic) gid_t gid;
+@property(nonatomic, strong) UIImage *thumbnail;
 @end
 
 @implementation FFEntry
 @end
 
+// Map well-known bundle identifiers to readable display names; fall back to
+// stripping the "com.apple." prefix and camel-case splitting.
 @interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
@@ -55,21 +79,22 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @property(nonatomic) BOOL hasLoaded;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @property(nonatomic, strong) UIBarButtonItem *sortItem;
+@property(nonatomic, strong) UIBarButtonItem *editItem;
+@property(nonatomic, strong) NSArray<UIBarButtonItem *> *batchToolbarItems;
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, copy) NSString *searchText;
 @property(nonatomic) FFSortMode sortMode;
+@property(nonatomic) BOOL sortDescending;
+@property(nonatomic) FFFilterMode filterMode;
+@property(nonatomic, strong) UIBarButtonItem *filterItem;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
-static NSString *gClipboardSource = nil;
+static NSArray<NSString *> *gClipboardSources = nil;
 static FFClipboardMode gClipboardMode = FFClipboardModeNone;
-static NSMutableSet<NSString *> *gConsumedEscapedRoots;
-static NSMutableSet<NSString *> *gConsumedLinkTargets;
-static NSMutableSet<NSString *> *gConsumedDirectPaths;
-static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 @implementation FFBrowserViewController
 
@@ -91,18 +116,30 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
-    self.tableView.allowsMultipleSelectionDuringEditing = NO;
+    self.tableView.allowsMultipleSelectionDuringEditing = YES;
 
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
 
-    // Reload once the background bad_query probe has finished.
+    // Reload once the background MCM scan has finished.
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf reloadEntries];
+            });
+        }];
+
+    // Reload when the background LaunchServices confirmation pass installs
+    // new MCM App Data links (iOS 26 third-party app discovery).
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (![strongSelf.currentPath hasPrefix:MCMVirtualRoot()]) return;
             dispatch_async(dispatch_get_main_queue(), ^{
                 [strongSelf reloadEntries];
             });
@@ -121,8 +158,13 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     self.sortItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.up.arrow.down" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
     self.sortItem.menu = [self sortMenu];
-    self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem];
+    self.editItem = [[UIBarButtonItem alloc] initWithTitle:@"多选"
+        style:UIBarButtonItemStylePlain target:self action:@selector(toggleBatchMode)];
+    self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem, self.editItem];
 
+    self.filterItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"line.3.horizontal.decrease.circle" tint:nil]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    self.filterItem.menu = [self filterMenu];
     UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
     UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
@@ -133,6 +175,7 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
     addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
     self.toolbarItems = @[
+        self.filterItem,
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
         addItem,
     ];
@@ -148,7 +191,6 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     [self updatePasteState];
     if (self.hasLoaded) [self reloadEntries];
     self.navigationController.toolbarHidden = NO;
-    PBWallpaperConfigureBrowser(self, self.currentPath);
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -161,23 +203,225 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 - (void)updatePasteState
 {
-    self.pasteItem.enabled = (gClipboardSource.length > 0) && ![self pasteIsInsideClipboardSource];
+    self.pasteItem.enabled = (gClipboardSources.count > 0) && ![self pasteIsInsideClipboardSource];
 }
 
 - (BOOL)pasteIsInsideClipboardSource
 {
-    if (!gClipboardSource) return NO;
-    struct stat status = {0};
-    if (lstat(gClipboardSource.fileSystemRepresentation, &status) != 0 || !S_ISDIR(status.st_mode))
-        return NO;
-    char sourceReal[PATH_MAX] = {0};
-    char destinationReal[PATH_MAX] = {0};
-    if (!realpath(gClipboardSource.fileSystemRepresentation, sourceReal) ||
-        !realpath(self.currentPath.fileSystemRepresentation, destinationReal)) return NO;
-    NSString *sourcePath = [NSString stringWithUTF8String:sourceReal];
-    NSString *destinationPath = [NSString stringWithUTF8String:destinationReal];
-    return [destinationPath isEqualToString:sourcePath] ||
-        [destinationPath hasPrefix:[sourcePath stringByAppendingString:@"/"]];
+    if (gClipboardSources.count == 0) return NO;
+    for (NSString *source in gClipboardSources) {
+        struct stat status = {0};
+        if (lstat(source.fileSystemRepresentation, &status) != 0 || !S_ISDIR(status.st_mode))
+            continue;
+        char sourceReal[PATH_MAX] = {0};
+        char destinationReal[PATH_MAX] = {0};
+        if (!realpath(source.fileSystemRepresentation, sourceReal) ||
+            !realpath(self.currentPath.fileSystemRepresentation, destinationReal)) continue;
+        NSString *sourcePath = [NSString stringWithUTF8String:sourceReal];
+        NSString *destinationPath = [NSString stringWithUTF8String:destinationReal];
+        if ([destinationPath isEqualToString:sourcePath] ||
+            [destinationPath hasPrefix:[sourcePath stringByAppendingString:@"/"]])
+            return YES;
+    }
+    return NO;
+}
+
+#pragma mark - Batch mode (multi-select)
+
+- (void)toggleBatchMode
+{
+    [self setEditing:!self.editing animated:YES];
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated
+{
+    [super setEditing:editing animated:animated];
+    self.editItem.title = editing ? @"完成" : @"多选";
+    self.navigationItem.rightBarButtonItems = editing
+        ? @[self.editItem]
+        : @[self.pasteItem, self.sortItem, self.editItem];
+    if (editing) {
+        if (!self.batchToolbarItems)
+            self.batchToolbarItems = [self buildBatchToolbarItems];
+        self.toolbarItems = self.batchToolbarItems;
+    } else {
+        UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
+            style:UIBarButtonItemStylePlain target:nil action:nil];
+        UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+        UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+        UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+        addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
+        self.toolbarItems = @[
+            self.filterItem,
+            [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+            addItem,
+        ];
+    }
+    [self updatePasteState];
+}
+
+- (NSArray<UIBarButtonItem *> *)buildBatchToolbarItems
+{
+    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithTitle:@"全选"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchSelectAll)];
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:@"复制"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
+    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithTitle:@"剪切"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCut)];
+    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
+    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
+    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithTitle:@"删除"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
+    trash.tintColor = [UIColor systemRedColor];
+    return @[selectAll, copy, cut, zip, share, trash];
+}
+
+- (NSArray<FFEntry *> *)selectedBatchEntries
+{
+    NSArray<NSIndexPath *> *indexPaths = self.tableView.indexPathsForSelectedRows;
+    NSMutableArray<FFEntry *> *items = [NSMutableArray arrayWithCapacity:indexPaths.count];
+    for (NSIndexPath *indexPath in indexPaths)
+        if (indexPath.row < self.filteredEntries.count)
+            [items addObject:self.filteredEntries[indexPath.row]];
+    return items;
+}
+
+- (void)batchSelectAll
+{
+    for (NSUInteger row = 0; row < self.filteredEntries.count; row++)
+        [self.tableView selectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]
+            animated:NO scrollPosition:UITableViewScrollPositionNone];
+    [self updatePasteState];
+}
+
+- (void)batchCopy
+{
+    [self batchSetClipboard:FFClipboardModeCopy];
+}
+
+- (void)batchCut
+{
+    [self batchSetClipboard:FFClipboardModeCut];
+}
+
+- (void)batchSetClipboard:(FFClipboardMode)mode
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+    for (FFEntry *item in items) [paths addObject:item.path];
+    gClipboardSources = paths;
+    gClipboardMode = mode;
+    [self flash:[NSString stringWithFormat:@"%@ %lu 个项目",
+        mode == FFClipboardModeCopy ? @"已复制" : @"已剪切", (unsigned long)items.count]];
+    [self setEditing:NO animated:YES];
+}
+
+- (void)batchCompress
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    [self setEditing:NO animated:YES];
+    [self compressEntries:items];
+}
+
+- (void)compressEntries:(NSArray<FFEntry *> *)items
+{
+    NSString *defaultName = items.count == 1
+        ? [NSString stringWithFormat:@"%@.zip", items.firstObject.name]
+        : @"归档.zip";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"压缩"
+        message:[NSString stringWithFormat:@"%lu 个项目，压缩到当前目录",
+            (unsigned long)items.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = defaultName;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"压缩" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text ?: defaultName;
+            if (![weakSelf validNewName:name]) return;
+            if (![name.pathExtension.lowercaseString isEqualToString:@"zip"])
+                name = [name stringByAppendingPathExtension:@"zip"];
+            NSString *destination = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+            for (FFEntry *item in items) [paths addObject:item.path];
+            FFFileTask *task = [FFFileTask new];
+            task.kind = FFFileTaskKindCompress;
+            task.displayName = [NSString stringWithFormat:@"压缩 %@", name];
+            task.sources = paths;
+            task.destination = destination;
+            [[FFFileTaskManager sharedManager] enqueueTask:task];
+            [weakSelf flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)batchShare
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:items.count];
+    for (FFEntry *item in items) [urls addObject:[NSURL fileURLWithPath:item.path]];
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:urls applicationActivities:nil];
+    activity.popoverPresentationController.sourceView = self.view;
+    activity.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:activity animated:YES completion:nil];
+    [self setEditing:NO animated:YES];
+}
+
+- (void)batchDelete
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除"
+        message:[NSString stringWithFormat:@"确定删除 %lu 个项目？", (unsigned long)items.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSUInteger failed = 0;
+                for (FFEntry *item in items) {
+                    NSError *error = nil;
+                    if (![[NSFileManager defaultManager] removeItemAtPath:item.path error:&error]) {
+                        failed++;
+                        FFLogTag(@"Browser", @"batch delete FAIL path=%@ error=%@",
+                            item.path, error);
+                    }
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf flash:failed == 0 ? @"删除完成"
+                        : [NSString stringWithFormat:@"删除完成，%lu 个失败", (unsigned long)failed]];
+                    [weakSelf setEditing:NO animated:YES];
+                    [weakSelf reloadEntries];
+                });
+            });
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Loading
@@ -187,105 +431,16 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     if (self.loading) return;
     self.loading = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            gConsumedEscapedRoots = [NSMutableSet set];
-            gConsumedLinkTargets = [NSMutableSet set];
-            gConsumedDirectPaths = [NSMutableSet set];
-            gFailedDirectPaths = [NSMutableSet set];
-        });
-        NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
+        // MHA is the only channel: every link in the MCM folders was
+        // activated at startup, so its token already covers the target.
+        // No per-directory extension consumption is needed.
         NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
-
-        // Real paths outside the app's own container (e.g. the MobileGestalt
-        // Caches directory opened from the editor, or an MCM lease target)
-        // need their own sandbox extension. Consume the /var form once.
-        NSString *varPath = [self varFormOfPath:self.currentPath];
-        BOOL outsideOwnContainer = varPath.length &&
-            ![self.currentPath hasPrefix:NSHomeDirectory()];
-        if (outsideOwnContainer && !escapedRoot.length && !linkTarget.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedDirectPaths) {
-                cached = [gConsumedDirectPaths containsObject:varPath];
-            }
-            BOOL failed = NO;
-            @synchronized (gFailedDirectPaths) {
-                failed = [gFailedDirectPaths containsObject:varPath];
-            }
-            if (!cached && !failed) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePathForOpen(varPath, &error);
-                FFLogTag(@"Browser", @"escaped reconnect direct=%@ path=%@ handle=%lld error=%@",
-                    varPath, self.currentPath, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedDirectPaths) {
-                        [gConsumedDirectPaths addObject:varPath];
-                    }
-                } else {
-                    @synchronized (gFailedDirectPaths) {
-                        [gFailedDirectPaths addObject:varPath];
-                    }
-                }
-            } else if (failed) {
-                FFLogTag(@"Browser", @"escaped direct skip (failed earlier) path=%@", self.currentPath);
-            }
-        }
-
-        // Inside [BadQuery] Escaped the sandbox extension may be gone after a
-        // restart. Re-consume the matching real root, and if the current path
-        // is itself a symlink (a container UUID/bundle-id link), consume its
-        // target too. Every step is written to FuckFile Log.txt.
-        if (escapedRoot.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedEscapedRoots) {
-                cached = [gConsumedEscapedRoots containsObject:escapedRoot];
-            }
-            if (!cached) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(escapedRoot, nil, NO, &error);
-                FFLogTag(@"Browser", @"escaped reconnect root=%@ path=%@ handle=%lld error=%@",
-                    escapedRoot, self.currentPath, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedEscapedRoots) {
-                        [gConsumedEscapedRoots addObject:escapedRoot];
-                    }
-                }
-            }
-        }
         if (linkTarget.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedLinkTargets) {
-                cached = [gConsumedLinkTargets containsObject:linkTarget];
-            }
-            if (!cached) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(linkTarget, nil, NO, &error);
-                FFLogTag(@"Browser", @"escaped reconnect target=%@ handle=%lld error=%@",
-                    linkTarget, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedLinkTargets) {
-                        [gConsumedLinkTargets addObject:linkTarget];
-                    }
-                }
-            }
+            BOOL mhaCovered = [[MCMManager sharedManager] hasActiveLeaseForPath:linkTarget];
+            FFLogTag(@"Browser", @"target=%@ mha-lease-covered=%d",
+                     linkTarget, mhaCovered);
         }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
-        BOOL directFailed = NO;
-        if (varPath.length) {
-            @synchronized (gFailedDirectPaths) {
-                directFailed = [gFailedDirectPaths containsObject:varPath];
-            }
-        }
-        if (loaded.count == 0 && self.loadError.length && varPath.length && !directFailed) {
-            // The first open may have raced the token issuance; consume again
-            // (failure is not cached) and try once more before showing the
-            // error alert.
-            NSString *error = nil;
-            int64_t retryHandle = BadQueryConsumePathForOpen(varPath, &error);
-            FFLogTag(@"Browser", @"escaped retry direct=%@ handle=%lld error=%@",
-                varPath, retryHandle, error ?: @"(nil)");
-            loaded = [self loadDirectoryContents];
-        }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
             self.hasLoaded = YES;
@@ -300,27 +455,6 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     });
 }
 
-- (NSString *)escapedRootForPath:(NSString *)path
-{
-    NSArray<NSString *> *parts = path.pathComponents;
-    NSUInteger index = [parts indexOfObject:@"[BadQuery] Escaped"];
-    if (index == NSNotFound || index + 1 >= parts.count) return nil;
-    NSString *folder = parts[index + 1];
-    static NSDictionary<NSString *, NSString *> *map;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        map = @{
-            @"App Data": @"/var/mobile/Containers/Data/Application",
-            @"InternalDaemon": @"/var/mobile/Containers/Data/InternalDaemon",
-            @"PluginKitPlugin": @"/var/mobile/Containers/Data/PluginKitPlugin",
-            @"App Groups": @"/var/mobile/Containers/Shared/AppGroup",
-            @"System Groups": @"/var/mobile/Containers/Shared/SystemGroup",
-            @"SystemGroup (new path)": @"/var/containers/Shared/SystemGroup",
-        };
-    });
-    return map[folder];
-}
-
 - (NSString *)symlinkTargetOfPath:(NSString *)path
 {
     struct stat status = {0};
@@ -333,20 +467,12 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     return [NSString stringWithUTF8String:target];
 }
 
-- (NSString *)varFormOfPath:(NSString *)path
-{
-    if ([path hasPrefix:@"/private/var"]) return [path substringFromIndex:8];
-    if ([path hasPrefix:@"/var"]) return path;
-    return nil;
-}
-
 - (void)presentLoadError
 {
     NSString *message = self.loadError.length ? self.loadError : @"未知错误";
     message = [message stringByAppendingString:
-        @"\n\n沙盒扩展可能已经失效。App 已尝试自动重新消费 token；"
-        @"如果仍然失败，请到「bad_query 探针控制台」点「枚举容器」重建链接，"
-        @"或点「重新运行探针」后重试。"];
+        @"\n\n该容器未被 MHA 授权（containermanagerd 拒绝发 token），"
+        @"或 token 已失效。可在「运行日志」重跑探针后重试。"];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开目录"
         message:message preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
@@ -364,80 +490,10 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     NSMutableArray<FFEntry *> *result = [NSMutableArray array];
     DIR *directory = opendir(self.currentPath.fileSystemRepresentation);
     if (!directory) {
-        // opendir is denied on some system-group directories (e.g. the
-        // MobileGestalt Caches folder) even though the consumed token grants
-        // file access. bad_query_list (fsgetpath) does not need opendir, so
-        // use it as a listing fallback.
-        NSString *varPath = [self varFormOfPath:self.currentPath];
-        NSString *fallbackError = nil;
-        NSArray<NSString *> *names = varPath.length
-            ? BadQueryListDirectory(varPath, &fallbackError) : nil;
-        if (names.count) {
-            FFLogTag(@"Browser",
-                @"opendir FAIL path=%@ errno=%d (%s) -> bad_query_list fallback entries=%lu",
-                self.currentPath, errno, strerror(errno), (unsigned long)names.count);
-            for (NSString *name in names) {
-                NSString *path = [self.currentPath stringByAppendingPathComponent:name];
-                FFEntry *item = [FFEntry new];
-                item.name = name;
-                item.path = path;
-                struct stat status = {0};
-                if (lstat(path.fileSystemRepresentation, &status) != 0) {
-                    item.detail = [NSString stringWithFormat:@"lstat errno=%d", errno];
-                    [result addObject:item];
-                    continue;
-                }
-                item.mode = status.st_mode;
-                item.uid = status.st_uid;
-                item.gid = status.st_gid;
-                item.modificationDate = [NSDate dateWithTimeIntervalSince1970:status.st_mtimespec.tv_sec];
-                item.creationDate = [NSDate dateWithTimeIntervalSince1970:status.st_birthtimespec.tv_sec];
-                item.isSymlink = S_ISLNK(status.st_mode);
-                if (item.isSymlink) {
-                    char target[PATH_MAX] = {0};
-                    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-                    if (length > 0) {
-                        target[length] = '\0';
-                        item.linkTarget = [NSString stringWithUTF8String:target];
-                    }
-                    struct stat resolved = {0};
-                    if (stat(path.fileSystemRepresentation, &resolved) == 0) {
-                        item.isDirectory = S_ISDIR(resolved.st_mode);
-                        item.size = (unsigned long long)resolved.st_size;
-                    }
-                } else {
-                    item.isDirectory = S_ISDIR(status.st_mode);
-                    item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
-                }
-                [result addObject:item];
-            }
-            self.loadError = nil;
-            [self decorateEntries:result];
-            [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
-                if (left.isDirectory != right.isDirectory)
-                    return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
-                switch (self.sortMode) {
-                    case FFSortModeSize:
-                        if (left.size != right.size)
-                            return left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
-                        break;
-                    case FFSortModeDate:
-                        return [right.modificationDate compare:left.modificationDate];
-                    case FFSortModeName:
-                    default:
-                        break;
-                }
-                return [left.name compare:right.name options:NSNumericSearch];
-            }];
-            return result;
-        }
-        self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)%@",
-            errno, strerror(errno),
-            fallbackError.length
-                ? [NSString stringWithFormat:@"；bad_query_list 回退失败：%@", fallbackError]
-                : @""];
-        FFLogTag(@"Browser", @"opendir FAIL path=%@ errno=%d (%s) fallback=%@",
-            self.currentPath, errno, strerror(errno), fallbackError ?: @"(nil)");
+        self.loadError = [NSString stringWithFormat:@"无法打开目录 errno=%d (%s)",
+            errno, strerror(errno)];
+        FFLogTag(@"Browser", @"opendir FAIL path=%@ errno=%d (%s)",
+            self.currentPath, errno, strerror(errno));
         return result;
     }
     self.loadError = nil;
@@ -489,6 +545,30 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
             item.isDirectory = S_ISDIR(status.st_mode);
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
         }
+        // Resolve container UUIDs to readable app names via the MCM metadata
+        // plist so directories show app names, not UUIDs. App Store installs
+        // carry the localized display name in iTunesMetadata.plist; prefer
+        // it over the bundle-identifier lookup.
+        item.displayName = item.name;
+        if (!item.isSymlink && item.isDirectory) {
+            NSString *metadataPath = [path stringByAppendingPathComponent:
+                @".com.apple.mobile_container_manager.metadata.plist"];
+            NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+            NSString *identifier = [metadata[@"MCMMetadataIdentifier"]
+                isKindOfClass:NSString.class] ? metadata[@"MCMMetadataIdentifier"] : nil;
+            if (identifier.length) {
+                NSString *itemName = FFAppContainerItemName(path);
+                item.displayName = itemName ?: FFAppDisplayName(identifier);
+                item.detail = [item.detail stringByAppendingFormat:@"\n%@", identifier];
+                // Only log actual container roots (UUID-shaped names).
+                if (FFIsUUIDShapedName(name))
+                    FFLogTag(@"Browser", @"metadata resolved %@ -> %@ (%@)",
+                        name, item.displayName, identifier);
+            } else if (FFIsUUIDShapedName(name)) {
+                FFLogTag(@"Browser", @"metadata MISSING/unreadable for %@",
+                    path.lastPathComponent);
+            }
+        }
         [result addObject:item];
     }
     closedir(directory);
@@ -497,20 +577,31 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         (unsigned long)files, (unsigned long)links, (unsigned long)lstatFailures);
     [self decorateEntries:result];
     [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
+        // Folder-first ordering is a display preference, unaffected by
+        // the sort direction.
         if (left.isDirectory != right.isDirectory)
             return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        NSComparisonResult comparison = NSOrderedSame;
         switch (self.sortMode) {
             case FFSortModeSize:
                 if (left.size != right.size)
-                    return left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
+                    comparison = left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
                 break;
             case FFSortModeDate:
-                return [right.modificationDate compare:left.modificationDate];
+                comparison = [right.modificationDate compare:left.modificationDate];
+                break;
+            case FFSortModeKind:
+                comparison = [[self kindName:left] compare:[self kindName:right]];
+                break;
             case FFSortModeName:
             default:
                 break;
         }
-        return [left.name compare:right.name options:NSNumericSearch];
+        if (comparison == NSOrderedSame)
+            comparison = [left.name compare:right.name options:NSNumericSearch];
+        if (self.sortDescending)
+            comparison = -comparison;
+        return comparison;
     }];
     return result;
 }
@@ -518,6 +609,15 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 - (void)decorateEntries:(NSArray<FFEntry *> *)entries
 {
     for (FFEntry *item in entries) {
+        // Bundle-id links in the MCM folders read better as app names.
+        // The link target is the real container root: its iTunesMetadata
+        // carries the localized App Store display name (e.g. 中国移动).
+        if (item.isSymlink && item.name.pathExtension.length &&
+            [item.name containsString:@"."] && ![item.name hasPrefix:@"."]) {
+            NSString *itemName = item.linkTarget.length
+                ? FFAppContainerItemName(item.linkTarget) : nil;
+            item.displayName = itemName ?: FFAppDisplayName(item.name);
+        }
         NSMutableArray<NSString *> *parts = [NSMutableArray array];
         if (item.isDirectory) [parts addObject:@"dir"];
         if (item.isSymlink) [parts addObject:@"link"];
@@ -607,13 +707,19 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 - (void)applyFilter
 {
+    NSArray<FFEntry *> *source = self.entries;
+    if (self.filterMode != FFFilterModeAll)
+        source = [source filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:
+            ^BOOL(FFEntry *item, __unused NSDictionary *bindings) {
+                return [self entry:item matchesFilter:self.filterMode];
+            }]];
     if (!self.searchText.length) {
-        self.filteredEntries = self.entries;
+        self.filteredEntries = source;
         return;
     }
     NSPredicate *predicate = [NSPredicate predicateWithFormat:
         @"name contains[cd] %@ OR path contains[cd] %@", self.searchText, self.searchText];
-    self.filteredEntries = [self.entries filteredArrayUsingPredicate:predicate];
+    self.filteredEntries = [source filteredArrayUsingPredicate:predicate];
 }
 
 #pragma mark - Search
@@ -635,10 +741,21 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeSize]; }];
     UIAction *date = [UIAction actionWithTitle:@"修改时间" image:[self symbolImage:@"calendar" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeDate]; }];
+    UIAction *kind = [UIAction actionWithTitle:@"类型" image:[self symbolImage:@"square.grid.2x2" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeKind]; }];
     name.state = self.sortMode == FFSortModeName ? UIMenuElementStateOn : UIMenuElementStateOff;
     size.state = self.sortMode == FFSortModeSize ? UIMenuElementStateOn : UIMenuElementStateOff;
     date.state = self.sortMode == FFSortModeDate ? UIMenuElementStateOn : UIMenuElementStateOff;
-    return [UIMenu menuWithTitle:@"排序方式" children:@[name, size, date]];
+    kind.state = self.sortMode == FFSortModeKind ? UIMenuElementStateOn : UIMenuElementStateOff;
+    NSString *directionTitle = self.sortDescending ? @"降序" : @"升序";
+    UIAction *direction = [UIAction actionWithTitle:directionTitle
+        image:[self symbolImage:self.sortDescending ? @"arrow.down" : @"arrow.up" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) {
+            self.sortDescending = !self.sortDescending;
+            self.sortItem.menu = [self sortMenu];
+            [self reloadEntries];
+        }];
+    return [UIMenu menuWithTitle:@"排序方式" children:@[name, size, date, kind, direction]];
 }
 
 - (void)setSortMode:(FFSortMode)sortMode
@@ -646,6 +763,64 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     _sortMode = sortMode;
     self.sortItem.menu = [self sortMenu];
     [self reloadEntries];
+}
+
+#pragma mark - Filter menu
+
+static NSString *FFFilterTitle(FFFilterMode mode)
+{
+    switch (mode) {
+        case FFFilterModeImages: return @"图片";
+        case FFFilterModeVideos: return @"视频";
+        case FFFilterModeAudio: return @"音频";
+        case FFFilterModeDocuments: return @"文档";
+        case FFFilterModeArchives: return @"压缩包";
+        case FFFilterModeCode: return @"代码";
+        case FFFilterModeAll: default: return @"全部";
+    }
+}
+
+- (BOOL)entry:(FFEntry *)item matchesFilter:(FFFilterMode)mode
+{
+    if (item.isDirectory || mode == FFFilterModeAll) return YES;
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    switch (mode) {
+        case FFFilterModeImages:
+            return [@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext];
+        case FFFilterModeVideos:
+            return [@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext];
+        case FFFilterModeAudio:
+            return [@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext];
+        case FFFilterModeDocuments:
+            return [@[@"txt", @"log", @"md", @"json", @"xml", @"plist", @"csv", @"pdf",
+                      @"rtf", @"doc", @"docx", @"xls", @"xlsx", @"ppt", @"pptx",
+                      @"pages", @"numbers", @"key"] containsObject:ext];
+        case FFFilterModeArchives:
+            return [@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
+        case FFFilterModeCode:
+            return [@[@"c", @"h", @"m", @"mm", @"swift", @"sh", @"py", @"js", @"ts",
+                      @"html", @"css", @"java", @"kt", @"go", @"rs", @"rb", @"php"] containsObject:ext];
+        case FFFilterModeAll: default:
+            return YES;
+    }
+}
+
+- (UIMenu *)filterMenu
+{
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    for (NSInteger mode = FFFilterModeAll; mode <= FFFilterModeCode; mode++) {
+        FFFilterMode filterMode = (FFFilterMode)mode;
+        UIAction *action = [UIAction actionWithTitle:FFFilterTitle(filterMode)
+            image:nil identifier:nil handler:^(__unused UIAction *act) {
+                self.filterMode = filterMode;
+                self.filterItem.menu = [self filterMenu];
+                [self applyFilter];
+                [self.tableView reloadData];
+            }];
+        action.state = self.filterMode == filterMode ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }
+    return [UIMenu menuWithTitle:@"筛选" children:actions];
 }
 
 #pragma mark - Table view
@@ -664,19 +839,61 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
                                       reuseIdentifier:@"Cell"];
     }
     FFEntry *item = self.filteredEntries[indexPath.row];
+    [self configureCell:cell withItem:item];
+    return cell;
+}
+
+- (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item
+{
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = item.name;
+    config.text = item.displayName.length ? item.displayName : item.name;
     config.textProperties.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
     config.secondaryText = item.detail;
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     config.secondaryTextProperties.numberOfLines = 0;
-    config.image = [self iconForEntry:item];
-    config.imageProperties.tintColor = [self tintForEntry:item];
+    config.image = item.thumbnail ?: [self iconForEntry:item];
     config.imageProperties.cornerRadius = 4;
+    config.imageProperties.maximumSize = CGSizeMake(44, 44);
+    if (item.thumbnail)
+        config.imageProperties.tintColor = nil;
+    else
+        config.imageProperties.tintColor = [self tintForEntry:item];
     cell.contentConfiguration = config;
     cell.accessoryType = item.isDirectory ? UITableViewCellAccessoryDisclosureIndicator
                                          : UITableViewCellAccessoryNone;
-    return cell;
+
+    if (item.thumbnail || item.isDirectory || item.isSymlink ||
+        ![self supportsThumbnail:item]) return;
+    // Async thumbnail generation; the cell is re-configured once the
+    // image lands and still hosts the same entry.
+    __weak typeof(self) weakSelf = self;
+    [[FFThumbnailService sharedService] thumbnailForPath:item.path
+        size:CGSizeMake(44, 44) completion:^(UIImage * _Nullable image) {
+            if (!image) return;
+            item.thumbnail = image;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSIndexPath *path = [weakSelf.tableView indexPathForCell:cell];
+                if (!path) return;
+                NSArray<FFEntry *> *entries = weakSelf.filteredEntries;
+                if (path.row >= entries.count || entries[path.row] != item) return;
+                [weakSelf configureCell:cell withItem:item];
+            });
+        }];
+}
+
+- (BOOL)supportsThumbnail:(FFEntry *)item
+{
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    static NSSet<NSString *> *supported;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        supported = [NSSet setWithArray:@[
+            @"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp",
+            @"mp4", @"mov", @"m4v", @"avi", @"mkv",
+            @"pdf",
+        ]];
+    });
+    return [supported containsObject:ext];
 }
 
 - (UIImage *)iconForEntry:(FFEntry *)item
@@ -755,8 +972,12 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFEntry *item = self.filteredEntries[indexPath.row];
+    [[FFRecentService sharedService] recordPath:item.path
+        name:item.displayName.length ? item.displayName : item.name
+        isDirectory:item.isDirectory];
     if (item.isDirectory) {
         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+        next.title = item.displayName.length ? item.displayName : item.name;
         [self.navigationController pushViewController:next animated:YES];
         return;
     }
@@ -779,6 +1000,7 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
                 identifier:nil handler:^(__unused UIAction *action) {
                     if (item.isDirectory) {
                         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                        next.title = item.displayName.length ? item.displayName : item.name;
                         [weakSelf.navigationController pushViewController:next animated:YES];
                     } else {
                         [weakSelf previewEntry:item];
@@ -788,8 +1010,18 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
             UIAction *cut = [UIAction actionWithTitle:@"剪切" image:[self symbolImage:@"scissors" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+            UIAction *duplicate = [UIAction actionWithTitle:@"创建副本" image:[self symbolImage:@"plus.square.on.square" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf duplicateEntry:item]; }];
+            UIAction *favorite = [UIAction actionWithTitle:
+                [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
+                image:[self symbolImage:@"star" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleFavorite:item]; }];
+            UIAction *compress = [UIAction actionWithTitle:@"压缩" image:[self symbolImage:@"shippingbox" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf compressEntries:@[item]]; }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
+            UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf copyPath:item]; }];
             UIAction *share = [UIAction actionWithTitle:@"分享" image:[self symbolImage:@"square.and.arrow.up" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf shareEntry:item]; }];
             UIAction *properties = [UIAction actionWithTitle:@"属性" image:[self symbolImage:@"info.circle" tint:nil]
@@ -797,7 +1029,14 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
             UIAction *delete = [UIAction actionWithTitle:@"删除" image:[self symbolImage:@"trash" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
-            return [UIMenu menuWithTitle:item.name children:@[view, copy, cut, rename, share, properties, delete]];
+            NSMutableArray *children = [NSMutableArray arrayWithArray:
+                @[view, copy, cut, duplicate, favorite, compress, rename, copyPath, share, properties, delete]];
+            if ([self isArchiveEntry:item])
+                [children insertObject:[UIAction actionWithTitle:@"解压"
+                    image:[self symbolImage:@"shippingbox" tint:nil]
+                    identifier:nil handler:^(__unused UIAction *action) { [weakSelf extractEntry:item]; }]
+                    atIndex:children.count - 2];
+            return [UIMenu menuWithTitle:item.name children:children];
         }];
 }
 
@@ -839,6 +1078,7 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         handler:^(__unused UIAlertAction *action) {
             if (item.isDirectory) {
                 FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                next.title = item.displayName.length ? item.displayName : item.name;
                 [weakSelf.navigationController pushViewController:next animated:YES];
             } else {
                 [weakSelf previewEntry:item];
@@ -846,10 +1086,23 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"复制" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"创建副本" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf duplicateEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:
+        [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf toggleFavorite:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"压缩" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf compressEntries:@[item]]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"剪切" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf renameEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
+    if ([self isArchiveEntry:item])
+        [sheet addAction:[UIAlertAction actionWithTitle:@"解压" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf extractEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"分享" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf shareEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"属性" style:UIAlertActionStyleDefault
@@ -865,7 +1118,7 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 - (void)setClipboard:(FFEntry *)item mode:(FFClipboardMode)mode
 {
-    gClipboardSource = item.path;
+    gClipboardSources = @[item.path];
     gClipboardMode = mode;
     [self updatePasteState];
     [self flash:[NSString stringWithFormat:@"%@: %@",
@@ -874,29 +1127,68 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
 
 - (void)pasteAction:(id)sender
 {
-    if (!gClipboardSource) return;
+    if (gClipboardSources.count == 0) return;
     if ([self pasteIsInsideClipboardSource]) return;
-    NSString *destination = [self uniqueDestinationForName:gClipboardSource.lastPathComponent];
-    if (!destination) {
-        [self flash:@"无法确定粘贴目标"];
-        return;
-    }
-    NSError *error = nil;
-    BOOL ok = [FFCopyEngine copyItemAtPath:gClipboardSource toPath:destination error:&error];
-    if (ok && gClipboardMode == FFClipboardModeCut) {
-        NSError *removeError = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:gClipboardSource error:&removeError];
-        if (removeError) ok = NO;
-    }
-    if (ok) {
-        gClipboardSource = nil;
-        gClipboardMode = FFClipboardModeNone;
-        [self flash:@"粘贴完成"];
-        [self reloadEntries];
-    } else {
-        [self showError:error];
-    }
+    NSArray<NSString *> *sources = gClipboardSources;
+    gClipboardSources = nil;
+    FFClipboardMode mode = gClipboardMode;
+    gClipboardMode = FFClipboardModeNone;
+
+    FFFileTask *task = [FFFileTask new];
+    task.kind = mode == FFClipboardModeCut ? FFFileTaskKindMove : FFFileTaskKindCopy;
+    task.displayName = [NSString stringWithFormat:@"%@ %lu 个项目",
+        task.kindText, (unsigned long)sources.count];
+    task.sources = sources;
+    task.destination = self.currentPath;
+    __weak typeof(self) weakSelf = self;
+    [[FFFileTaskManager sharedManager] setConflictHandler:^FFConflictAction(NSString *name) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        return strongSelf ? [strongSelf askConflictForName:name] : FFConflictActionSkip;
+    }];
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
     [self updatePasteState];
+}
+
+// Blocks the calling (background) thread until the user picks a
+// conflict action on the main thread.
+- (FFConflictAction)askConflictForName:(NSString *)name
+{
+    __block FFConflictAction chosen = FFConflictActionSkip;
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"目标已存在"
+            message:[NSString stringWithFormat:@"“%@” 已存在于当前目录。", name]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"替换" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionReplace;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"跳过" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionSkip;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"保留两者" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionKeepBoth;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"全部替换" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionReplaceAll;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"全部跳过" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionSkipAll;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    return chosen;
 }
 
 - (NSString *)uniqueDestinationForName:(NSString *)name
@@ -974,6 +1266,37 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)toggleFavorite:(FFEntry *)item
+{
+    BOOL wasFavorite = [[FFFavoritesService sharedService] isFavoritePath:item.path];
+    [[FFFavoritesService sharedService] togglePath:item.path
+        name:item.displayName.length ? item.displayName : item.name
+        isDirectory:item.isDirectory];
+    [self flash:wasFavorite ? @"已取消收藏" : @"已收藏"];
+}
+
+- (void)duplicateEntry:(FFEntry *)item
+{
+    NSString *destination = [self uniqueDestinationForName:item.name];
+    if (!destination) {
+        [self flash:@"无法确定副本目标"];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        BOOL ok = [FFCopyEngine copyItemAtPath:item.path toPath:destination error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ok) {
+                [weakSelf flash:@"副本已创建"];
+                [weakSelf reloadEntries];
+            } else {
+                [weakSelf showError:error];
+            }
+        });
+    });
+}
+
 - (BOOL)validNewName:(NSString *)name
 {
     name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -1036,9 +1359,160 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     [self presentViewController:activity animated:YES completion:nil];
 }
 
+- (void)copyPath:(FFEntry *)item
+{
+    UIPasteboard.generalPasteboard.string = item.path;
+    [self flash:@"路径已复制"];
+}
+
+- (BOOL)isArchiveEntry:(FFEntry *)item
+{
+    static NSSet<NSString *> *extensions;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        extensions = [NSSet setWithArray:@[
+            @"zip", @"ipa", @"deb", @"xcarchive", @"appex", @"app",
+            @"bundle", @"framework", @"war", @"jar", @"crx", @"xpi",
+            @"docx", @"xlsx", @"pptx", @"pages", @"numbers", @"key",
+            @"epub", @"apk",
+        ]];
+    });
+    return [extensions containsObject:item.name.pathExtension.lowercaseString];
+}
+
+- (void)extractEntry:(FFEntry *)item
+{
+    NSString *stem = item.name.stringByDeletingPathExtension;
+    if (stem.length == 0) stem = @"archive";
+    NSString *sibling = [self.currentPath stringByAppendingPathComponent:
+        [stem stringByAppendingString:@" (解压)"]];
+    NSString *documents = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *extractedRoot = [[documents stringByAppendingPathComponent:@"Device Storage"]
+        stringByAppendingPathComponent:@"Extracted"];
+    NSString *fallbackDestination = [extractedRoot stringByAppendingPathComponent:
+        [stem stringByAppendingFormat:@"-%@",
+            [[[NSUUID UUID] UUIDString] substringToIndex:8]]];
+
+    FFFileTask *task = [FFFileTask new];
+    task.kind = FFFileTaskKindExtract;
+    task.displayName = [NSString stringWithFormat:@"解压 %@", item.name];
+    task.sources = @[item.path];
+    // Prefer the sibling folder; sandbox-denied destinations fall back
+    // to the app's own Documents on the next attempt (sibling write
+    // failures leave the fallback path stored on the task).
+    task.destination = sibling;
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    FFLogTag(@"Browser", @"extract task queued archive=%@ sibling=%@ fallback=%@",
+             item.path, sibling, fallbackDestination);
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+}
+
 - (void)showProperties:(FFEntry *)item
 {
-    [self presentText:item.name body:item.fullDetail ?: item.detail];
+    NSString *body = item.fullDetail ?: item.detail;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.displayName ?: item.name
+        message:body preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
+    if (item.isDirectory) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"计算目录大小" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf computeDirectorySize:item]; }]];
+    } else if (!item.isSymlink) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"计算 SHA-256" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf computeSHA256:item]; }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)computeSHA256:(FFEntry *)item
+{
+    [self flash:@"正在计算…"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *hash = [self sha256OfFile:item.path];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!hash) {
+                [weakSelf flash:@"计算失败（文件不可读）"];
+                return;
+            }
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SHA-256"
+                message:[NSString stringWithFormat:@"%@\n\n%@", hash, item.path]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"复制" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    UIPasteboard.generalPasteboard.string = hash;
+                    [weakSelf flash:@"哈希已复制"];
+                }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (NSString *)sha256OfFile:(NSString *)path
+{
+    int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return nil;
+    CC_SHA256_CTX context;
+    CC_SHA256_Init(&context);
+    uint8_t buffer[64 * 1024];
+    ssize_t count = 0;
+    while ((count = read(fd, buffer, sizeof(buffer))) > 0)
+        CC_SHA256_Update(&context, buffer, (CC_LONG)count);
+    close(fd);
+    if (count < 0) return nil;
+    uint8_t digest[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256_Final(digest, &context);
+    NSMutableString *result = [NSMutableString stringWithCapacity:64];
+    for (NSUInteger index = 0; index < CC_SHA256_DIGEST_LENGTH; index++)
+        [result appendFormat:@"%02x", digest[index]];
+    return result;
+}
+
+- (void)computeDirectorySize:(FFEntry *)item
+{
+    [self flash:@"正在计算…"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        unsigned long long size = [self directorySizeAtPath:item.path];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.name
+                message:[NSString stringWithFormat:@"目录大小：%@\n（%llu 字节）\n\n%@",
+                    [weakSelf formatSize:size], size, item.path]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (unsigned long long)directorySizeAtPath:(NSString *)path
+{
+    unsigned long long total = 0;
+    DIR *directory = opendir(path.fileSystemRepresentation);
+    if (!directory) return 0;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [[NSFileManager defaultManager]
+            stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
+        if (!name) continue;
+        NSString *child = [path stringByAppendingPathComponent:name];
+        struct stat status = {0};
+        if (lstat(child.fileSystemRepresentation, &status) != 0) continue;
+        if (S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode)) {
+            total += [self directorySizeAtPath:child];
+        } else if (S_ISREG(status.st_mode)) {
+            total += (unsigned long long)status.st_size;
+        }
+    }
+    closedir(directory);
+    return total;
 }
 
 #pragma mark - Preview
@@ -1061,6 +1535,12 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
     }
     if ([videos containsObject:ext] || [audios containsObject:ext]) {
         [self previewMedia:item];
+        return;
+    }
+    if ([ext isEqualToString:@"pdf"]) {
+        FFPdfPreviewViewController *viewer =
+            [[FFPdfPreviewViewController alloc] initWithPath:item.path];
+        [self.navigationController pushViewController:viewer animated:YES];
         return;
     }
     [self previewData:item];
@@ -1105,25 +1585,27 @@ static NSMutableSet<NSString *> *gFailedDirectPaths;
         [self flash:@"读取文件失败"];
         return;
     }
-    NSString *text = nil;
+    // Structured plist editing: any parseable plist opens the plist editor.
     NSDictionary *plist = nil;
     if (data.length > 0) {
         NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
         plist = [NSPropertyListSerialization propertyListWithData:data
             options:NSPropertyListImmutable format:&format error:nil];
-        if ([plist isKindOfClass:NSDictionary.class] || [plist isKindOfClass:NSArray.class]) {
-            NSError *serializationError = nil;
-            NSData *xml = [NSPropertyListSerialization dataWithPropertyList:plist
-                format:NSPropertyListXMLFormat_v1_0 options:0 error:&serializationError];
-            if (xml)
-                text = [[NSString alloc] initWithData:xml encoding:NSUTF8StringEncoding];
-        }
     }
-    if (!text) {
-        NSString *candidate = [self stringFromData:data];
-        if (candidate && [self looksTextual:candidate]) text = candidate;
+    if ([plist isKindOfClass:NSDictionary.class] || [plist isKindOfClass:NSArray.class]) {
+        FFPlistEditorViewController *editor =
+            [[FFPlistEditorViewController alloc] initWithPath:item.path];
+        [self.navigationController pushViewController:editor animated:YES];
+        return;
     }
-    if (!text) text = [self hexdump:data maxBytes:data.length <= 1024 * 1024 ? data.length : 1024 * 1024];
+    NSString *candidate = [self stringFromData:data];
+    if (candidate && [self looksTextual:candidate]) {
+        FFTextEditorViewController *editor =
+            [[FFTextEditorViewController alloc] initWithPath:item.path];
+        [self.navigationController pushViewController:editor animated:YES];
+        return;
+    }
+    NSString *text = [self hexdump:data maxBytes:data.length <= 1024 * 1024 ? data.length : 1024 * 1024];
     [self presentText:item.name body:text];
 }
 

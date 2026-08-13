@@ -6,8 +6,8 @@
 
 #import "MCMManager.h"
 #import "MCMBridge.h"
-#import "BadQueryProbe.h"
 #import "FFLogger.h"
+#import "FFLSDiscovery.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -21,16 +21,15 @@ static const uint64_t kMCMFlags = 0x900000000ULL;
 static const uint64_t kMCMReadWritePartFlags = 0x8100000000ULL;
 static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArrest";
 
-// Sandbox handle consumed through the bad_query variant matrix for the
-// MobileGestalt group. Kept alive for the whole process: releasing it would
-// revoke the escape and the editor would go empty again.
-static int64_t gBadQueryGestaltHandle = -1;
+NSNotificationName const FFMCMAppLinksUpdatedNotification =
+    @"FFMCMAppLinksUpdatedNotification";
 
 // Private LaunchServices API used only for installed-app discovery.
 @interface NSObject (MCMLaunchServices)
 + (id)defaultWorkspace;
 - (NSArray *)allApplications;
 - (NSString *)applicationIdentifier;
+- (NSString *)bundleIdentifier;
 @end
 
 static NSString *const kMCMAppDataDirectoryName = @"[MHA-C2] App Data";
@@ -51,8 +50,6 @@ NSString *MCMVirtualRoot(void)
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     return [documents stringByAppendingPathComponent:@"Device Storage"];
 }
-
-NSString *MCMWallpaperLabName(void) { return @"[MHA-C2] Wallpaper Lab"; }
 
 @implementation MCMManager {
     NSMutableDictionary<NSString *, MCMLease *> *_leases;
@@ -116,20 +113,31 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         MCMLease *lease = [MCMLease leaseForClass:containerClass identifier:identifier
             group:group part:0 flags:kMCMFlags error:&detail];
         BOOL activated = lease && [lease activate:&detail];
-        if (!lease || !activated) {
-            [lease invalidate];
+        if (!lease) {
             if (error) *error = detail ?: @"MCM activation failed";
             return nil;
         }
+        // iOS 26 containermanagerd lacks genericExtensionsAllowedForAll: it
+        // refuses sandbox tokens for callers outside the per-class allowed
+        // set, but the returned container path can still be valid. Try
+        // opening it before giving up on an activation failure.
         int descriptor = open(lease.rootPath.fileSystemRepresentation,
                               O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (descriptor < 0) {
+            if (!activated) {
+                if (error) *error = detail ?: @"MCM activation failed";
+                [lease invalidate];
+                return nil;
+            }
             if (error) *error = [NSString stringWithFormat:
                 @"container root open failed errno=%d", errno];
             [lease invalidate];
             return nil;
         }
         close(descriptor);
+        if (!activated)
+            FFLogTag(@"MCM", @"activation token-less but path opens class=%llu id=%@ root=%@",
+                     containerClass, identifier, lease.rootPath);
         _leases[MCMKey(containerClass, identifier)] = lease;
         return lease.rootPath;
     }
@@ -155,25 +163,33 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
         containerClass, identifier, part, partDomain ?: @"", flags];
     @synchronized (_leases) {
         MCMLease *existing = _leases[key];
-        if (existing && existing.activated) return existing.rootPath;
+        if (existing && existing.rootPath.length) return existing.rootPath;
         NSString *detail = nil;
         MCMLease *lease = [MCMLease leaseForClass:containerClass
             identifier:identifier group:group part:part partDomain:partDomain
             flags:flags error:&detail];
-        if (!lease || ![lease activate:&detail]) {
-            [lease invalidate];
+        BOOL activated = lease && [lease activate:&detail];
+        if (!lease) {
             if (error) *error = detail ?: @"scoped MCM activation failed";
             return nil;
         }
         int descriptor = open(lease.rootPath.fileSystemRepresentation,
                               O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (descriptor < 0) {
+            if (!activated) {
+                if (error) *error = detail ?: @"scoped MCM activation failed";
+                [lease invalidate];
+                return nil;
+            }
             if (error) *error = [NSString stringWithFormat:
                 @"scoped directory open failed errno=%d", errno];
             [lease invalidate];
             return nil;
         }
         close(descriptor);
+        if (!activated)
+            FFLogTag(@"MCM", @"scoped activation token-less but path opens class=%llu id=%@ part=%llu root=%@",
+                     containerClass, identifier, part, lease.rootPath);
         _leases[key] = lease;
         return lease.rootPath;
     }
@@ -183,102 +199,6 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
                                         error:(NSString **)error
 {
     return [self activate:2 identifier:identifier group:NO error:error];
-}
-
-- (NSString *)mobileGestaltPath:(NSString **)error
-{
-    // Fast path: the escaped path may already be reachable from a previous
-    // probe run without a fresh MCM activation.
-    NSArray<NSString *> *candidates = @[
-        @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-        @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-    ];
-    for (NSString *candidate in candidates) {
-        if (access(candidate.fileSystemRepresentation, R_OK) == 0) return candidate;
-    }
-
-    NSArray<NSDictionary *> *routes = @[
-        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
-          @"Group": @YES, @"Part": @3, @"Domain": @"",
-          @"File": @"com.apple.MobileGestalt.plist"},
-        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3,
-          @"Domain": @"../../../../../../containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-          @"File": @"com.apple.MobileGestalt.plist"},
-        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3, @"Domain": @"..",
-          @"File": @"Caches/com.apple.MobileGestalt.plist"},
-    ];
-    for (NSDictionary *route in routes) {
-        NSString *detail = nil;
-        NSString *root = [self activateScoped:[route[@"Class"] unsignedLongLongValue]
-            identifier:route[@"Identifier"] group:[route[@"Group"] boolValue]
-            part:[route[@"Part"] unsignedLongLongValue]
-            partDomain:[route[@"Domain"] length] ? route[@"Domain"] : nil
-            flags:kMCMReadWritePartFlags error:&detail];
-        if (!root) {
-            FFLogTag(@"MCM", @"gestalt route FAIL class=%llu detail=%@",
-                [route[@"Class"] unsignedLongLongValue], detail ?: @"(nil)");
-            continue;
-        }
-        NSString *path = [root stringByAppendingPathComponent:route[@"File"]];
-        struct stat status = {0};
-        if (lstat(path.fileSystemRepresentation, &status) == 0) {
-            FFLogTag(@"MCM", @"gestalt path OK %@", path);
-            return path;
-        }
-        FFLogTag(@"MCM", @"gestalt route reached root=%@ but file missing %@ errno=%d",
-            root, path, errno);
-    }
-
-    // iOS 26.6 fallback: MCM's class-13 activation is denied at token
-    // issuance, but the bad_query variant matrix still issues tokens for
-    // group=systemgroup.com.apple.mobilegestaltcache (flags 0x900000000 /
-    // 0x800000000, part 0/3, traversal 0/1). Consume one handle per target
-    // and keep it so the editor can read and rewrite the plist.
-    if (gBadQueryGestaltHandle < 0) {
-        NSArray<NSString *> *targets = @[
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache",
-            @"/var/mobile/Containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-        ];
-        for (NSString *target in targets) {
-            NSString *detail = nil;
-            FFLogTag(@"MCM", @"gestalt bad_query consume begin target=%@", target);
-            int64_t handle = BadQueryConsumePathForOpen(target, &detail);
-            if (handle >= 0) {
-                gBadQueryGestaltHandle = handle;
-                FFLogTag(@"MCM", @"gestalt bad_query consume OK handle=%lld target=%@",
-                    handle, target);
-                break;
-            }
-            FFLogTag(@"MCM", @"gestalt bad_query consume FAIL code=%lld target=%@ error=%@",
-                handle, target, detail ?: @"(nil)");
-        }
-    }
-    if (gBadQueryGestaltHandle >= 0) {
-        for (NSString *candidate in candidates) {
-            if (access(candidate.fileSystemRepresentation, R_OK) == 0) {
-                FFLogTag(@"MCM", @"gestalt reachable via bad_query path=%@ handle=%lld",
-                    candidate, gBadQueryGestaltHandle);
-                return candidate;
-            }
-        }
-    }
-
-    // Last resort: the symlink bad_query creates inside Device Storage.
-    NSString *escaped = [MCMVirtualRoot() stringByAppendingPathComponent:@"[BadQuery] Escaped"];
-    NSArray<NSString *> *children = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtPath:escaped error:nil];
-    for (NSString *child in children ?: @[]) {
-        if ([child containsString:@"MobileGestalt"]) {
-            NSString *path = [escaped stringByAppendingPathComponent:child];
-            if (access(path.fileSystemRepresentation, R_OK) == 0) return path;
-        }
-    }
-    if (error) *error = @"MobileGestalt.plist is not reachable (no MCM route granted access)";
-    return nil;
 }
 
 #pragma mark - Virtual root link installation
@@ -293,17 +213,102 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
     map[identifier] = target;
 }
 
+static NSString *MCMNormalizedPath(NSString *path)
+{
+    NSString *result = path.stringByStandardizingPath;
+    if ([result isEqualToString:@"/var"] || [result hasPrefix:@"/var/"])
+        result = [@"/private" stringByAppendingString:result];
+    return result;
+}
+
+- (BOOL)hasActiveLeaseForPath:(NSString *)path
+{
+    if (!path.length || !path.isAbsolutePath) return NO;
+    NSString *candidate = MCMNormalizedPath(path);
+    @synchronized (_leases) {
+        for (MCMLease *lease in _leases.allValues)
+            if (lease.rootPath.length &&
+                ([candidate isEqualToString:lease.rootPath] ||
+                 [candidate hasPrefix:[lease.rootPath stringByAppendingString:@"/"]]))
+                return YES;
+    }
+    return NO;
+}
+
 - (void)installLink:(NSString *)directory identifier:(NSString *)identifier
     containerClass:(uint64_t)containerClass group:(BOOL)group
+{
+    [self installLink:directory identifier:identifier containerClass:containerClass
+                group:group logFailure:YES];
+}
+
+- (void)installLink:(NSString *)directory identifier:(NSString *)identifier
+    containerClass:(uint64_t)containerClass group:(BOOL)group logFailure:(BOOL)logFailure
 {
     NSString *error = nil;
     NSString *target = [self activate:containerClass identifier:identifier
                                 group:group error:&error];
     if (!target) {
-        FFLogTag(@"MCM", @"activation FAIL class=%llu id=%@ group=%d error=%@",
-                 containerClass, identifier, group, error ?: @"(nil)");
+        if (logFailure)
+            FFLogTag(@"MCM", @"activation FAIL class=%llu id=%@ group=%d error=%@",
+                     containerClass, identifier, group, error ?: @"(nil)");
         return;
     }
+    [self installLinkForTarget:target directory:directory identifier:identifier
+        containerClass:containerClass];
+}
+
+// Class-2 lookup with a flags matrix fallback: when the canonical
+// query (0x900000000, part 0) is denied for an identifier, retry the
+// other flags combinations containermanagerd has accepted on this OS.
+- (NSString *)activateClass2WithMatrix:(NSString *)identifier error:(NSString **)error
+{
+    NSString *detail = nil;
+    NSString *path = [self activate:2 identifier:identifier group:NO error:&detail];
+    if (path.length) return path;
+
+    static NSArray<NSNumber *> *flags;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        flags = @[@(0x800000000ULL), @(0x8100000000ULL), @(0x080000000ULL)];
+    });
+    for (NSNumber *flag in flags) {
+        MCMLease *lease = [MCMLease leaseForClass:2 identifier:identifier group:NO
+            part:0 flags:flag.unsignedLongLongValue error:&detail];
+        if (!lease) continue;
+        [lease activate:&detail];
+        int descriptor = open(lease.rootPath.fileSystemRepresentation,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor >= 0) {
+            close(descriptor);
+            @synchronized (_leases) {
+                _leases[MCMKey(2, identifier)] = lease;
+            }
+            FFLogTag(@"MCM", @"class-2 matrix hit id=%@ flags=0x%llx root=%@",
+                     identifier, flag.unsignedLongLongValue, lease.rootPath);
+            return lease.rootPath;
+        }
+        [lease invalidate];
+    }
+    if (error) *error = detail ?: @"class-2 lookup denied (matrix exhausted)";
+    return nil;
+}
+
+- (void)installLinkClass2Matrix:(NSString *)directory identifier:(NSString *)identifier
+{
+    NSString *error = nil;
+    NSString *target = [self activateClass2WithMatrix:identifier error:&error];
+    if (!target.length) {
+        FFLogTag(@"MCM", @"class-2 matrix FAIL id=%@ error=%@", identifier, error ?: @"(nil)");
+        return;
+    }
+    [self installLinkForTarget:target directory:directory identifier:identifier
+        containerClass:2];
+}
+
+- (void)installLinkForTarget:(NSString *)target directory:(NSString *)directory
+                  identifier:(NSString *)identifier containerClass:(uint64_t)containerClass
+{
     NSString *link = [directory stringByAppendingPathComponent:identifier];
     struct stat status = {0};
     if (lstat(link.fileSystemRepresentation, &status) == 0) {
@@ -417,10 +422,59 @@ static NSArray<NSString *> *MCMInstalledApplicationIdentifiers(void)
     for (id proxy in applications) {
         NSString *identifier = [proxy respondsToSelector:@selector(applicationIdentifier)]
             ? [proxy applicationIdentifier] : nil;
+        if (!MCMSafeIdentifier(identifier) &&
+            [proxy respondsToSelector:@selector(bundleIdentifier)])
+            identifier = [proxy bundleIdentifier];
         if (MCMSafeIdentifier(identifier)) [result addObject:identifier];
         if (result.count >= 1024) break;
     }
     return result.array;
+}
+
+static NSArray<NSString *> *MCMResearchTargetIdentifiers(void)
+{
+    // Enumeration returns near-empty results on iOS 26 even though direct
+    // lookups succeed. Seed known first-party identifiers so the MHA bypass
+    // can resolve them by name when discovery is denied or incomplete.
+    return @[
+        @"com.apple.mobilesafari",
+        @"com.apple.mobilenotes",
+        @"com.apple.Maps",
+        @"com.apple.facetime",
+        @"com.apple.iBooks",
+        @"com.apple.podcasts",
+        @"com.apple.PosterBoard",
+        @"com.apple.mobilemail",
+        @"com.apple.weather",
+        @"com.apple.camera",
+        @"com.apple.Health",
+        @"com.apple.Fitness",
+        @"com.apple.tips",
+        @"com.apple.Passbook",
+        @"com.apple.reminders",
+        @"com.apple.stocks",
+        @"com.apple.news",
+        @"com.apple.Home",
+        @"com.apple.tv",
+        @"com.apple.shortcuts",
+        @"com.apple.freeform",
+        @"com.apple.calculator",
+        @"com.apple.MobileSMS",
+        @"com.apple.InCallService",
+        @"com.apple.Preferences",
+        @"com.apple.springboard",
+        @"com.apple.Photos",
+        @"com.apple.AppStore",
+        @"com.apple.Music",
+        @"com.apple.Bridge",
+        @"com.apple.Clock",
+        @"com.apple.VoiceMemos",
+        @"com.apple.Translate",
+        @"com.apple.measure",
+        @"com.apple.compass",
+        @"com.apple.Magnifier",
+        @"com.apple.DocumentsApp",
+    ];
 }
 
 static NSDictionary *MCMCustomIdentifiers(void)
@@ -562,6 +616,13 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     });
 }
 
+- (void)rescan
+{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [self startOnce];
+    });
+}
+
 - (void)startOnce
 {
     NSString *actual = NSBundle.mainBundle.bundleIdentifier;
@@ -597,21 +658,99 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
 
     NSMutableOrderedSet *appIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(2)];
+    __block NSArray<NSString *> *groupCandidates = @[];
     [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
+    [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
     NSDictionary *custom = MCMCustomIdentifiers();
     for (id value in [custom[@"AppData"] isKindOfClass:NSArray.class] ? custom[@"AppData"] : @[])
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
             [appIdentifiers addObject:value];
     for (NSString *identifier in appIdentifiers)
-        [self installLink:apps identifier:identifier containerClass:2 group:NO];
+        [self installLinkClass2Matrix:apps identifier:identifier];
+
+    // iOS 26 hides third-party apps from ContainerManager/LaunchServices
+    // enumeration, but the LaunchServices store inside com.apple.lsd still
+    // lists every installed identifier. Extract candidates and confirm each
+    // with a direct class-2 lookup; failures are silent because the store
+    // scan yields thousands of stale candidates.
+    //
+    // Runs on a background queue: confirming thousands of candidates can
+    // take seconds, and app startup must not block on it. Observers get
+    // FFMCMAppLinksUpdatedNotification when the pass completes.
+    NSString *lsdError = nil;
+    NSString *lsdContainer = [self activate:10 identifier:@"com.apple.lsd"
+        group:NO error:&lsdError];
+    if (!lsdContainer.length) {
+        FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
+                 lsdError ?: @"(nil)");
+    } else {
+        // Full-store confirmation: every candidate the csstore byte scan
+        // produced is confirmed with a class-2 direct lookup. Failures
+        // are silent (the store yields thousands of stale strings).
+        NSArray<NSString *> *candidates =
+            FFLSDiscoverInstalledIdentifiers(lsdContainer, 65536);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSUInteger confirmed = 0;
+            for (NSString *identifier in candidates) {
+                @synchronized (appIdentifiers) {
+                    if ([appIdentifiers containsObject:identifier]) continue;
+                }
+                if ([self activate:2 identifier:identifier group:NO error:nil]) {
+                    @synchronized (appIdentifiers) {
+                        [appIdentifiers addObject:identifier];
+                    }
+                    confirmed++;
+                }
+                [self installLink:apps identifier:identifier containerClass:2
+                            group:NO logFailure:NO];
+            }
+            FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
+                     (unsigned long)candidates.count, (unsigned long)confirmed);
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+        });
+
+        // App Group candidates from the same store (extracted now;
+        // confirmed below once the group identifier set exists).
+        groupCandidates = FFLSDiscoverGroupIdentifiers(lsdContainer, 65536);
+    }
 
     NSMutableOrderedSet *groupIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(7)];
+    [groupIdentifiers addObjectsFromArray:@[
+        @"group.com.apple.notes",
+        @"group.com.apple.safari",
+        @"group.com.apple.weather",
+        @"group.com.apple.stocks",
+    ]];
     for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
             [groupIdentifiers addObject:value];
     for (NSString *identifier in groupIdentifiers)
         [self installLink:groups identifier:identifier containerClass:7 group:YES];
+
+    // Confirm each "group.<team>.<name>" candidate with a class-7 lookup
+    // on a background queue; links appear via the updated notification.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger confirmed = 0;
+        for (NSString *identifier in groupCandidates) {
+            @synchronized (groupIdentifiers) {
+                if ([groupIdentifiers containsObject:identifier]) continue;
+            }
+            if ([self activate:7 identifier:identifier group:YES error:nil]) {
+                @synchronized (groupIdentifiers) {
+                    [groupIdentifiers addObject:identifier];
+                }
+                confirmed++;
+            }
+            [self installLink:groups identifier:identifier containerClass:7
+                        group:YES logFailure:NO];
+        }
+        FFLogTag(@"MCM", @"LaunchServices group candidates=%lu newly-linked=%lu",
+                 (unsigned long)groupCandidates.count, (unsigned long)confirmed);
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+    });
 
     NSMutableOrderedSet *extensionIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(4)];
@@ -628,9 +767,11 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},
         @{@"Directory": serviceData, @"Class": @10, @"Group": @(NO), @"CustomKey": @"ServiceData",
-          @"Fallback": @[@"com.apple.swcd", @"com.apple.familycircled", @"com.apple.locationd"]},
+          @"Fallback": @[@"com.apple.swcd", @"com.apple.familycircled", @"com.apple.locationd",
+                         @"com.apple.lsd", @"com.apple.installd", @"com.apple.accountsd",
+                         @"com.apple.itunescloudd", @"com.apple.nanonewscd"]},
         @{@"Directory": systemData, @"Class": @12, @"Group": @(NO), @"CustomKey": @"SystemData",
-          @"Fallback": @[@"com.apple.eligibilityd", @"com.apple.geod"]},
+          @"Fallback": @[@"com.apple.eligibilityd", @"com.apple.geod", @"com.apple.springboard"]},
         @{@"Directory": systemGroups, @"Class": @13, @"Group": @(YES), @"CustomKey": @"SystemGroups",
           @"Fallback": @[@"systemgroup.com.apple.configurationprofiles",
                          @"systemgroup.com.apple.pisco.suinfo",

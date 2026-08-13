@@ -6,7 +6,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *MCMVirtualRoot(void);
-FOUNDATION_EXPORT NSString *MCMWallpaperLabName(void); // kept for compat, unused
+
+// Posted after the background LaunchServices confirmation pass finishes
+// installing App Data links. Browsers observing this can auto-refresh.
+FOUNDATION_EXPORT NSNotificationName const FFMCMAppLinksUpdatedNotification;
 
 @interface MCMManager : NSObject
 
@@ -15,6 +18,10 @@ FOUNDATION_EXPORT NSString *MCMWallpaperLabName(void); // kept for compat, unuse
 // Enumerates container classes and builds the symlink virtual root.
 // Safe to call repeatedly; performs its work exactly once per process.
 - (void)start;
+
+// Re-runs the full scan on demand (the LaunchServices confirmation and
+// link installation are idempotent).
+- (void)rescan;
 
 // Returns the activated real path for a class-2 (app data) container.
 - (nullable NSString *)dataContainerPathForIdentifier:(NSString *)identifier
@@ -30,9 +37,9 @@ FOUNDATION_EXPORT NSString *MCMWallpaperLabName(void); // kept for compat, unuse
                                 flags:(uint64_t)flags
                                 error:(NSString * _Nullable * _Nullable)error;
 
-// Resolves com.apple.MobileGestalt.plist through the MCM routes, falling
-// back to the bad_query escaped link. Returns nil if no route grants access.
-- (nullable NSString *)mobileGestaltPath:(NSString * _Nullable * _Nullable)error;
+// YES when an activated MHA lease covers the given path (the container
+// token is already consumed process-wide, so the path is readable).
+- (BOOL)hasActiveLeaseForPath:(NSString *)path;
 
 // Map of category folder name -> (link name -> symlink target), refreshed by
 // -start. Used by the browser to show which roots are active.
