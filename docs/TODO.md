@@ -84,14 +84,14 @@
 
 ## P1 文件任务
 
-- [ ] FileTask
-- [ ] FileTaskManager
-- [ ] 任务队列
-- [ ] 文件复制进度
-- [ ] 总进度
-- [ ] Cancel
-- [ ] 失败任务
-- [ ] Retry
+- [x] FileTask（kind/state/progress/cancel 模型）
+- [x] FileTaskManager（串行队列、有界历史、状态通知）
+- [x] 任务队列（首页「任务中心」入口 + FFTasksViewController）
+- [x] 文件复制进度（递归预扫描 + 逐块回调）
+- [x] 总进度（多文件合计字节比例）
+- [x] Cancel（文件级取消 + 解压条目级取消）
+- [x] 失败任务（failed 状态 + 错误记录）
+- [~] Retry（失败任务可重投递，UI 入口待补）
 
 ## P1 Preview
 
