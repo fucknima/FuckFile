@@ -29,15 +29,22 @@
     // responsive while leases are activated and links are created. The
     // bad_query probe runs right after, sharing the same queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"MCM start begin");
-        [[MCMManager sharedManager] start];
-        FFLog(@"MCM start done");
         FFLog(@"BadQueryProbe run begin");
         BadQueryProbeRun();
         FFLog(@"BadQueryProbe run done");
         FFLog(@"BadQueryReconnect begin");
         BadQueryReconnectEscapedRoots();
         FFLog(@"BadQueryReconnect done");
+        // Full container enumeration (fsgetpath sweep -> UUID/bundle-id
+        // links + INDEX.plist). Runs before the MCM start so the App Data
+        // union picks up the fresh index and third-party links appear on
+        // the first launch as well.
+        FFLog(@"BadQueryEnumerate begin");
+        BadQueryEnumerateAllContainers();
+        FFLog(@"BadQueryEnumerate done");
+        FFLog(@"MCM start begin");
+        [[MCMManager sharedManager] start];
+        FFLog(@"MCM start done");
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:@"FFProbeFinished" object:nil];
