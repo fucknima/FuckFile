@@ -58,6 +58,8 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @property(nonatomic) BOOL hasLoaded;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @property(nonatomic, strong) UIBarButtonItem *sortItem;
+@property(nonatomic, strong) UIBarButtonItem *editItem;
+@property(nonatomic, strong) NSArray<UIBarButtonItem *> *batchToolbarItems;
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, copy) NSString *searchText;
 @property(nonatomic) FFSortMode sortMode;
@@ -67,7 +69,7 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
-static NSString *gClipboardSource = nil;
+static NSArray<NSString *> *gClipboardSources = nil;
 static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 static NSMutableSet<NSString *> *gConsumedEscapedRoots;
 static NSMutableSet<NSString *> *gConsumedLinkTargets;
@@ -93,7 +95,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
-    self.tableView.allowsMultipleSelectionDuringEditing = NO;
+    self.tableView.allowsMultipleSelectionDuringEditing = YES;
 
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
@@ -135,7 +137,9 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     self.sortItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.up.arrow.down" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
     self.sortItem.menu = [self sortMenu];
-    self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem];
+    self.editItem = [[UIBarButtonItem alloc] initWithTitle:@"多选"
+        style:UIBarButtonItemStylePlain target:self action:@selector(toggleBatchMode)];
+    self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem, self.editItem];
 
     UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.clockwise" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(reloadEntries)];
@@ -167,23 +171,168 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
 
 - (void)updatePasteState
 {
-    self.pasteItem.enabled = (gClipboardSource.length > 0) && ![self pasteIsInsideClipboardSource];
+    self.pasteItem.enabled = (gClipboardSources.count > 0) && ![self pasteIsInsideClipboardSource];
 }
 
 - (BOOL)pasteIsInsideClipboardSource
 {
-    if (!gClipboardSource) return NO;
-    struct stat status = {0};
-    if (lstat(gClipboardSource.fileSystemRepresentation, &status) != 0 || !S_ISDIR(status.st_mode))
-        return NO;
-    char sourceReal[PATH_MAX] = {0};
-    char destinationReal[PATH_MAX] = {0};
-    if (!realpath(gClipboardSource.fileSystemRepresentation, sourceReal) ||
-        !realpath(self.currentPath.fileSystemRepresentation, destinationReal)) return NO;
-    NSString *sourcePath = [NSString stringWithUTF8String:sourceReal];
-    NSString *destinationPath = [NSString stringWithUTF8String:destinationReal];
-    return [destinationPath isEqualToString:sourcePath] ||
-        [destinationPath hasPrefix:[sourcePath stringByAppendingString:@"/"]];
+    if (gClipboardSources.count == 0) return NO;
+    for (NSString *source in gClipboardSources) {
+        struct stat status = {0};
+        if (lstat(source.fileSystemRepresentation, &status) != 0 || !S_ISDIR(status.st_mode))
+            continue;
+        char sourceReal[PATH_MAX] = {0};
+        char destinationReal[PATH_MAX] = {0};
+        if (!realpath(source.fileSystemRepresentation, sourceReal) ||
+            !realpath(self.currentPath.fileSystemRepresentation, destinationReal)) continue;
+        NSString *sourcePath = [NSString stringWithUTF8String:sourceReal];
+        NSString *destinationPath = [NSString stringWithUTF8String:destinationReal];
+        if ([destinationPath isEqualToString:sourcePath] ||
+            [destinationPath hasPrefix:[sourcePath stringByAppendingString:@"/"]])
+            return YES;
+    }
+    return NO;
+}
+
+#pragma mark - Batch mode (multi-select)
+
+- (void)toggleBatchMode
+{
+    [self setEditing:!self.editing animated:YES];
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated
+{
+    [super setEditing:editing animated:animated];
+    self.editItem.title = editing ? @"完成" : @"多选";
+    self.navigationItem.rightBarButtonItems = editing
+        ? @[self.editItem]
+        : @[self.pasteItem, self.sortItem, self.editItem];
+    if (editing) {
+        if (!self.batchToolbarItems)
+            self.batchToolbarItems = [self buildBatchToolbarItems];
+        self.toolbarItems = self.batchToolbarItems;
+    } else {
+        self.toolbarItems = @[
+            [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+            [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.clockwise" tint:nil]
+                style:UIBarButtonItemStylePlain target:self action:@selector(reloadEntries)],
+        ];
+    }
+    [self updatePasteState];
+}
+
+- (NSArray<UIBarButtonItem *> *)buildBatchToolbarItems
+{
+    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithTitle:@"全选"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchSelectAll)];
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:@"复制"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
+    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithTitle:@"剪切"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCut)];
+    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
+    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithTitle:@"删除"
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
+    trash.tintColor = [UIColor systemRedColor];
+    return @[selectAll, copy, cut, share, trash];
+}
+
+- (NSArray<FFEntry *> *)selectedBatchEntries
+{
+    NSArray<NSIndexPath *> *indexPaths = self.tableView.indexPathsForSelectedRows;
+    NSMutableArray<FFEntry *> *items = [NSMutableArray arrayWithCapacity:indexPaths.count];
+    for (NSIndexPath *indexPath in indexPaths)
+        if (indexPath.row < self.filteredEntries.count)
+            [items addObject:self.filteredEntries[indexPath.row]];
+    return items;
+}
+
+- (void)batchSelectAll
+{
+    for (NSUInteger row = 0; row < self.filteredEntries.count; row++)
+        [self.tableView selectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]
+            animated:NO scrollPosition:UITableViewScrollPositionNone];
+    [self updatePasteState];
+}
+
+- (void)batchCopy
+{
+    [self batchSetClipboard:FFClipboardModeCopy];
+}
+
+- (void)batchCut
+{
+    [self batchSetClipboard:FFClipboardModeCut];
+}
+
+- (void)batchSetClipboard:(FFClipboardMode)mode
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+    for (FFEntry *item in items) [paths addObject:item.path];
+    gClipboardSources = paths;
+    gClipboardMode = mode;
+    [self flash:[NSString stringWithFormat:@"%@ %lu 个项目",
+        mode == FFClipboardModeCopy ? @"已复制" : @"已剪切", (unsigned long)items.count]];
+    [self setEditing:NO animated:YES];
+}
+
+- (void)batchShare
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:items.count];
+    for (FFEntry *item in items) [urls addObject:[NSURL fileURLWithPath:item.path]];
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:urls applicationActivities:nil];
+    activity.popoverPresentationController.sourceView = self.view;
+    activity.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:activity animated:YES completion:nil];
+    [self setEditing:NO animated:YES];
+}
+
+- (void)batchDelete
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除"
+        message:[NSString stringWithFormat:@"确定删除 %lu 个项目？", (unsigned long)items.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSUInteger failed = 0;
+                for (FFEntry *item in items) {
+                    NSError *error = nil;
+                    if (![[NSFileManager defaultManager] removeItemAtPath:item.path error:&error]) {
+                        failed++;
+                        FFLogTag(@"Browser", @"batch delete FAIL path=%@ error=%@",
+                            item.path, error);
+                    }
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf flash:failed == 0 ? @"删除完成"
+                        : [NSString stringWithFormat:@"删除完成，%lu 个失败", (unsigned long)failed]];
+                    [weakSelf setEditing:NO animated:YES];
+                    [weakSelf reloadEntries];
+                });
+            });
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Loading
@@ -739,6 +888,8 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
+            UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf copyPath:item]; }];
             UIAction *share = [UIAction actionWithTitle:@"分享" image:[self symbolImage:@"square.and.arrow.up" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf shareEntry:item]; }];
             UIAction *properties = [UIAction actionWithTitle:@"属性" image:[self symbolImage:@"info.circle" tint:nil]
@@ -746,7 +897,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             UIAction *delete = [UIAction actionWithTitle:@"删除" image:[self symbolImage:@"trash" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
-            return [UIMenu menuWithTitle:item.name children:@[view, copy, cut, rename, share, properties, delete]];
+            return [UIMenu menuWithTitle:item.name children:@[view, copy, cut, rename, copyPath, share, properties, delete]];
         }];
 }
 
@@ -800,6 +951,8 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf renameEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"分享" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf shareEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"属性" style:UIAlertActionStyleDefault
@@ -815,7 +968,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
 
 - (void)setClipboard:(FFEntry *)item mode:(FFClipboardMode)mode
 {
-    gClipboardSource = item.path;
+    gClipboardSources = @[item.path];
     gClipboardMode = mode;
     [self updatePasteState];
     [self flash:[NSString stringWithFormat:@"%@: %@",
@@ -824,29 +977,42 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
 
 - (void)pasteAction:(id)sender
 {
-    if (!gClipboardSource) return;
+    if (gClipboardSources.count == 0) return;
     if ([self pasteIsInsideClipboardSource]) return;
-    NSString *destination = [self uniqueDestinationForName:gClipboardSource.lastPathComponent];
-    if (!destination) {
-        [self flash:@"无法确定粘贴目标"];
-        return;
-    }
-    NSError *error = nil;
-    BOOL ok = [FFCopyEngine copyItemAtPath:gClipboardSource toPath:destination error:&error];
-    if (ok && gClipboardMode == FFClipboardModeCut) {
-        NSError *removeError = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:gClipboardSource error:&removeError];
-        if (removeError) ok = NO;
-    }
-    if (ok) {
-        gClipboardSource = nil;
-        gClipboardMode = FFClipboardModeNone;
-        [self flash:@"粘贴完成"];
-        [self reloadEntries];
-    } else {
-        [self showError:error];
-    }
-    [self updatePasteState];
+    NSArray<NSString *> *sources = gClipboardSources;
+    gClipboardSources = nil;
+    FFClipboardMode mode = gClipboardMode;
+    gClipboardMode = FFClipboardModeNone;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger failures = 0;
+        for (NSString *source in sources) {
+            NSString *destination = [weakSelf uniqueDestinationForName:source.lastPathComponent];
+            if (!destination) {
+                failures++;
+                continue;
+            }
+            NSError *error = nil;
+            BOOL ok = [FFCopyEngine copyItemAtPath:source toPath:destination error:&error];
+            if (ok && mode == FFClipboardModeCut) {
+                NSError *removeError = nil;
+                [[NSFileManager defaultManager] removeItemAtPath:source error:&removeError];
+                if (removeError) ok = NO;
+            }
+            if (!ok) {
+                failures++;
+                FFLogTag(@"Browser", @"paste FAIL source=%@ error=%@", source, error);
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (failures == 0)
+                [weakSelf flash:@"粘贴完成"];
+            else
+                [weakSelf flash:[NSString stringWithFormat:@"粘贴完成，%lu 个失败", (unsigned long)failures]];
+            [weakSelf reloadEntries];
+            [weakSelf updatePasteState];
+        });
+    });
 }
 
 - (NSString *)uniqueDestinationForName:(NSString *)name
@@ -933,9 +1099,71 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     [self presentViewController:activity animated:YES completion:nil];
 }
 
+- (void)copyPath:(FFEntry *)item
+{
+    UIPasteboard.generalPasteboard.string = item.path;
+    [self flash:@"路径已复制"];
+}
+
 - (void)showProperties:(FFEntry *)item
 {
-    [self presentText:item.name body:item.fullDetail ?: item.detail];
+    NSString *body = item.fullDetail ?: item.detail;
+    if (item.isDirectory) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.displayName ?: item.name
+            message:body preferredStyle:UIAlertControllerStyleAlert];
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"计算目录大小" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf computeDirectorySize:item]; }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    [self presentText:item.name body:body];
+}
+
+- (void)computeDirectorySize:(FFEntry *)item
+{
+    [self flash:@"正在计算…"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        unsigned long long size = [self directorySizeAtPath:item.path];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.name
+                message:[NSString stringWithFormat:@"目录大小：%@\n（%llu 字节）\n\n%@",
+                    [weakSelf formatSize:size], size, item.path]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (unsigned long long)directorySizeAtPath:(NSString *)path
+{
+    unsigned long long total = 0;
+    DIR *directory = opendir(path.fileSystemRepresentation);
+    if (!directory) return 0;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [[NSFileManager defaultManager]
+            stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
+        if (!name) continue;
+        NSString *child = [path stringByAppendingPathComponent:name];
+        struct stat status = {0};
+        if (lstat(child.fileSystemRepresentation, &status) != 0) continue;
+        if (S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode)) {
+            total += [self directorySizeAtPath:child];
+        } else if (S_ISREG(status.st_mode)) {
+            total += (unsigned long long)status.st_size;
+        }
+    }
+    closedir(directory);
+    return total;
 }
 
 #pragma mark - Preview
