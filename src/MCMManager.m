@@ -31,7 +31,6 @@ NSNotificationName const FFMCMAppLinksUpdatedNotification =
 - (NSString *)bundleIdentifier;
 @end
 
-static NSString *const kMCMAppDataDirectoryName = @"[MHA-C2] App Data";
 
 NSString *MCMVirtualRoot(void)
 {
@@ -463,16 +462,18 @@ static NSDictionary *MCMCustomIdentifiers(void)
 // Cleans up virtual-root directories from earlier releases that are no
 // longer in scope (App Groups, Service Data, …) so the browser only
 // ever sees the App Data folder.
-- (void)removeLegacyDirectoriesUnder:(NSString *)root except:(NSString *)keep
+- (void)removeLegacyDirectoriesUnder:(NSString *)root
 {
+    // Remove every [MHA-*] folder from earlier releases (including the
+    // old "[MHA-C2] App Data" wrapper) — app links now live directly in
+    // the container root next to the log file.
     NSFileManager *manager = NSFileManager.defaultManager;
     NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:root error:nil];
     for (NSString *name in names ?: @[]) {
+        if (![name hasPrefix:@"[MHA-"]) continue;
         NSString *path = [root stringByAppendingPathComponent:name];
-        if ([path isEqualToString:keep]) continue;
         BOOL isDirectory = NO;
-        if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory &&
-            [name hasPrefix:@"[MHA-"])
+        if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory)
             [manager removeItemAtPath:path error:nil];
     }
 }
@@ -519,15 +520,14 @@ static NSDictionary *MCMCustomIdentifiers(void)
     FFLogTag(@"MCM", @"start root=%@ bridge=OK", MCMVirtualRoot());
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = MCMVirtualRoot();
-    NSString *apps = [root stringByAppendingPathComponent:kMCMAppDataDirectoryName];
-    [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
+    [fm createDirectoryAtPath:root withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-    // Scope: App Data only. All other container classes (groups, service,
-    // system, VPN, extension, protected, experimental) are intentionally
-    // not probed anymore — the value they add is outweighed by the bug
-    // surface they create on a per-OS-build basis.
-    [self removeLegacyDirectoriesUnder:root except:apps];
+    // Scope: App Data only, linked directly into our own container root
+    // so app links live next to the log file. All other container
+    // classes are intentionally not probed anymore.
+    NSString *apps = root;
+    [self removeLegacyDirectoriesUnder:root];
 
     NSMutableOrderedSet *appIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(2)];

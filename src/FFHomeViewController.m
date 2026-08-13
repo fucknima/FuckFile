@@ -69,13 +69,17 @@
 - (void)reloadStatus
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *appData = [MCMVirtualRoot()
-            stringByAppendingPathComponent:@"[MHA-C2] App Data"];
+        NSString *root = MCMVirtualRoot();
         NSFileManager *manager = NSFileManager.defaultManager;
-        NSUInteger categories = 1;
-        NSUInteger links = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
+        NSUInteger links = 0;
+        for (NSString *name in [manager contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
+            NSString *path = [root stringByAppendingPathComponent:name];
+            BOOL isDirectory = NO;
+            if ([manager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory)
+                links++;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.categoryCount = categories;
+            self.categoryCount = 1;
             self.linkCount = links;
             [self.tableView reloadData];
         });
@@ -190,10 +194,8 @@
     switch (indexPath.section) {
         case 0:
             if (indexPath.row == 0) {
-                // App Data is the only scope: enter the folder directly.
-                NSString *appData = [MCMVirtualRoot()
-                    stringByAppendingPathComponent:@"[MHA-C2] App Data"];
-                next = [[FFBrowserViewController alloc] initWithPath:appData];
+                // App links live directly in our container root.
+                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             } else if (indexPath.row == 1) {
                 next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
             } else {

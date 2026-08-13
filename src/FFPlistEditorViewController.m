@@ -50,13 +50,6 @@
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
             target:self action:@selector(addEntry)],
     ];
-    // The root editor shows 回退 (reload from disk); nested scopes keep
-    // the system back button for drill-down navigation.
-    if (self.keyPath.count == 0) {
-        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-            initWithTitle:@"回退" style:UIBarButtonItemStylePlain target:self
-            action:@selector(revert)];
-    }
 
     if (self.root) {
         [self reloadScope];
@@ -109,50 +102,6 @@
         self.keys = @[];
     }
     [self.tableView reloadData];
-}
-
-- (void)revert
-{
-    NSString *path = self.filePath;
-    if (path.length == 0) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"回退"
-        message:@"放弃所有未保存的修改，从磁盘重新读取该文件？"
-        preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"回退" style:UIAlertActionStyleDestructive
-        handler:^(__unused UIAlertAction *action) {
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                NSData *data = [NSData dataWithContentsOfFile:path];
-                if (!data) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [weakSelf flash:@"读取失败，无法回退"];
-                    });
-                    return;
-                }
-                NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
-                id plist = [NSPropertyListSerialization propertyListWithData:data
-                    options:NSPropertyListImmutable format:&format error:nil];
-                if (![plist isKindOfClass:NSDictionary.class] &&
-                    ![plist isKindOfClass:NSArray.class]) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [weakSelf flash:@"文件不是有效的 plist，未回退"];
-                    });
-                    return;
-                }
-                BOOL binary = data.length > 0 && data.bytes &&
-                    ((const uint8_t *)data.bytes)[0] == 'b';
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    weakSelf.root = [plist mutableCopy];
-                    weakSelf.binary = binary;
-                    weakSelf.keyPath = @[];
-                    weakSelf.title = path.lastPathComponent;
-                    [weakSelf reloadScope];
-                    [weakSelf flash:@"已回退到磁盘内容"];
-                });
-            });
-        }]];
-    [self presentOnTop:alert];
 }
 
 #pragma mark - Description
@@ -488,7 +437,7 @@ static NSString *FFPlistValueSummary(id value)
 }
 
 // UIKit silently drops presentViewController when an alert is already
-// up, which made 回退 look dead right after a flash. Dismiss whatever
+// up, which made button taps look dead right after a flash. Dismiss whatever
 // is on top first.
 - (void)presentOnTop:(UIViewController *)controller
 {
