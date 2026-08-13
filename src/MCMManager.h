@@ -6,7 +6,6 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *MCMVirtualRoot(void);
-FOUNDATION_EXPORT NSString *MCMWallpaperLabName(void); // kept for compat, unused
 
 // Posted after the background LaunchServices confirmation pass finishes
 // installing App Data links. Browsers observing this can auto-refresh.

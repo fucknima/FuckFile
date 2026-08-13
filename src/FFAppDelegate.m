@@ -3,7 +3,6 @@
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
 #import "BadQueryProbe.h"
-#import "PosterBoardFeature.h"
 #import "FFLogger.h"
 
 @implementation FFAppDelegate
@@ -33,9 +32,6 @@
         FFLog(@"MCM start begin");
         [[MCMManager sharedManager] start];
         FFLog(@"MCM start done");
-        FFLog(@"WallpaperLab start begin");
-        PBWallpaperFeatureStart();
-        FFLog(@"WallpaperLab start done");
         FFLog(@"BadQueryProbe run begin");
         BadQueryProbeRun();
         FFLog(@"BadQueryProbe run done");

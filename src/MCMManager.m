@@ -57,8 +57,6 @@ NSString *MCMVirtualRoot(void)
     return [documents stringByAppendingPathComponent:@"Device Storage"];
 }
 
-NSString *MCMWallpaperLabName(void) { return @"[MHA-C2] Wallpaper Lab"; }
-
 @implementation MCMManager {
     NSMutableDictionary<NSString *, MCMLease *> *_leases;
     NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *_links;

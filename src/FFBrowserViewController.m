@@ -3,7 +3,6 @@
 #import "MCMManager.h"
 #import "BadQueryProbe.h"
 #import "FFLogger.h"
-#import "PosterBoardFeature.h"
 
 #import <AVKit/AVKit.h>
 #import <dirent.h>
@@ -194,15 +193,8 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     self.sortItem.menu = [self sortMenu];
     self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem];
 
-    UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
-        style:UIBarButtonItemStylePlain target:nil action:nil];
-    UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
-    UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
-    UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
-    addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
+    UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.clockwise" tint:nil]
+        style:UIBarButtonItemStylePlain target:self action:@selector(reloadEntries)];
     self.toolbarItems = @[
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
         addItem,
@@ -219,7 +211,6 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     [self updatePasteState];
     if (self.hasLoaded) [self reloadEntries];
     self.navigationController.toolbarHidden = NO;
-    PBWallpaperConfigureBrowser(self, self.currentPath);
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -926,59 +917,6 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             return candidate;
     }
     return nil;
-}
-
-- (void)createFolder
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"新建文件夹"
-        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"文件夹名称";
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    }];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) {
-            NSString *name = alert.textFields.firstObject.text;
-            if (![weakSelf validNewName:name]) return;
-            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
-            NSError *error = nil;
-            if (![[NSFileManager defaultManager] createDirectoryAtPath:path
-                withIntermediateDirectories:NO attributes:nil error:&error])
-                [weakSelf showError:error];
-            [weakSelf reloadEntries];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)createFile
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"新建文件"
-        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"文件名";
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    }];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) {
-            NSString *name = alert.textFields.firstObject.text;
-            if (![weakSelf validNewName:name]) return;
-            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
-            int fd = open(path.fileSystemRepresentation,
-                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
-            if (fd < 0) {
-                [weakSelf showError:[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
-                        name, strerror(errno)]}]];
-            } else {
-                close(fd);
-            }
-            [weakSelf reloadEntries];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (BOOL)validNewName:(NSString *)name

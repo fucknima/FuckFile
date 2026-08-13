@@ -1,7 +1,6 @@
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
-#import "FFProbeViewController.h"
-#import "FFGestaltEditorViewController.h"
+#import "FFLogViewController.h"
 #import "BadQueryProbe.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
@@ -9,8 +8,6 @@
 @interface FFHomeViewController ()
 @property(nonatomic) NSUInteger categoryCount;
 @property(nonatomic) NSUInteger linkCount;
-@property(nonatomic) NSUInteger escapedCount;
-@property(nonatomic, copy) NSString *gestaltStatus;
 @end
 
 @implementation FFHomeViewController
@@ -37,6 +34,10 @@
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
+        }];
     [self reloadStatus];
 }
 
@@ -45,19 +46,6 @@
     [super viewWillAppear:animated];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     [self reloadStatus];
-}
-
-- (void)viewDidAppear:(BOOL)animated
-{
-    [super viewDidAppear:animated];
-    UIWindow *window = self.view.window;
-    FFLogTag(@"UI", @"home view=%@ safe=%@ table=%@ window=%@ screen=%@ nav=%@",
-        NSStringFromCGRect(self.view.bounds),
-        NSStringFromUIEdgeInsets(self.view.safeAreaInsets),
-        NSStringFromCGRect(self.tableView.frame),
-        NSStringFromCGRect(window.frame),
-        NSStringFromCGRect(UIScreen.mainScreen.bounds),
-        NSStringFromCGRect(self.navigationController.navigationBar.frame));
 }
 
 - (void)reloadStatus
@@ -75,20 +63,9 @@
                 links += [[manager contentsOfDirectoryAtPath:path error:nil] count];
             }
         }
-        NSDictionary *report = BadQueryProbeLastReport();
-        NSUInteger escaped = 0;
-        for (NSDictionary *probe in [report[@"Probes"] isKindOfClass:NSArray.class]
-            ? report[@"Probes"] : @[]) {
-            if ([probe[@"Status"] isKindOfClass:NSString.class] &&
-                [probe[@"Status"] isEqualToString:@"escaped"]) escaped++;
-        }
-        NSString *error = nil;
-        NSString *gestaltPath = [[MCMManager sharedManager] mobileGestaltPath:&error];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.categoryCount = categories;
             self.linkCount = links;
-            self.escapedCount = escaped;
-            self.gestaltStatus = gestaltPath ? @"Editable" : (error ?: @"Unavailable");
             [self.tableView reloadData];
         });
     });
@@ -98,7 +75,7 @@
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
 {
-    return 4;
+    return 3;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
@@ -107,7 +84,6 @@
         case 0: return 1;
         case 1: return 1;
         case 2: return 2;
-        case 3: return 2;
         default: return 0;
     }
 }
@@ -116,9 +92,8 @@
 {
     switch (section) {
         case 0: return @"存储";
-        case 1: return @"bad_query 探针";
-        case 2: return @"工具";
-        case 3: return @"关于";
+        case 1: return @"工具";
+        case 2: return @"关于";
         default: return nil;
     }
 }
@@ -138,33 +113,18 @@
         case 0: {
             cell.textLabel.text = @"设备存储";
             cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu 个分类目录，%lu 个有效链接", (unsigned long)self.categoryCount,
+                @"%lu 个分类目录 · %lu 个已逃逸链接", (unsigned long)self.categoryCount,
                 (unsigned long)self.linkCount];
             cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
             break;
         }
         case 1: {
-            cell.textLabel.text = @"探针控制台";
-            cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu 条逃逸路径 — 结果、日志、容器映射（UUID → 包名）",
-                (unsigned long)self.escapedCount];
-            cell.imageView.image = [UIImage systemImageNamed:@"waveform.path.ecg"];
+            cell.textLabel.text = @"运行日志";
+            cell.detailTextLabel.text = @"查看、分享、重跑探针";
+            cell.imageView.image = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
             break;
         }
         case 2: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"MobileGestalt 编辑器";
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"状态：%@",
-                    self.gestaltStatus ?: @"检查中…"];
-                cell.imageView.image = [UIImage systemImageNamed:@"iphone.gen3"];
-            } else {
-                cell.textLabel.text = @"壁纸实验室";
-                cell.detailTextLabel.text = @"PosterBoard .tendies 导入、检查与回滚";
-                cell.imageView.image = [UIImage systemImageNamed:@"photo.on.rectangle.angled"];
-            }
-            break;
-        }
-        case 3: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"版本";
                 cell.detailTextLabel.text = [NSString stringWithFormat:
@@ -175,7 +135,7 @@
                 cell.imageView.image = [UIImage systemImageNamed:@"info.circle.fill"];
             } else {
                 cell.textLabel.text = @"致谢";
-                cell.detailTextLabel.text = @"MCM：FilzaSlop · 逃逸：bad_query · UI 参考：mond";
+                cell.detailTextLabel.text = @"MCM：FilzaSlop · 逃逸：bad_query";
                 cell.imageView.image = [UIImage systemImageNamed:@"person.3.fill"];
             }
             break;
@@ -193,17 +153,9 @@
             next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             break;
         case 1:
-            next = [FFProbeViewController new];
+            next = [FFLogViewController new];
             break;
         case 2:
-            if (indexPath.row == 0) {
-                next = [FFGestaltEditorViewController new];
-            } else {
-                NSString *lab = [MCMVirtualRoot() stringByAppendingPathComponent:@"[MHA-C2] Wallpaper Lab"];
-                next = [[FFBrowserViewController alloc] initWithPath:lab];
-            }
-            break;
-        case 3:
             if (indexPath.row == 1) {
                 [self presentCredits];
                 return;
@@ -216,7 +168,7 @@
 - (void)presentCredits
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"致谢"
-        message:@"MCM 身份绕过与壁纸实验室：0xjohnnydev/FilzaSlop\n沙箱逃逸：forcequitOS/bad_query\nMobileGestalt 编辑器参考：rooootdev/mond"
+        message:@"MCM 身份绕过：0xjohnnydev/FilzaSlop\n沙箱逃逸：forcequitOS/bad_query"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];

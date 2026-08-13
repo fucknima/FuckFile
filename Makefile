@@ -13,15 +13,13 @@ FuckFile_FILES = \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
+	src/FFLogViewController.m \
 	src/FFCopyEngine.m \
-	src/FFProbeViewController.m \
-	src/FFGestaltEditorViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m \
 	src/BadQueryProbe.m \
-	src/BadQuery.c \
-	src/PosterBoardFeature.m
+	src/BadQuery.c
 
 FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \
