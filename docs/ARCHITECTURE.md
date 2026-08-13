@@ -6,6 +6,20 @@
 
 UI 不直接负责具体文件系统操作。
 
+## 当前实现映射（Objective-C）
+
+文档规划使用 Swift 命名，当前工程为 Objective-C（见 DECISIONS ADR-006）：
+
+| 文档概念 | 实现 |
+|---|---|
+| FileItem | `FFEntry`（src/FFBrowserViewController.h） |
+| StorageProvider | Local 直连（`FFBrowserViewController.loadDirectoryContents`），Protocol 抽象延后 |
+| FileOperationService | `FFCopyEngine`（复制引擎）+ NSFileManager 调用点（rename/delete 待收敛） |
+| ArchiveService | `FFZipExtract`（解压；压缩未实现） |
+| Logger | `FFLogger`（模块 tag：Browser/MCM/LSDiscovery/PlistEditor 等） |
+| Preview 路由 | `FFBrowserViewController.previewEntry`（内联，未抽象 Router） |
+| 文件系统访问底座 | `MCMManager`（MHA 身份容器访问）+ `FFLSDiscovery`（LaunchServices 扫描） |
+
 ## Core Models
 
 统一文件模型：

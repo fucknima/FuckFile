@@ -1,5 +1,6 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
+#import "FFConflictPolicy.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 #import "FFAppNames.h"
@@ -1021,14 +1022,53 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardSources = nil;
     FFClipboardMode mode = gClipboardMode;
     gClipboardMode = FFClipboardModeNone;
+    [self performCopyOfSources:sources mode:mode];
+}
+
+// Copy/move loop with the conflict system: when a destination already
+// exists the user chooses Replace / Skip / Keep Both / Replace All /
+// Skip All (applied to the rest of the batch). Every decision runs on
+// the main thread; the background thread waits on a semaphore.
+- (void)performCopyOfSources:(NSArray<NSString *> *)sources mode:(FFClipboardMode)mode
+{
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        __block FFConflictAction applyAll = FFConflictActionAsk;
         NSUInteger failures = 0;
+        NSUInteger skipped = 0;
         for (NSString *source in sources) {
-            NSString *destination = [weakSelf uniqueDestinationForName:source.lastPathComponent];
-            if (!destination) {
-                failures++;
-                continue;
+            NSString *name = source.lastPathComponent;
+            NSString *destination = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            struct stat existing = {0};
+            BOOL conflict = lstat(destination.fileSystemRepresentation, &existing) == 0;
+            if (conflict) {
+                FFConflictAction action = applyAll != FFConflictActionAsk
+                    ? applyAll
+                    : [weakSelf askConflictForName:name];
+                if (action == FFConflictActionSkip || action == FFConflictActionSkipAll) {
+                    if (action == FFConflictActionSkipAll) applyAll = action;
+                    skipped++;
+                    FFLogTag(@"Browser", @"conflict skip %@", name);
+                    continue;
+                }
+                if (action == FFConflictActionReplaceAll) applyAll = action;
+                if (action == FFConflictActionReplace || action == FFConflictActionReplaceAll) {
+                    NSError *removeError = nil;
+                    if (![[NSFileManager defaultManager] removeItemAtPath:destination
+                                                                     error:&removeError]) {
+                        failures++;
+                        FFLogTag(@"Browser", @"conflict replace failed %@ error=%@",
+                                 name, removeError);
+                        continue;
+                    }
+                } else {
+                    // Keep Both -> auto-renamed sibling.
+                    destination = [weakSelf uniqueDestinationForName:name];
+                    if (!destination) {
+                        failures++;
+                        continue;
+                    }
+                }
             }
             NSError *error = nil;
             BOOL ok = [FFCopyEngine copyItemAtPath:source toPath:destination error:&error];
@@ -1043,14 +1083,56 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (failures == 0)
-                [weakSelf flash:@"粘贴完成"];
-            else
-                [weakSelf flash:[NSString stringWithFormat:@"粘贴完成，%lu 个失败", (unsigned long)failures]];
+            NSString *summary = failures == 0 && skipped == 0 ? @"粘贴完成"
+                : [NSString stringWithFormat:@"粘贴完成：%lu 成功，%lu 跳过，%lu 失败",
+                    (unsigned long)(sources.count - failures - skipped),
+                    (unsigned long)skipped, (unsigned long)failures];
+            [weakSelf flash:summary];
             [weakSelf reloadEntries];
             [weakSelf updatePasteState];
         });
     });
+}
+
+// Blocks the calling (background) thread until the user picks a
+// conflict action on the main thread.
+- (FFConflictAction)askConflictForName:(NSString *)name
+{
+    __block FFConflictAction chosen = FFConflictActionSkip;
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"目标已存在"
+            message:[NSString stringWithFormat:@"“%@” 已存在于当前目录。", name]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"替换" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionReplace;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"跳过" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionSkip;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"保留两者" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionKeepBoth;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"全部替换" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionReplaceAll;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"全部跳过" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionSkipAll;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    return chosen;
 }
 
 - (NSString *)uniqueDestinationForName:(NSString *)name
