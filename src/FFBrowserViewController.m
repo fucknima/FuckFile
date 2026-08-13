@@ -3,6 +3,7 @@
 #import "MCMManager.h"
 #import "BadQueryProbe.h"
 #import "FFLogger.h"
+#import "FFAppNames.h"
 
 #import <AVKit/AVKit.h>
 #import <dirent.h>
@@ -49,63 +50,6 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-static NSString *friendlyAppName(NSString *identifier)
-{
-    static NSDictionary<NSString *, NSString *> *map;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        map = @{
-            @"com.apple.mobilesafari": @"Safari",
-            @"com.apple.MobileSMS": @"信息",
-            @"com.apple.mobilephone": @"电话",
-            @"com.apple.MobileMail": @"邮件",
-            @"com.apple.Preferences": @"设置",
-            @"com.apple.mobileslideshow": @"照片",
-            @"com.apple.mobiletimer": @"时钟",
-            @"com.apple.mobilecal": @"日历",
-            @"com.apple.Maps": @"地图",
-            @"com.apple.camera": @"相机",
-            @"com.apple.mobileme.fmf1": @"查找",
-            @"com.apple.AppStore": @"App Store",
-            @"com.apple.Passbook": @"钱包",
-            @"com.apple.Health": @"健康",
-            @"com.apple.Music": @"音乐",
-            @"com.apple.Podcasts": @"播客",
-            @"com.apple.reminders": @"提醒事项",
-            @"com.apple.notes": @"备忘录",
-            @"com.apple.news": @"新闻",
-            @"com.apple.stocks": @"股市",
-            @"com.apple.compass": @"指南针",
-            @"com.apple.weather": @"天气",
-            @"com.apple.voice-memos": @"语音备忘录",
-            @"com.apple.files": @"文件",
-            @"com.apple.Translate": @"翻译",
-            @"com.apple.Calculator": @"计算器",
-            @"com.apple.mobileaddressbook": @"通讯录",
-            @"com.apple.tv": @"视频",
-            @"com.apple.mobilegarageband": @"库乐队",
-            @"com.apple.iMovie": @"iMovie",
-            @"com.apple.clips": @"可立拍",
-            @"com.apple.mobileipod": @"音乐",
-            @"com.apple.purplebuddy": @"设置助理",
-            @"com.apple.springboard": @"SpringBoard",
-            @"com.apple.Shazam": @"Shazam",
-        };
-    });
-    NSString *name = map[identifier];
-    if (name) return name;
-    NSArray<NSString *> *parts = [identifier componentsSeparatedByString:@"."];
-    if (parts.count >= 3 && [parts[1] isEqualToString:@"apple"]) {
-        NSString *last = parts.lastObject;
-        if (last.length) {
-            NSString *cap = [last substringToIndex:1].uppercaseString;
-            NSString *rest = [last substringFromIndex:1];
-            return [cap stringByAppendingString:rest];
-        }
-    }
-    return identifier;
-}
-
 @interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
@@ -465,7 +409,9 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
         }
         // Resolve container UUIDs to readable app names via the MCM metadata
-        // plist so directories show app names, not UUIDs.
+        // plist so directories show app names, not UUIDs. App Store installs
+        // carry the localized display name in iTunesMetadata.plist; prefer
+        // it over the bundle-identifier lookup.
         item.displayName = item.name;
         if (!item.isSymlink && item.isDirectory) {
             NSString *metadataPath = [path stringByAppendingPathComponent:
@@ -474,7 +420,9 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             NSString *identifier = [metadata[@"MCMMetadataIdentifier"]
                 isKindOfClass:NSString.class] ? metadata[@"MCMMetadataIdentifier"] : nil;
             if (identifier.length) {
-                item.displayName = friendlyAppName(identifier);
+                NSString *itemName = FFAppContainerItemName(path);
+                item.displayName = itemName ?: FFAppDisplayName(identifier);
+                item.detail = [item.detail stringByAppendingFormat:@"\n%@", identifier];
                 // Only log container-root directories (UUID-shaped names).
                 if ([name rangeOfString:@"-"].location != NSNotFound)
                     FFLogTag(@"Browser", @"metadata resolved %@ -> %@ (%@)",
@@ -513,6 +461,10 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
 - (void)decorateEntries:(NSArray<FFEntry *> *)entries
 {
     for (FFEntry *item in entries) {
+        // Bundle-id links in the MCM folders read better as app names.
+        if (item.isSymlink && item.name.pathExtension.length &&
+            [item.name containsString:@"."] && ![item.name hasPrefix:@"."])
+            item.displayName = FFAppDisplayName(item.name);
         NSMutableArray<NSString *> *parts = [NSMutableArray array];
         if (item.isDirectory) [parts addObject:@"dir"];
         if (item.isSymlink) [parts addObject:@"link"];
