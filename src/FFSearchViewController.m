@@ -165,11 +165,19 @@
         return;
     }
     FFFoundItem *item = self.results[indexPath.row];
-    NSString *path = item.isDirectory ? item.path : item.path.stringByDeletingLastPathComponent;
-    FFBrowserViewController *browser =
-        [[FFBrowserViewController alloc] initWithPath:path];
-    browser.title = path.lastPathComponent;
-    [self.navigationController pushViewController:browser animated:YES];
+    // 文件直接打开预览，文件夹进入目录；不存在则提示。
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
+        initWithPath:MCMVirtualRoot()];
+    browser.title = item.name;
+    __weak typeof(self) weakSelf = self;
+    [browser openItemAtPath:item.path title:item.name completion:^(BOOL available) {
+        if (!available) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"
+                message:@"该文件已不存在。" preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        }
+    }];
 }
 
 @end

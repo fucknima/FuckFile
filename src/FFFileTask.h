@@ -28,6 +28,8 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 @property(nonatomic, copy) NSString *detailName;    // current file name
 @property(nonatomic) FFFileTaskState state;
 @property(nonatomic) double progress;               // 0.0 - 1.0
+@property(nonatomic) double averageBytesPerSecond;        // 平均速度（运行中）
+@property(nonatomic) double estimatedRemainingSeconds;    // 预计剩余时间
 @property(nonatomic) unsigned long long completedBytes;
 @property(nonatomic) unsigned long long totalBytes;
 @property(nonatomic) NSUInteger succeededCount;

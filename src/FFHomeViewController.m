@@ -4,16 +4,19 @@
 #import "FFTasksViewController.h"
 #import "FFSearchViewController.h"
 #import "FFBookmarksViewController.h"
+#import "FFSettingsViewController.h"
 #import "MCMManager.h"
+#import "FFFileTaskManager.h"
 #import "FFLogger.h"
 
 @interface FFHomeViewController ()
-@property(nonatomic) NSUInteger categoryCount;
-@property(nonatomic) NSUInteger linkCount;
+@property(nonatomic) NSUInteger appCount;
 @property(nonatomic) BOOL scanInProgress;
 @property(nonatomic) double scanProgress;
 @property(nonatomic) NSUInteger scanTotal;
 @property(nonatomic) NSUInteger scanLinked;
+@property(nonatomic, copy) NSDate *lastScanDate;
+@property(nonatomic) NSUInteger activeTaskCount;
 @end
 
 @implementation FFHomeViewController
@@ -52,9 +55,14 @@
                         ? [info[@"Total"] unsignedIntegerValue] : 0;
                     weakSelf.scanLinked = [info[@"Linked"] isKindOfClass:NSNumber.class]
                         ? [info[@"Linked"] unsignedIntegerValue] : 0;
+                    if (!weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
                 }
                 [weakSelf reloadStatus];
             });
+        }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFFileTaskManagerDidChangeNotification
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
     [self reloadStatus];
 }
@@ -71,10 +79,14 @@
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
         NSFileManager *manager = NSFileManager.defaultManager;
-        NSUInteger links = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
+        NSUInteger count = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
+        NSUInteger active = 0;
+        for (FFFileTask *task in [FFFileTaskManager sharedManager].tasks)
+            if (task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued)
+                active++;
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.categoryCount = 1;
-            self.linkCount = links;
+            self.appCount = count;
+            self.activeTaskCount = active;
             [self.tableView reloadData];
         });
     });
@@ -90,9 +102,9 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 3;
-        case 1: return 3;
-        case 2: return 2;
+        case 0: return 1;
+        case 1: return 4;
+        case 2: return 1;
         default: return 0;
     }
 }
@@ -100,9 +112,9 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"存储";
-        case 1: return @"工具";
-        case 2: return @"关于";
+        case 0: return @"文件";
+        case 1: return @"快捷访问";
+        case 2: return nil;
         default: return nil;
     }
 }
@@ -120,61 +132,52 @@
 
     switch (indexPath.section) {
         case 0: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"App 数据";
-                if (self.scanInProgress) {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:
-                        @"正在扫描 %lu/%lu … %lu 个 App",
-                        (unsigned long)self.scanTotal, (unsigned long)self.scanTotal,
-                        (unsigned long)self.scanLinked];
-                } else {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:
-                        @"%lu 个 App 容器 · %lu 个已逃逸链接",
-                        (unsigned long)self.categoryCount,
-                        (unsigned long)self.linkCount];
-                }
-                cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
-            } else if (indexPath.row == 1) {
-                cell.textLabel.text = @"收藏";
-                cell.detailTextLabel.text = @"收藏的文件夹与文件";
-                cell.imageView.image = [UIImage systemImageNamed:@"star"];
+            // 主入口：App 数据
+            cell.textLabel.text = @"App 数据";
+            cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
+            if (self.scanInProgress) {
+                cell.detailTextLabel.text = [NSString stringWithFormat:
+                    @"正在扫描 %lu/%lu … 已发现 %lu 个 App",
+                    (unsigned long)self.scanTotal, (unsigned long)self.scanTotal,
+                    (unsigned long)self.scanLinked];
             } else {
-                cell.textLabel.text = @"最近访问";
-                cell.detailTextLabel.text = @"最近打开的目录与文件";
-                cell.imageView.image = [UIImage systemImageNamed:@"clock"];
+                NSMutableString *subtitle = [NSMutableString stringWithFormat:
+                    @"%lu 个 App", (unsigned long)self.appCount];
+                if (self.lastScanDate) {
+                    NSDateFormatter *formatter = [NSDateFormatter new];
+                    formatter.dateFormat = @"HH:mm";
+                    [subtitle appendFormat:@" · 最近扫描 %@", [formatter stringFromDate:self.lastScanDate]];
+                }
+                cell.detailTextLabel.text = subtitle;
             }
             break;
         }
         case 1: {
             if (indexPath.row == 0) {
-                cell.textLabel.text = @"任务中心";
-                cell.detailTextLabel.text = @"复制 / 移动 / 解压任务与进度";
-                cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
-            } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"搜索";
-                cell.detailTextLabel.text = @"全局递归搜索与搜索历史";
+                cell.detailTextLabel.text = @"全局搜索 App 数据";
                 cell.imageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"收藏";
+                cell.detailTextLabel.text = @"收藏的文件与文件夹";
+                cell.imageView.image = [UIImage systemImageNamed:@"star"];
+            } else if (indexPath.row == 2) {
+                cell.textLabel.text = @"最近访问";
+                cell.detailTextLabel.text = @"最近打开的目录与文件";
+                cell.imageView.image = [UIImage systemImageNamed:@"clock"];
             } else {
-                cell.textLabel.text = @"运行日志";
-                cell.detailTextLabel.text = @"查看、分享、重跑扫描、清缓存";
-                cell.imageView.image = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
+                cell.textLabel.text = @"任务中心";
+                cell.detailTextLabel.text = self.activeTaskCount > 0
+                    ? [NSString stringWithFormat:@"%lu 个任务进行中", (unsigned long)self.activeTaskCount]
+                    : @"复制、移动、解压任务";
+                cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
             }
             break;
         }
         case 2: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"版本";
-                cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"%@（构建 %@）· iOS %@",
-                    NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?",
-                    NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"?",
-                    UIDevice.currentDevice.systemVersion];
-                cell.imageView.image = [UIImage systemImageNamed:@"info.circle.fill"];
-            } else {
-                cell.textLabel.text = @"致谢";
-                cell.detailTextLabel.text = @"MCM：FilzaSlop · 身份：MobileHouseArrest";
-                cell.imageView.image = [UIImage systemImageNamed:@"person.3.fill"];
-            }
+            cell.textLabel.text = @"设置";
+            cell.detailTextLabel.text = @"显示、排序、高级与调试";
+            cell.imageView.image = [UIImage systemImageNamed:@"gearshape"];
             break;
         }
     }
@@ -187,42 +190,22 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            if (indexPath.row == 0) {
-                // Enter the virtual root: the App Data folder sits next
-                // to the log file here; tap into it for the links.
-                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
-            } else if (indexPath.row == 1) {
-                next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
-            } else {
-                next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeRecent];
-            }
+            next = [[FFBrowserViewController alloc] initWithPath:
+                [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"]];
             break;
         case 1:
-            if (indexPath.row == 0) {
-                next = [FFTasksViewController new];
-            } else if (indexPath.row == 1) {
-                next = [FFSearchViewController new];
-            } else {
-                next = [FFLogViewController new];
-            }
+            if (indexPath.row == 0) next = [FFSearchViewController new];
+            else if (indexPath.row == 1) next = [[FFBookmarksViewController alloc]
+                initWithMode:FFBookmarksModeFavorites];
+            else if (indexPath.row == 2) next = [[FFBookmarksViewController alloc]
+                initWithMode:FFBookmarksModeRecent];
+            else next = [FFTasksViewController new];
             break;
         case 2:
-            if (indexPath.row == 1) {
-                [self presentCredits];
-                return;
-            }
-            return;
+            next = [FFSettingsViewController new];
+            break;
     }
     if (next) [self.navigationController pushViewController:next animated:YES];
-}
-
-- (void)presentCredits
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"致谢"
-        message:@"MCM 身份绕过：0xjohnnydev/FilzaSlop"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

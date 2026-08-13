@@ -72,6 +72,21 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     [self notifyChange];
 }
 
+- (void)retryTask:(FFFileTask *)task
+{
+    task.state = FFFileTaskStateQueued;
+    task.cancelled = NO;
+    task.error = nil;
+    task.progress = 0;
+    task.completedBytes = 0;
+    task.succeededCount = 0;
+    task.failedCount = 0;
+    task.skippedCount = 0;
+    task.detailName = nil;
+    [self notifyChange];
+    dispatch_async(self.workQueue, ^{ [self executeTask:task]; });
+}
+
 - (void)removeTask:(FFFileTask *)task
 {
     if (task.state == FFFileTaskStateQueued || task.state == FFFileTaskStateRunning)
@@ -136,6 +151,7 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     task.totalBytes = total;
     unsigned long long completed = 0;
     __weak FFFileTask *weakTask = task;
+    NSDate *taskStart = NSDate.date;
 
     for (NSString *source in task.sources) {
         if (task.cancelled) return NO;
@@ -177,6 +193,15 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
                 weakTask.completedBytes = completed + fileCopied;
                 weakTask.progress = weakTask.totalBytes > 0
                     ? (double)weakTask.completedBytes / (double)weakTask.totalBytes : 0;
+                NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:taskStart];
+                if (elapsed > 0.5 && weakTask.completedBytes > 0) {
+                    weakTask.averageBytesPerSecond =
+                        (double)weakTask.completedBytes / elapsed;
+                    if (weakTask.totalBytes > weakTask.completedBytes)
+                        weakTask.estimatedRemainingSeconds =
+                            (double)(weakTask.totalBytes - weakTask.completedBytes) /
+                            weakTask.averageBytesPerSecond;
+                }
                 [self notifyChange];
             } error:&error];
         if (!copied) {

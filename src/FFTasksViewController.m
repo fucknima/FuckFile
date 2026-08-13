@@ -67,10 +67,23 @@
         if (task.totalBytes > 0)
             [detail appendFormat:@" · %@ / %@",
                 [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
+        if (task.averageBytesPerSecond > 0) {
+            [detail appendFormat:@" · %@/s",
+                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
+            if (task.estimatedRemainingSeconds > 0) {
+                NSTimeInterval seconds = task.estimatedRemainingSeconds;
+                if (seconds < 60)
+                    [detail appendFormat:@" · 剩余 %d 秒", (int)seconds];
+                else
+                    [detail appendFormat:@" · 剩余 %d 分", (int)(seconds / 60)];
+            }
+        }
     } else if (task.state == FFFileTaskStateCompleted || task.state == FFFileTaskStateFailed) {
         [detail appendFormat:@" · 成功 %lu 失败 %lu 跳过 %lu",
             (unsigned long)task.succeededCount, (unsigned long)task.failedCount,
             (unsigned long)task.skippedCount];
+        if (task.state == FFFileTaskStateFailed && task.error)
+            [detail appendFormat:@"\n%@", task.error.localizedDescription];
     }
     config.secondaryText = detail;
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
@@ -134,6 +147,24 @@
 {
     FFFileTask *task = self.tasks[indexPath.row];
     return task.state != FFFileTaskStateRunning && task.state != FFFileTaskStateQueued;
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    FFFileTask *task = self.tasks[indexPath.row];
+    if (task.state != FFFileTaskStateFailed && task.state != FFFileTaskStateCancelled)
+        return nil;
+    UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:
+        UIContextualActionStyleNormal title:@"重试"
+        handler:^(__unused UIContextualAction *action, __unused UIView *sourceView,
+            void (^completionHandler)(BOOL)) {
+            [[FFFileTaskManager sharedManager] retryTask:task];
+            completionHandler(YES);
+        }];
+    retry.image = [UIImage systemImageNamed:@"arrow.clockwise"];
+    retry.backgroundColor = [UIColor systemBlueColor];
+    return [UISwipeActionsConfiguration configurationWithActions:@[retry]];
 }
 
 - (NSString *)formatSize:(unsigned long long)bytes

@@ -21,6 +21,9 @@ FOUNDATION_EXPORT NSNotificationName const FFFileTaskManagerDidChangeNotificatio
 // boundary and enters Cancelled.
 - (void)cancelTask:(FFFileTask *)task;
 
+// Re-runs a failed or cancelled task (state reset, then enqueued again).
+- (void)retryTask:(FFFileTask *)task;
+
 // Active queue + recent history (newest first, capped).
 @property(nonatomic, readonly) NSArray<FFFileTask *> *tasks;
 

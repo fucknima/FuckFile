@@ -14,6 +14,7 @@ FuckFile_FILES = \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
 	src/FFLogViewController.m \
+	src/FFSettingsViewController.m \
 	src/FFCopyEngine.m \
 	src/FFPathPolicy.m \
 	src/FFFileOperationService.m \

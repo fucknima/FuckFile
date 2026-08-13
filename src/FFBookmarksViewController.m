@@ -85,12 +85,39 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFBookmark *bookmark = self.items[indexPath.row];
-    NSString *path = bookmark.isDirectory
-        ? bookmark.path : bookmark.path.stringByDeletingLastPathComponent;
-    FFBrowserViewController *browser =
-        [[FFBrowserViewController alloc] initWithPath:path];
-    browser.title = path.lastPathComponent;
-    [self.navigationController pushViewController:browser animated:YES];
+    __weak typeof(self) weakSelf = self;
+    // openItemAtPath 内部处理：目录 push 浏览器，文件打开预览。
+    // 用书签页自身作为调用者（其 navigationController 负责 push）。
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
+        initWithPath:MCMVirtualRoot()];
+    browser.title = bookmark.name;
+    [browser openItemAtPath:bookmark.path title:bookmark.name completion:^(BOOL available) {
+        if (!available) {
+            [weakSelf presentUnavailable:bookmark];
+            return;
+        }
+        if (!bookmark.isDirectory)
+            [weakSelf.navigationController popToViewController:weakSelf animated:YES];
+    }];
+}
+
+// 目标已不存在：提示并提供移除记录。
+- (void)presentUnavailable:(FFBookmark *)bookmark
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"
+        message:[NSString stringWithFormat:@"“%@” 已不存在。", bookmark.name]
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"移除记录" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            if (weakSelf.mode == FFBookmarksModeFavorites)
+                [[FFFavoritesService sharedService] removePath:bookmark.path];
+            else
+                [[FFRecentService sharedService] removePath:bookmark.path];
+            [weakSelf reloadItems];
+        }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)tableView:(UITableView *)tableView
