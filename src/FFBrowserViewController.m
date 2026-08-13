@@ -8,6 +8,7 @@
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
+#import "FFThumbnailService.h"
 
 #import <AVKit/AVKit.h>
 #import <CommonCrypto/CommonDigest.h>
@@ -59,6 +60,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic) mode_t mode;
 @property(nonatomic) uid_t uid;
 @property(nonatomic) gid_t gid;
+@property(nonatomic, strong) UIImage *thumbnail;
 @end
 
 @implementation FFEntry
@@ -786,19 +788,61 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                                       reuseIdentifier:@"Cell"];
     }
     FFEntry *item = self.filteredEntries[indexPath.row];
+    [self configureCell:cell withItem:item];
+    return cell;
+}
+
+- (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item
+{
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = item.displayName.length ? item.displayName : item.name;
     config.textProperties.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
     config.secondaryText = item.detail;
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     config.secondaryTextProperties.numberOfLines = 0;
-    config.image = [self iconForEntry:item];
-    config.imageProperties.tintColor = [self tintForEntry:item];
+    config.image = item.thumbnail ?: [self iconForEntry:item];
     config.imageProperties.cornerRadius = 4;
+    config.imageProperties.maximumSize = CGSizeMake(44, 44);
+    if (item.thumbnail)
+        config.imageProperties.tintColor = nil;
+    else
+        config.imageProperties.tintColor = [self tintForEntry:item];
     cell.contentConfiguration = config;
     cell.accessoryType = item.isDirectory ? UITableViewCellAccessoryDisclosureIndicator
                                          : UITableViewCellAccessoryNone;
-    return cell;
+
+    if (item.thumbnail || item.isDirectory || item.isSymlink ||
+        ![self supportsThumbnail:item]) return;
+    // Async thumbnail generation; the cell is re-configured once the
+    // image lands and still hosts the same entry.
+    __weak typeof(self) weakSelf = self;
+    [[FFThumbnailService sharedService] thumbnailForPath:item.path
+        size:CGSizeMake(44, 44) completion:^(UIImage * _Nullable image) {
+            if (!image) return;
+            item.thumbnail = image;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSIndexPath *path = [weakSelf.tableView indexPathForCell:cell];
+                if (!path) return;
+                NSArray<FFEntry *> *entries = weakSelf.filteredEntries;
+                if (path.row >= entries.count || entries[path.row] != item) return;
+                [weakSelf configureCell:cell withItem:item];
+            });
+        }];
+}
+
+- (BOOL)supportsThumbnail:(FFEntry *)item
+{
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    static NSSet<NSString *> *supported;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        supported = [NSSet setWithArray:@[
+            @"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp",
+            @"mp4", @"mov", @"m4v", @"avi", @"mkv",
+            @"pdf",
+        ]];
+    });
+    return [supported containsObject:ext];
 }
 
 - (UIImage *)iconForEntry:(FFEntry *)item

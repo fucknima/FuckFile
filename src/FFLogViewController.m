@@ -1,6 +1,7 @@
 #import "FFLogViewController.h"
 #import "FFLogger.h"
 #import "MCMManager.h"
+#import "FFThumbnailService.h"
 
 @interface FFLogViewController ()
 @property(nonatomic, strong) UITextView *textView;
@@ -45,7 +46,9 @@
         style:UIBarButtonItemStylePlain target:self action:@selector(rerunScan)];
     UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"清空"
         style:UIBarButtonItemStylePlain target:self action:@selector(clearLog)];
-    self.navigationItem.rightBarButtonItems = @[self.shareItem, self.refreshItem, rerun, clear];
+    UIBarButtonItem *clearThumbs = [[UIBarButtonItem alloc] initWithTitle:@"清缓存"
+        style:UIBarButtonItemStylePlain target:self action:@selector(clearThumbnailCache)];
+    self.navigationItem.rightBarButtonItems = @[self.shareItem, self.refreshItem, rerun, clear, clearThumbs];
 
     [self refreshLog];
 }
@@ -94,6 +97,19 @@
 {
     [[NSFileManager defaultManager] removeItemAtPath:FFLogPath() error:nil];
     [self refreshLog];
+}
+
+- (void)clearThumbnailCache
+{
+    unsigned long long size = [[FFThumbnailService sharedService] diskCacheSize];
+    [[FFThumbnailService sharedService] clearCaches];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"缩略图缓存已清理"
+        message:[NSString stringWithFormat:@"释放约 %@。",
+            [NSByteCountFormatter stringFromByteCount:(long long)size
+                countStyle:NSByteCountFormatterCountStyleFile]]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end
