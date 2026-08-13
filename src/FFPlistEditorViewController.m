@@ -347,10 +347,17 @@ static NSString *FFPlistValueSummary(id value)
 
 - (void)setValue:(id)value atKeyPathComponent:(id)component
 {
-    if ([self.scope isKindOfClass:NSDictionary.class])
+    if ([self.scope isKindOfClass:NSDictionary.class] &&
+        [component isKindOfClass:NSString.class]) {
         self.scope[component] = value;
-    else if ([self.scope isKindOfClass:NSArray.class])
-        [self.scope replaceObjectAtIndex:[component unsignedIntegerValue] withObject:value];
+    } else if ([self.scope isKindOfClass:NSArray.class] &&
+               [component isKindOfClass:NSNumber.class]) {
+        NSUInteger index = [component unsignedIntegerValue];
+        if (index < [self.scope count])
+            [self.scope replaceObjectAtIndex:index withObject:value];
+        else
+            [self flash:@"下标越界，无法修改"];
+    }
     FFLogTag(@"PlistEditor", @"edited %@ at %@ -> %@", component, self.keyPath,
         FFPlistValueSummary(value));
     [self reloadScope];

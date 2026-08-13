@@ -136,9 +136,10 @@
             cell.textLabel.text = @"App 数据";
             cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
             if (self.scanInProgress) {
+                NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
                 cell.detailTextLabel.text = [NSString stringWithFormat:
                     @"正在扫描 %lu/%lu … 已发现 %lu 个 App",
-                    (unsigned long)self.scanTotal, (unsigned long)self.scanTotal,
+                    (unsigned long)done, (unsigned long)self.scanTotal,
                     (unsigned long)self.scanLinked];
             } else {
                 NSMutableString *subtitle = [NSMutableString stringWithFormat:

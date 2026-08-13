@@ -526,7 +526,9 @@ static NSDictionary *MCMCustomIdentifiers(void)
 
 - (void)rescanWithCompletion:(void (^)(void))completion
 {
-    _scanCompletion = completion;
+    @synchronized (self) {
+        _scanCompletion = completion;
+    }
     dispatch_async(_scanQueue, ^{
         [self startOnce];
     });

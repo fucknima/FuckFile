@@ -93,8 +93,21 @@
 
 + (void)presentData:(FFEntry *)item nav:(UINavigationController *)nav
 {
-    // 大文件：只读分段预览（见 presentText 限制），这里仍需要识别类型。
-    NSData *data = [NSData dataWithContentsOfFile:item.path];
+    // 大文件不能一次性读入内存：只读前 4MB 用于类型识别与文本采样；
+    // 文本预览交给文本编辑器（其自身分段），hex 视图只显示前 1MB。
+    unsigned long long fileSize = 0;
+    NSDictionary *attrs = [NSFileManager.defaultManager
+        attributesOfItemAtPath:item.path error:nil];
+    fileSize = [attrs[NSFileSize] unsignedLongLongValue];
+    BOOL large = fileSize > 4 * 1024 * 1024;
+    NSData *data = nil;
+    if (large) {
+        NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:item.path];
+        data = [handle readDataOfLength:4 * 1024 * 1024];
+        [handle closeFile];
+    } else {
+        data = [NSData dataWithContentsOfFile:item.path];
+    }
     if (!data) {
         [self flash:@"读取文件失败" in:nav];
         return;
@@ -112,10 +125,21 @@
         return;
     }
     NSString *candidate = [self stringFromData:data];
-    if (candidate && [self looksTextual:candidate]) {
+    if (candidate && [self looksTextual:candidate] && !large) {
         FFTextEditorViewController *editor =
             [[FFTextEditorViewController alloc] initWithPath:item.path];
         [nav pushViewController:editor animated:YES];
+        return;
+    }
+    if (candidate && [self looksTextual:candidate] && large) {
+        // 大文本：显示前 1MB 的只读文本预览。
+        NSString *preview = [candidate substringToIndex:MIN(candidate.length,
+            (NSUInteger)1024 * 1024)];
+        preview = [preview stringByAppendingFormat:
+            @"\n\n… 文件较大（%@），仅显示前 1 MB，只读预览。",
+            [NSByteCountFormatter stringFromByteCount:(long long)fileSize
+                countStyle:NSByteCountFormatterCountStyleFile]];
+        [self presentText:item.name body:preview navigationController:nav];
         return;
     }
     NSString *text = [self hexdump:data maxBytes:data.length <= 1024 * 1024

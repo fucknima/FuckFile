@@ -80,6 +80,9 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     task.error = nil;
     task.progress = 0;
     task.completedBytes = 0;
+    task.totalBytes = 0;
+    task.averageBytesPerSecond = 0;
+    task.estimatedRemainingSeconds = 0;
     task.succeededCount = 0;
     task.failedCount = 0;
     task.skippedCount = 0;
@@ -174,7 +177,9 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         if (conflict) {
             FFConflictAction action = applyAll != FFConflictActionAsk
                 ? applyAll
-                : (self.conflictHandler ? self.conflictHandler(name) : FFConflictActionSkip);
+                : (task.conflictHandler ? task.conflictHandler(name)
+                   : (self.conflictHandler ? self.conflictHandler(name)
+                      : FFConflictActionSkip));
             if (action == FFConflictActionSkip || action == FFConflictActionSkipAll) {
                 if (action == FFConflictActionSkipAll) applyAll = action;
                 task.skippedCount++;

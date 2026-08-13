@@ -43,7 +43,20 @@
 
 static NSString *FFThumbnailKey(NSString *path, CGSize size)
 {
-    return [NSString stringWithFormat:@"%@#%.0fx%.0f", path, size.width, size.height];
+    // 缓存键包含修改时间与大小：文件被替换后（路径不变）也重新生成，
+    // 避免展示旧缩略图。
+    NSString *fingerprint = @"?";
+    NSDictionary *attrs = [NSFileManager.defaultManager
+        attributesOfItemAtPath:path error:nil];
+    if (attrs) {
+        NSDate *mtime = attrs[NSFileModificationDate];
+        NSNumber *fileSize = attrs[NSFileSize];
+        fingerprint = [NSString stringWithFormat:@"%@-%@",
+            mtime ? @((long long)mtime.timeIntervalSince1970) : @"-",
+            fileSize ?: @"-"];
+    }
+    return [NSString stringWithFormat:@"%@#%.0fx%.0f#%@",
+        path, size.width, size.height, fingerprint];
 }
 
 static NSString *FFThumbnailSHA1(NSString *input)

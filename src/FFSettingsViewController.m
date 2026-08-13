@@ -163,6 +163,9 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
     self.showHiddenFiles = toggle.on;
     [NSUserDefaults.standardUserDefaults setBool:self.showHiddenFiles
                                           forKey:kFFSettingsShowHiddenFiles];
+    // 已存在的浏览器页面应即时刷新。
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"FFSettingsChangedNotification" object:nil];
 }
 
 - (void)gridModeChanged:(UISwitch *)toggle

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "FFConflictPolicy.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -44,6 +45,11 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 
 // Cancellation flag, checked between files.
 @property(nonatomic) BOOL cancelled;
+
+// Conflict decision callback bound to this task (never the global
+// manager handler), so concurrent tasks cannot cross-wire conflicts.
+// Called from the worker queue; may block until the user decides.
+@property(nonatomic, copy, nullable) FFConflictAction (^conflictHandler)(NSString *name);
 
 @property(nonatomic, readonly) NSString *stateText;
 @property(nonatomic, readonly) NSString *kindText;

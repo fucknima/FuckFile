@@ -55,7 +55,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate>
+@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
@@ -74,6 +74,8 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic, copy) NSString *batchNormalTitle;
+@property(nonatomic, strong) UICollectionView *collectionView;
+@property(nonatomic) BOOL gridMode;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
@@ -106,6 +108,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
+    [self setupCollectionView];
+    self.gridMode = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"FFSettingsGridMode"];
+    [self applyLayoutModeAnimated:NO];
 
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
@@ -130,6 +136,19 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             if (!strongSelf) return;
             if (![strongSelf.currentPath hasPrefix:MCMVirtualRoot()]) return;
             dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf reloadEntries];
+            });
+        }];
+
+    // 设置页修改（显示隐藏文件等）后，已打开的浏览器页面即时生效。
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"FFSettingsChangedNotification"
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.showHiddenFiles = [NSUserDefaults.standardUserDefaults
+                    boolForKey:@"FFSettingsShowHiddenFiles"];
+                if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
                 [strongSelf reloadEntries];
             });
         }];
@@ -263,6 +282,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         ];
     }
     [self updatePasteState];
+    [self applyLayoutModeAnimated:NO];
 }
 
 - (void)cancelBatchMode
@@ -330,6 +350,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     gClipboardMode = mode;
     [self setEditing:NO animated:YES];
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     [self showPasteBanner];
 }
 
@@ -455,8 +476,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.loading = NO;
             [self applyFilter];
             [self.tableView reloadData];
+            [self.collectionView reloadData];
             [self.refreshControl endRefreshing];
             [self updateEmptyState];
+            [self applyLayoutModeAnimated:NO];
         });
     });
 }
@@ -771,6 +794,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
+    UIAction *toggleGrid = [UIAction actionWithTitle:@"网格视图"
+        image:[self symbolImage:@"square.grid.2x2" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) {
+            [self toggleGridMode];
+        }];
+    toggleGrid.state = self.gridMode ? UIMenuElementStateOn : UIMenuElementStateOff;
     UIAction *toggleHidden = [UIAction actionWithTitle:@"显示隐藏文件"
         image:[self symbolImage:@"eye" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) {
@@ -784,7 +813,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, select, sort, filter, toggleHidden]];
+        children:@[paste, select, sort, filter, toggleGrid, toggleHidden]];
 }
 
 #pragma mark - Sort menu
@@ -1034,7 +1063,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         return;
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    [self openEntry:self.filteredEntries[indexPath.row]];
+}
+
+// 打开条目：目录进入、文件预览（列表与网格共用）。
+- (void)openEntry:(FFEntry *)item
+{
     [[FFRecentService sharedService] recordPath:item.path
         name:item.displayName.length ? item.displayName : item.name
         isDirectory:item.isDirectory];
@@ -1062,6 +1096,108 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     NSInteger count = (NSInteger)self.tableView.indexPathsForSelectedRows.count;
     self.navigationItem.title = count == 0 ? @"已选 0 项" :
         [NSString stringWithFormat:@"已选 %ld 项", (long)count];
+}
+
+#pragma mark - Grid / list layout
+
+- (void)setupCollectionView
+{
+    UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
+    layout.minimumInteritemSpacing = 8;
+    layout.minimumLineSpacing = 12;
+    layout.sectionInset = UIEdgeInsetsMake(12, 12, 12, 12);
+    self.collectionView = [[UICollectionView alloc] initWithFrame:self.view.bounds
+        collectionViewLayout:layout];
+    self.collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    self.collectionView.backgroundColor = [UIColor systemBackgroundColor];
+    self.collectionView.dataSource = self;
+    self.collectionView.delegate = self;
+    self.collectionView.hidden = YES;
+    self.collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.collectionView registerClass:UICollectionViewCell.class
+            forCellWithReuseIdentifier:@"GridCell"];
+    [self.view addSubview:self.collectionView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+    ]];
+}
+
+// 列表/网格切换：显示对应视图（网格 3 列，仅浏览；多选/编辑保持列表）。
+- (void)applyLayoutModeAnimated:(BOOL)animated
+{
+    BOOL useGrid = self.gridMode && !self.editing;
+    self.collectionView.hidden = !useGrid;
+    self.tableView.hidden = useGrid;
+    if (useGrid) {
+        [self.collectionView reloadData];
+    }
+}
+
+- (void)toggleGridMode
+{
+    self.gridMode = !self.gridMode;
+    [NSUserDefaults.standardUserDefaults setBool:self.gridMode
+                                          forKey:@"FFSettingsGridMode"];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
+    [self applyLayoutModeAnimated:NO];
+}
+
+#pragma mark - Collection view (grid)
+
+- (NSInteger)collectionView:(UICollectionView *)collectionView
+     numberOfItemsInSection:(NSInteger)section
+{
+    return (NSInteger)self.filteredEntries.count;
+}
+
+- (CGSize)collectionView:(UICollectionView *)collectionView
+                  layout:(UICollectionViewLayout *)collectionViewLayout
+  sizeForItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    CGFloat width = (collectionView.bounds.size.width - 24 - 16) / 3.0;
+    return CGSizeMake(width, width + 28);
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView
+                  cellForItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    UICollectionViewCell *cell = [collectionView
+        dequeueReusableCellWithReuseIdentifier:@"GridCell" forIndexPath:indexPath];
+    FFEntry *item = self.filteredEntries[indexPath.row];
+    UIView *existing = [cell.contentView viewWithTag:999];
+    [existing removeFromSuperview];
+
+    UIListContentConfiguration *config = [UIListContentConfiguration
+        subtitleCellConfiguration];
+    config.text = item.displayName.length ? item.displayName : item.name;
+    config.textProperties.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    config.textProperties.numberOfLines = 1;
+    config.textProperties.alignment = NSTextAlignmentCenter;
+    config.secondaryText = [self formatSize:item.size];
+    config.secondaryTextProperties.font = [UIFont systemFontOfSize:10];
+    config.secondaryTextProperties.alignment = NSTextAlignmentCenter;
+    config.image = item.thumbnail ?: [self iconForEntry:item];
+    config.imageProperties.maximumSize = CGSizeMake(48, 48);
+    config.imageProperties.cornerRadius = 6;
+    config.imageProperties.tintColor = item.thumbnail ? nil : [self tintForEntry:item];
+    UIView *content = [config makeContentView];
+    content.tag = 999;
+    content.frame = cell.contentView.bounds;
+    content.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    [cell.contentView addSubview:content];
+    return cell;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    didSelectItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    [collectionView deselectItemAtIndexPath:indexPath animated:YES];
+    [self openEntry:self.filteredEntries[indexPath.row]];
 }
 
 #pragma mark - Context menu & swipe actions
@@ -1201,6 +1337,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardSources = @[item.path];
     gClipboardMode = mode;
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     [self showPasteBanner];
 }
 
@@ -1274,6 +1411,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardMode = FFClipboardModeNone;
     [self hidePasteBanner];
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
 }
 
 - (void)hidePasteBanner
@@ -1299,10 +1437,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     task.sources = sources;
     task.destination = self.currentPath;
     __weak typeof(self) weakSelf = self;
-    [[FFFileTaskManager sharedManager] setConflictHandler:^FFConflictAction(NSString *name) {
+    // 冲突处理绑定到本任务，避免并发任务交叉。
+    task.conflictHandler = ^FFConflictAction(NSString *name) {
         typeof(weakSelf) strongSelf = weakSelf;
         return strongSelf ? [strongSelf askConflictForName:name] : FFConflictActionSkip;
-    }];
+    };
     [[FFFileTaskManager sharedManager] enqueueTask:task];
     [self hidePasteBanner];
     [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
@@ -1357,7 +1496,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             self.view.bounds.size.width / 2, self.view.bounds.size.height - 60, 1, 1);
         [self presentOnTop:sheet];
     });
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    // 超时兜底：90 秒未决策（例如页面已离开、弹窗被覆盖）按“跳过”处理，
+    // 避免任务永久阻塞在冲突决策上。
+    long timedOut = dispatch_semaphore_wait(semaphore,
+        dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC));
+    if (timedOut != 0) return FFConflictActionSkip;
     return chosen;
 }
 

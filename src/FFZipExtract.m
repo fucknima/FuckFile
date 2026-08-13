@@ -146,6 +146,7 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
     [[NSFileManager defaultManager] createDirectoryAtPath:tempDir
         withIntermediateDirectories:YES attributes:nil error:nil];
     NSMutableArray<NSString *> *entries = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenNames = [NSMutableSet set];
 
     size_t cursor = 0;
     BOOL ok = YES;
@@ -161,6 +162,23 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         uint16_t extraLength = FFZipU16(entry + 30);
         uint16_t commentLength = FFZipU16(entry + 32);
         uint32_t localOffset = FFZipU32(entry + 42);
+        // ZIP64：字段为 0xFFFFFFFF 时真实值在扩展头，直接拒绝（简化+安全）。
+        if (compressedSize == 0xFFFFFFFF || expectedSize == 0xFFFFFFFF ||
+            localOffset == 0xFFFFFFFF) {
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
+                NSLocalizedDescriptionKey: @"归档使用 ZIP64 扩展，暂不支持"}];
+            ok = NO;
+            break;
+        }
+        // 符号链接条目：external attrs 高 16 位是 unix mode，S_IFLNK 拒绝解压。
+        uint32_t externalAttrs = FFZipU32(entry + 38);
+        mode_t unixMode = (externalAttrs >> 16) & 0xFFFF;
+        if (S_ISLNK(unixMode)) {
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
+                NSLocalizedDescriptionKey: @"归档包含符号链接条目，已拒绝解压"}];
+            ok = NO;
+            break;
+        }
         if (cursor + 46 + nameLength + extraLength + commentLength > cdSize) {
             ok = NO;
             break;
@@ -182,6 +200,14 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
             ok = NO;
             break;
         }
+        // 重复文件名：覆盖条目可能被用作路径穿越/篡改向量，拒绝。
+        if ([seenNames containsObject:name]) {
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"归档包含重复条目：%@", name]}];
+            ok = NO;
+            break;
+        }
+        [seenNames addObject:name];
 
         // Local file header for the actual data offset.
         uint8_t local[30] = {0};
@@ -211,7 +237,7 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         }
         NSString *destination = [tempDir stringByAppendingPathComponent:name];
         int output = open(destination.fileSystemRepresentation,
-            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
         uLong fileCrc = crc32(0L, Z_NULL, 0);
         if (output < 0) {
             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
