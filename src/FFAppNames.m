@@ -7,12 +7,6 @@
 - (NSString *)bundleIdentifier;
 - (NSString *)localizedName;
 @end
-
-// LaunchServices store display names (bundle id -> localized name).
-// Populated by MCMManager from the com.apple.lsd container; the only
-// source covering third-party app names on iOS 26.
-static NSMutableDictionary<NSString *, NSString *> *FFStoreNames(void);
-
 static NSDictionary<NSString *, NSString *> *FFKnownAppNames(void)
 {
     static NSDictionary<NSString *, NSString *> *map;
@@ -98,8 +92,6 @@ NSString *FFAppDisplayName(NSString *identifier)
     if (known) return known;
     NSString *workspace = FFWorkspaceNames()[identifier];
     if (workspace) return workspace;
-    NSString *storeName = FFStoreNames()[identifier];
-    if (storeName) return storeName;
     NSArray<NSString *> *parts = [identifier componentsSeparatedByString:@"."];
     if (parts.count >= 3 && [parts[1] isEqualToString:@"apple"]) {
         NSString *last = parts.lastObject;
@@ -109,24 +101,6 @@ NSString *FFAppDisplayName(NSString *identifier)
         }
     }
     return identifier;
-}
-
-// LaunchServices store display names (bundle id -> localized name).
-// Populated by MCMManager from the com.apple.lsd container; the only
-// source covering third-party app names on iOS 26.
-static NSMutableDictionary<NSString *, NSString *> *FFStoreNames(void)
-{
-    static NSMutableDictionary<NSString *, NSString *> *cache;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ cache = [NSMutableDictionary dictionary]; });
-    return cache;
-}
-
-void FFAppNamesRegisterStoreNames(NSDictionary<NSString *, NSString *> *names)
-{
-    @synchronized (FFStoreNames()) {
-        [FFStoreNames() addEntriesFromDictionary:names];
-    }
 }
 
 NSString *FFAppContainerItemName(NSString *containerPath)
