@@ -21,4 +21,11 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
 NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
                                                   NSUInteger maxCandidates);
 
+// Extracts a bundle-id -> localized display-name map from the same
+// store with a proximity heuristic: for every valid identifier, the
+// first plausible UTF-8 name candidate within a short window after it
+// is taken as the display name. Best effort; cached separately.
+NSDictionary<NSString *, NSString *> *FFLSDiscoverAppNames(
+    NSString *lsdContainerRoot, NSUInteger maxEntries);
+
 NS_ASSUME_NONNULL_END
