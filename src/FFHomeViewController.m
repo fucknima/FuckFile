@@ -2,6 +2,7 @@
 #import "FFBrowserViewController.h"
 #import "FFLogViewController.h"
 #import "FFTasksViewController.h"
+#import "FFSearchViewController.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -82,7 +83,7 @@
 {
     switch (section) {
         case 0: return 1;
-        case 1: return 2;
+        case 1: return 3;
         case 2: return 2;
         default: return 0;
     }
@@ -123,6 +124,10 @@
                 cell.textLabel.text = @"任务中心";
                 cell.detailTextLabel.text = @"复制 / 移动 / 解压任务与进度";
                 cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"搜索";
+                cell.detailTextLabel.text = @"全局递归搜索与搜索历史";
+                cell.imageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
             } else {
                 cell.textLabel.text = @"运行日志";
                 cell.detailTextLabel.text = @"查看、分享、重跑扫描、清缓存";
@@ -161,6 +166,8 @@
         case 1:
             if (indexPath.row == 0) {
                 next = [FFTasksViewController new];
+            } else if (indexPath.row == 1) {
+                next = [FFSearchViewController new];
             } else {
                 next = [FFLogViewController new];
             }

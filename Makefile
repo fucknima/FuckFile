@@ -24,6 +24,8 @@ FuckFile_FILES = \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
 	src/FFTasksViewController.m \
+	src/FFSearchService.m \
+	src/FFSearchViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m
