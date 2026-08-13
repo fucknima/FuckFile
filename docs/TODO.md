@@ -9,6 +9,12 @@
 
 > 说明：本项目实现为 Objective-C（theos 构建，GitHub Actions 远程编译）。
 > 文档中的 Swift 命名（FileItem 等）对应实现见 ARCHITECTURE.md「当前实现映射」。
+>
+> **范围收敛（2026-08-13）**：产品聚焦 App Data 读取。除 class-2
+> （App Data）外的所有容器类别（App Groups / Service / System /
+> VPN / Extension / Protected / Experimental）已从 MCM start 移除，
+> 浏览器只展示 App 数据（含 FuckFile 自身沙盒）。其余 TODO 组按
+> 原规划保留，但不再按「读取类别」推进。
 
 ## P0 架构初始化
 
