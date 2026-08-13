@@ -89,7 +89,8 @@
     FFLogTag(@"Search", @"begin query=%@ root=%@", query, MCMVirtualRoot());
 
     __weak typeof(self) weakSelf = self;
-    [[FFSearchService sharedService] startSearch:query underRoot:[[MCMVirtualRoot() stringByAppendingPathComponent:@"[MHA-C2] App Data"]
+    [[FFSearchService sharedService] startSearch:query
+        underRoot:[[MCMVirtualRoot() stringByAppendingPathComponent:@"[MHA-C2] App Data"]]
         batch:^(NSArray<FFFoundItem *> *batch) {
             [weakSelf.results addObjectsFromArray:batch];
             [weakSelf.tableView reloadData];
