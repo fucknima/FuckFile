@@ -150,3 +150,30 @@ V0.4（压缩与编辑）完成后，跳过 V0.5（网络文件：SMB/WebDAV/SFT
   说明启发式过滤（FFLSPlausibleName）基本无效。
 - 显示名解析链恢复为：静态映射 → LSApplicationWorkspace → iTunesMetadata
   itemName → bundle id 兜底。第三方应用名待后续用正式 API 方案再补。
+
+## ADR-009
+
+日期：2026-08-13
+
+决定：
+
+按代码审查意见完成一轮安全/架构加固：
+
+1. 所有文件变更操作（创建/重命名/删除/批量删除）统一走
+   FFFileOperationService（openat + O_NOFOLLOW 逐级验证父链，
+   App Data 链接显式解析并复验目标，最终条目相对父 fd 校验），
+   不再直接调用 NSFileManager 做变更。
+2. ZIP 解压加固：预扫描限制条目数（10 万）与解压后体积（4 GiB）
+   防 ZIP 炸弹；逐文件 CRC32 校验；解压先写临时目录、成功后再
+   rename 提交，失败/取消自动清理。
+3. rescan 改为专用串行队列 + 完成回调（LS 异步确认结束后触发），
+   修复日志页"立即发完成通知但扫描未结束"的时序 bug。
+4. FFLogger：串行队列（NSDateFormatter 在队列内）、1 MiB 轮转
+   （归档 .old.txt）、写入前对容器 UUID 脱敏（保留前 8 位）并
+   规范化 /private/var 前缀。
+5. CI 固定 actions/checkout（v4.3.0）、upload-artifact（v4.6.2）、
+   theos（5280bd03）与 ldid（Procursus v2.1.5-procursus7 release
+   二进制）；codesign 不再用 `|| true` 吞错。
+
+日志位置维持 Documents/Device Storage（产品要求与 App Data 同目录），
+以脱敏 + 轮转控制敏感信息与体积，不再单独迁移目录。
