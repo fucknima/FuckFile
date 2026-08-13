@@ -82,15 +82,13 @@
 - (void)rerunScan
 {
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"manual rescan begin");
-        [[MCMManager sharedManager] rescan];
+    FFLog(@"manual rescan begin");
+    [[MCMManager sharedManager] rescanWithCompletion:^{
+        FFLog(@"manual rescan done");
         [[NSNotificationCenter defaultCenter]
             postNotificationName:@"FFProbeFinished" object:nil];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf refreshLog];
-        });
-    });
+        [weakSelf refreshLog];
+    }];
 }
 
 - (void)clearLog

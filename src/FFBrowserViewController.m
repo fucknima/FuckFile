@@ -3,6 +3,7 @@
 #import "FFConflictPolicy.h"
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
+#import "FFFileOperationService.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 #import "FFAppNames.h"
@@ -403,16 +404,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
+            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+            for (FFEntry *item in items) [paths addObject:item.path];
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                NSUInteger failed = 0;
-                for (FFEntry *item in items) {
-                    NSError *error = nil;
-                    if (![[NSFileManager defaultManager] removeItemAtPath:item.path error:&error]) {
-                        failed++;
-                        FFLogTag(@"Browser", @"batch delete FAIL path=%@ error=%@",
-                            item.path, error);
-                    }
-                }
+                NSError *error = nil;
+                NSUInteger removed = [[FFFileOperationService sharedService]
+                    removeItemsAtPaths:paths firstError:&error];
+                NSUInteger failed = (NSUInteger)(paths.count - removed);
+                if (error)
+                    FFLogTag(@"Browser", @"batch delete FAIL path=%@ error=%@",
+                             error.userInfo[NSFilePathErrorKey] ?: @"?", error);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [weakSelf flash:failed == 0 ? @"删除完成"
                         : [NSString stringWithFormat:@"删除完成，%lu 个失败", (unsigned long)failed]];
@@ -1229,8 +1230,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             if (![weakSelf validNewName:name]) return;
             NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
             NSError *error = nil;
-            if (![[NSFileManager defaultManager] createDirectoryAtPath:path
-                withIntermediateDirectories:NO attributes:nil error:&error])
+            if (![[FFFileOperationService sharedService] createDirectoryAtPath:path error:&error])
                 [weakSelf showError:error];
             [weakSelf reloadEntries];
         }]];
@@ -1252,15 +1252,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             NSString *name = alert.textFields.firstObject.text;
             if (![weakSelf validNewName:name]) return;
             NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
-            int fd = open(path.fileSystemRepresentation,
-                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
-            if (fd < 0) {
-                [weakSelf showError:[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
-                        name, strerror(errno)]}]];
-            } else {
-                close(fd);
-            }
+            NSError *error = nil;
+            if (![[FFFileOperationService sharedService] createEmptyFileAtPath:path error:&error])
+                [weakSelf showError:error];
             [weakSelf reloadEntries];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -1323,7 +1317,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             if (![weakSelf validNewName:newName]) return;
             NSString *newPath = [weakSelf.currentPath stringByAppendingPathComponent:newName];
             NSError *error = nil;
-            if (![[NSFileManager defaultManager] moveItemAtPath:item.path
+            if (![[FFFileOperationService sharedService] renameItemAtPath:item.path
                 toPath:newPath error:&error])
                 [weakSelf showError:error];
             [weakSelf reloadEntries];
@@ -1341,7 +1335,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             NSError *error = nil;
-            if (![[NSFileManager defaultManager] removeItemAtPath:item.path error:&error])
+            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error])
                 [weakSelf showError:error];
             [weakSelf reloadEntries];
         }]];

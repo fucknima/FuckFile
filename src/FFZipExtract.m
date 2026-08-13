@@ -109,24 +109,43 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         return NO;
     }
 
-    [[NSFileManager defaultManager] createDirectoryAtPath:destDir
-        withIntermediateDirectories:YES attributes:nil error:nil];
-    NSMutableArray<NSString *> *entries = [NSMutableArray array];
-
-    // First pass: sum compressed bytes for progress reporting.
+    // First pass: aggregate compressed bytes for progress and — as a
+    // ZIP-bomb guard — the total uncompressed size and entry count.
     unsigned long long totalCompressed = 0;
+    unsigned long long totalUncompressed = 0;
+    NSUInteger totalEntries = 0;
     {
         size_t scan = 0;
         while (scan + 46 <= cdSize) {
             const uint8_t *record = directory + scan;
             if (FFZipU32(record) != 0x02014b50) break;
             totalCompressed += FFZipU32(record + 20);
+            totalUncompressed += FFZipU32(record + 24);
+            totalEntries++;
             uint16_t nLen = FFZipU16(record + 28);
             uint16_t eLen = FFZipU16(record + 30);
             uint16_t cLen = FFZipU16(record + 32);
             scan += 46 + nLen + eLen + cLen;
         }
     }
+    // Hard limits: 100k entries or 4 GiB expanded — well beyond any
+    // legitimate archive we should handle inside a sandboxed app.
+    if (totalEntries > 100000 || totalUncompressed > 4ULL * 1024 * 1024 * 1024) {
+        free(directory);
+        close(fd);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFBIG userInfo:@{
+            NSLocalizedDescriptionKey: @"归档条目过多或解压后体积过大（疑似 ZIP 炸弹）"}];
+        return NO;
+    }
+
+    // Extract into a sibling temporary directory, then commit with a
+    // rename so a failed or cancelled run never leaves a half-written
+    // archive at the destination.
+    NSString *tempDir = [NSString stringWithFormat:@"%@.%@.tmp", destDir,
+        [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    [[NSFileManager defaultManager] createDirectoryAtPath:tempDir
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableArray<NSString *> *entries = [NSMutableArray array];
 
     size_t cursor = 0;
     BOOL ok = YES;
@@ -135,6 +154,8 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         const uint8_t *entry = directory + cursor;
         if (FFZipU32(entry) != 0x02014b50) break; // end of directory / corruption
         uint16_t method = FFZipU16(entry + 10);
+        uint32_t expectedCrc = FFZipU32(entry + 16);
+        uint32_t expectedSize = FFZipU32(entry + 24);
         uint32_t compressedSize = FFZipU32(entry + 20);
         uint16_t nameLength = FFZipU16(entry + 28);
         uint16_t extraLength = FFZipU16(entry + 30);
@@ -150,7 +171,7 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         if (!name.length) continue;
         if ([name hasSuffix:@"/"]) {
             if (!FFZipSafeEntryName(name)) { ok = NO; break; }
-            NSString *dir = [destDir stringByAppendingPathComponent:name];
+            NSString *dir = [tempDir stringByAppendingPathComponent:name];
             [[NSFileManager defaultManager] createDirectoryAtPath:dir
                 withIntermediateDirectories:YES attributes:nil error:nil];
             continue;
@@ -182,15 +203,17 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
             break;
         }
 
-        if (!FFZipEnsureParent(destDir, name)) {
+        if (!FFZipEnsureParent(tempDir, name)) {
             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
                 NSLocalizedDescriptionKey: [NSString stringWithFormat:@"mkdir parent: %s", strerror(errno)]}];
             ok = NO;
             break;
         }
-        NSString *destination = [destDir stringByAppendingPathComponent:name];
+        NSString *destination = [tempDir stringByAppendingPathComponent:name];
         int output = open(destination.fileSystemRepresentation,
             O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        uLong fileCrc = crc32(0L, Z_NULL, 0);
+        unsigned long long fileBytes = 0;
         if (output < 0) {
             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
                 NSLocalizedDescriptionKey: [NSString stringWithFormat:
@@ -219,6 +242,8 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                 }
                 dataOffset += (off_t)chunk;
                 remaining -= (uint32_t)chunk;
+                fileCrc = crc32(fileCrc, buffer, (uInt)chunk);
+                fileBytes += chunk;
             }
         } else {
             z_stream stream = {0};
@@ -255,6 +280,8 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                     }
                     size_t produced = sizeof(outputBuffer) - stream.avail_out;
                     if (produced > 0) {
+                        fileCrc = crc32(fileCrc, outputBuffer, (uInt)produced);
+                        fileBytes += produced;
                         ssize_t written = write(output, outputBuffer, produced);
                         if (written != (ssize_t)produced) {
                             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
@@ -274,6 +301,13 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
             unlink(destination.fileSystemRepresentation);
             break;
         }
+        if (expectedCrc && fileCrc != expectedCrc) {
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"CRC 校验失败：%@（归档可能损坏）", name]}];
+            unlink(destination.fileSystemRepresentation);
+            ok = NO;
+            break;
+        }
         [entries addObject:name];
         if (progressBlock && totalCompressed > 0)
             progressBlock((double)extractedCompressed / (double)totalCompressed, name);
@@ -288,7 +322,27 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
 
     free(directory);
     close(fd);
-    if (!ok) return NO;
+    if (!ok) {
+        [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+        return NO;
+    }
+    // Commit: remove a stale destination first (extract target) then
+    // atomically move the fully-written temp dir into place.
+    if ([[NSFileManager defaultManager] fileExistsAtPath:destDir]) {
+        NSError *removeError = nil;
+        if (![[NSFileManager defaultManager] removeItemAtPath:destDir error:&removeError]) {
+            [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+            if (error) *error = removeError;
+            return NO;
+        }
+    }
+    NSError *moveError = nil;
+    if (![[NSFileManager defaultManager] moveItemAtPath:tempDir toPath:destDir
+        error:&moveError]) {
+        [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+        if (error) *error = moveError;
+        return NO;
+    }
     if (entryNames) *entryNames = entries;
     return YES;
 }

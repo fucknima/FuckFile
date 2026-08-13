@@ -43,6 +43,8 @@ NSString *MCMVirtualRoot(void)
     NSMutableDictionary<NSString *, MCMLease *> *_leases;
     NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *_links;
     BOOL _started;
+    dispatch_queue_t _scanQueue;
+    void (^_scanCompletion)(void);
 }
 
 + (instancetype)sharedManager
@@ -59,6 +61,7 @@ NSString *MCMVirtualRoot(void)
     if (self) {
         _leases = [NSMutableDictionary dictionary];
         _links = [NSMutableDictionary dictionary];
+        _scanQueue = dispatch_queue_create("ff.mcm.scan", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -518,7 +521,13 @@ static NSDictionary *MCMCustomIdentifiers(void)
 
 - (void)rescan
 {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    [self rescanWithCompletion:nil];
+}
+
+- (void)rescanWithCompletion:(void (^)(void))completion
+{
+    _scanCompletion = completion;
+    dispatch_async(_scanQueue, ^{
         [self startOnce];
     });
 }
@@ -609,12 +618,29 @@ static NSDictionary *MCMCustomIdentifiers(void)
             FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
                      (unsigned long)total, (unsigned long)confirmed);
             [self postScanProgress:1.0 linked:confirmed total:total scanning:NO];
+            [self finishScan];
         });
+    } else {
+        [self finishScan];
     }
 
     [self writeAccessMap:root];
     _started = YES;
     FFLogTag(@"MCM", @"ready root=%@ active_leases=%lu", root, (unsigned long)_leases.count);
+}
+
+// Consumes the rescan completion exactly once (thread-safe against the
+// async LS block racing the serial startOnce tail).
+- (void)finishScan
+{
+    @synchronized (self) {
+        if (!_scanCompletion) return;
+        void (^completion)(void) = _scanCompletion;
+        _scanCompletion = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion();
+        });
+    }
 }
 
 @end

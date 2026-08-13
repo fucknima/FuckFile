@@ -21,8 +21,12 @@ FOUNDATION_EXPORT NSNotificationName const FFMCMAppLinksUpdatedNotification;
 - (void)start;
 
 // Re-runs the full scan on demand (the LaunchServices confirmation and
-// link installation are idempotent).
+// link installation are idempotent). Serialized on an internal queue.
 - (void)rescan;
+
+// rescan with a completion callback fired on the main queue after the
+// full scan (including the async LaunchServices confirmation) finishes.
+- (void)rescanWithCompletion:(void (^ _Nullable)(void))completion;
 
 // Returns the activated real path for a class-2 (app data) container.
 - (nullable NSString *)dataContainerPathForIdentifier:(NSString *)identifier

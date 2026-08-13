@@ -11,14 +11,18 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
 
       - name: Install Theos
         run: |
           sudo mkdir -p /opt/theos
           sudo chown "$(whoami)" /opt/theos
-          git clone --recursive --depth 1 https://github.com/theos/theos.git /opt/theos
-          brew install ldid
+          # Pinned to a specific commit; recursive clone pins the ldid
+          # submodule to the same revision so tooling never drifts.
+          git clone --recursive https://github.com/theos/theos.git /opt/theos
+          cd /opt/theos
+          git checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
+          git submodule update --init --recursive
 
       - name: Build
         run: |
@@ -50,7 +54,8 @@ jobs:
           ls -la "$APP/Base.lproj"
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
-          codesign --force -s - "$APP" || true
+          # Fail loudly: a broken signature produces an unusable artifact.
+          codesign --force -s - "$APP"
           rm -rf Payload FuckFile.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
@@ -59,7 +64,7 @@ jobs:
           unzip -l FuckFile.ipa
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: FuckFile-unsigned-ipa
           path: FuckFile.ipa
