@@ -188,8 +188,9 @@
     switch (indexPath.section) {
         case 0:
             if (indexPath.row == 0) {
-                NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
-                next = [[FFBrowserViewController alloc] initWithPath:appData];
+                // Enter the virtual root: the App Data folder sits next
+                // to the log file here; tap into it for the links.
+                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             } else if (indexPath.row == 1) {
                 next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
             } else {
