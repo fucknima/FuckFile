@@ -8,6 +8,7 @@
 #import "MCMBridge.h"
 #import "BadQueryProbe.h"
 #import "FFLogger.h"
+#import "FFLSDiscovery.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -315,12 +316,20 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
 - (void)installLink:(NSString *)directory identifier:(NSString *)identifier
     containerClass:(uint64_t)containerClass group:(BOOL)group
 {
+    [self installLink:directory identifier:identifier containerClass:containerClass
+                group:group logFailure:YES];
+}
+
+- (void)installLink:(NSString *)directory identifier:(NSString *)identifier
+    containerClass:(uint64_t)containerClass group:(BOOL)group logFailure:(BOOL)logFailure
+{
     NSString *error = nil;
     NSString *target = [self activate:containerClass identifier:identifier
                                 group:group error:&error];
     if (!target) {
-        FFLogTag(@"MCM", @"activation FAIL class=%llu id=%@ group=%d error=%@",
-                 containerClass, identifier, group, error ?: @"(nil)");
+        if (logFailure)
+            FFLogTag(@"MCM", @"activation FAIL class=%llu id=%@ group=%d error=%@",
+                     containerClass, identifier, group, error ?: @"(nil)");
         return;
     }
     NSString *link = [directory stringByAppendingPathComponent:identifier];
@@ -624,6 +633,33 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     for (NSString *identifier in appIdentifiers)
         [self installLink:apps identifier:identifier containerClass:2 group:NO];
 
+    // iOS 26 hides third-party apps from ContainerManager/LaunchServices
+    // enumeration, but the LaunchServices store inside com.apple.lsd still
+    // lists every installed identifier. Extract candidates and confirm each
+    // with a direct class-2 lookup; failures are silent because the store
+    // scan yields thousands of stale candidates.
+    NSString *lsdError = nil;
+    NSString *lsdContainer = [self activate:10 identifier:@"com.apple.lsd"
+        group:NO error:&lsdError];
+    if (!lsdContainer.length) {
+        FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
+                 lsdError ?: @"(nil)");
+    } else {
+        NSArray<NSString *> *launchServicesIdentifiers =
+            FFLSDiscoverInstalledIdentifiers(lsdContainer, 4096);
+        NSUInteger confirmed = 0;
+        for (NSString *identifier in launchServicesIdentifiers) {
+            if ([appIdentifiers containsObject:identifier]) continue;
+            if ([self activate:2 identifier:identifier group:NO error:nil])
+                confirmed++;
+            [self installLink:apps identifier:identifier containerClass:2
+                        group:NO logFailure:NO];
+        }
+        FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
+                 (unsigned long)launchServicesIdentifiers.count,
+                 (unsigned long)confirmed);
+    }
+
     NSMutableOrderedSet *groupIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(7)];
     for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
@@ -647,9 +683,11 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},
         @{@"Directory": serviceData, @"Class": @10, @"Group": @(NO), @"CustomKey": @"ServiceData",
-          @"Fallback": @[@"com.apple.swcd", @"com.apple.familycircled", @"com.apple.locationd"]},
+          @"Fallback": @[@"com.apple.swcd", @"com.apple.familycircled", @"com.apple.locationd",
+                         @"com.apple.lsd", @"com.apple.installd", @"com.apple.accountsd",
+                         @"com.apple.itunescloudd", @"com.apple.nanonewscd"]},
         @{@"Directory": systemData, @"Class": @12, @"Group": @(NO), @"CustomKey": @"SystemData",
-          @"Fallback": @[@"com.apple.eligibilityd", @"com.apple.geod"]},
+          @"Fallback": @[@"com.apple.eligibilityd", @"com.apple.geod", @"com.apple.springboard"]},
         @{@"Directory": systemGroups, @"Class": @13, @"Group": @(YES), @"CustomKey": @"SystemGroups",
           @"Fallback": @[@"systemgroup.com.apple.configurationprofiles",
                          @"systemgroup.com.apple.pisco.suinfo",

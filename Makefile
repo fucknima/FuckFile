@@ -18,6 +18,7 @@ FuckFile_FILES = \
 	src/FFGestaltEditorViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
+	src/FFLSDiscovery.m \
 	src/BadQueryProbe.m \
 	src/BadQuery.c \
 	src/PosterBoardFeature.m

@@ -1,0 +1,19 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+// Scans the device-local LaunchServices store inside the given lsd service
+// container root and returns candidate installed-app bundle identifiers.
+//
+// iOS 26 hides third-party apps from the normal ContainerManager and
+// LaunchServices enumeration APIs, but the store database still contains
+// every installed identifier. Candidates are extracted with a byte-range
+// scan and must be confirmed with a direct ContainerManager lookup by the
+// caller.
+//
+// Results are cached in <Documents>/LSIdentifierCache.plist keyed by the
+// store's byte size; a rescan happens only when the store changed.
+NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
+                                                      NSUInteger maxCandidates);
+
+NS_ASSUME_NONNULL_END
