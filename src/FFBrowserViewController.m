@@ -1176,10 +1176,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     config.text = item.displayName.length ? item.displayName : item.name;
     config.textProperties.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     config.textProperties.numberOfLines = 1;
-    config.textProperties.alignment = NSTextAlignmentCenter;
+    config.textProperties.alignment = UIListContentTextAlignmentCenter;
     config.secondaryText = [self formatSize:item.size];
     config.secondaryTextProperties.font = [UIFont systemFontOfSize:10];
-    config.secondaryTextProperties.alignment = NSTextAlignmentCenter;
+    config.secondaryTextProperties.alignment = UIListContentTextAlignmentCenter;
     config.image = item.thumbnail ?: [self iconForEntry:item];
     config.imageProperties.maximumSize = CGSizeMake(48, 48);
     config.imageProperties.cornerRadius = 6;
