@@ -1,11 +1,9 @@
 #import "FFLogViewController.h"
 #import "FFLogger.h"
-#import "BadQueryProbe.h"
 #import "MCMManager.h"
 
 @interface FFLogViewController ()
 @property(nonatomic, strong) UITextView *textView;
-@property(nonatomic, strong) UISegmentedControl *segment;
 @property(nonatomic, strong) UIBarButtonItem *shareItem;
 @property(nonatomic, strong) UIBarButtonItem *refreshItem;
 @end
@@ -24,13 +22,6 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    self.segment = [[UISegmentedControl alloc] initWithItems:@[@"FuckFile", @"探针"]];
-    self.segment.selectedSegmentIndex = 0;
-    [self.segment addTarget:self action:@selector(segmentChanged:)
-           forControlEvents:UIControlEventValueChanged];
-    self.segment.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.segment];
-
     self.textView = [UITextView new];
     self.textView.translatesAutoresizingMaskIntoConstraints = NO;
     self.textView.editable = NO;
@@ -40,10 +31,7 @@
     [self.view addSubview:self.textView];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.segment.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
-        [self.segment.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [self.segment.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [self.textView.topAnchor constraintEqualToAnchor:self.segment.bottomAnchor constant:8],
+        [self.textView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
         [self.textView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
         [self.textView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
         [self.textView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8],
@@ -53,8 +41,8 @@
         UIBarButtonSystemItemRefresh target:self action:@selector(refreshLog)];
     self.shareItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
         UIBarButtonSystemItemAction target:self action:@selector(shareLog)];
-    UIBarButtonItem *rerun = [[UIBarButtonItem alloc] initWithTitle:@"重跑探针"
-        style:UIBarButtonItemStylePlain target:self action:@selector(rerunProbe)];
+    UIBarButtonItem *rerun = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描"
+        style:UIBarButtonItemStylePlain target:self action:@selector(rerunScan)];
     UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"清空"
         style:UIBarButtonItemStylePlain target:self action:@selector(clearLog)];
     self.navigationItem.rightBarButtonItems = @[self.shareItem, self.refreshItem, rerun, clear];
@@ -62,24 +50,10 @@
     [self refreshLog];
 }
 
-- (void)segmentChanged:(__unused UISegmentedControl *)segment
-{
-    [self refreshLog];
-}
-
-- (NSString *)currentLogPath
-{
-    if (self.segment.selectedSegmentIndex == 0) return FFLogPath();
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [[documents stringByAppendingPathComponent:@"Device Storage"]
-        stringByAppendingPathComponent:@"BadQuery Probe Log.txt"];
-}
-
 - (void)refreshLog
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *path = [self currentLogPath];
+        NSString *path = FFLogPath();
         NSString *text = [NSString stringWithContentsOfFile:path
             encoding:NSUTF8StringEncoding error:nil];
         // Show the tail for readability; the full log is shareable as-is.
@@ -95,20 +69,19 @@
 
 - (void)shareLog
 {
-    NSString *path = [self currentLogPath];
-    NSURL *url = [NSURL fileURLWithPath:path];
+    NSURL *url = [NSURL fileURLWithPath:FFLogPath()];
     UIActivityViewController *activity = [[UIActivityViewController alloc]
         initWithActivityItems:@[url] applicationActivities:nil];
     activity.popoverPresentationController.barButtonItem = self.shareItem;
     [self presentViewController:activity animated:YES completion:nil];
 }
 
-- (void)rerunProbe
+- (void)rerunScan
 {
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        BadQueryProbeRunAgain();
-        BadQueryReconnectEscapedRoots();
+        FFLog(@"manual rescan begin");
+        [[MCMManager sharedManager] rescan];
         [[NSNotificationCenter defaultCenter]
             postNotificationName:@"FFProbeFinished" object:nil];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -119,8 +92,7 @@
 
 - (void)clearLog
 {
-    NSString *path = [self currentLogPath];
-    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:FFLogPath() error:nil];
     [self refreshLog];
 }
 

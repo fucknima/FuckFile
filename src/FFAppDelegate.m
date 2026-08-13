@@ -2,7 +2,6 @@
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
-#import "BadQueryProbe.h"
 #import "FFLogger.h"
 
 @implementation FFAppDelegate
@@ -26,26 +25,14 @@
         UIScreen.mainScreen.scale);
 
     // Build the MCM virtual root on a background queue so the UI stays
-    // responsive while leases are activated and links are created. The
-    // bad_query probe runs right after, sharing the same queue.
+    // responsive while leases are activated and links are created.
+    // MHA is the only channel: the MCM start builds the virtual root
+    // with class-2/7/10/12/13 direct lookups plus the full LaunchServices
+    // store confirmation on a background queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"BadQueryProbe run begin");
-        BadQueryProbeRun();
-        FFLog(@"BadQueryProbe run done");
-        // bad_query sweep only contributes the UUID enumeration + index.
-        FFLog(@"BadQueryEnumerate begin");
-        BadQueryEnumerateAllContainers();
-        FFLog(@"BadQueryEnumerate done");
-        // Primary channel: MHA class-2 lookups open every discovered
-        // container with a proper token and build the App Data links.
         FFLog(@"MCM start begin");
         [[MCMManager sharedManager] start];
         FFLog(@"MCM start done");
-        // bad_query handles stay alive only as a browsing fallback for
-        // containers the MHA route was denied.
-        FFLog(@"BadQueryReconnect begin");
-        BadQueryReconnectEscapedRoots();
-        FFLog(@"BadQueryReconnect done");
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:@"FFProbeFinished" object:nil];

@@ -21,9 +21,7 @@ FuckFile_FILES = \
 	src/FFPlistEditorViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
-	src/FFLSDiscovery.m \
-	src/BadQueryProbe.m \
-	src/BadQuery.c
+	src/FFLSDiscovery.m
 
 FuckFile_CFLAGS = -I$(PWD)/src -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \

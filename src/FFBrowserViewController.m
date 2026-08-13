@@ -1,7 +1,6 @@
 #import "FFBrowserViewController.h"
 #import "FFCopyEngine.h"
 #import "MCMManager.h"
-#import "BadQueryProbe.h"
 #import "FFLogger.h"
 #import "FFAppNames.h"
 #import "FFZipExtract.h"
@@ -75,9 +74,6 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 // Process-wide paste state so Copy in one folder can Paste in another.
 static NSArray<NSString *> *gClipboardSources = nil;
 static FFClipboardMode gClipboardMode = FFClipboardModeNone;
-static NSMutableSet<NSString *> *gConsumedEscapedRoots;
-static NSMutableSet<NSString *> *gConsumedLinkTargets;
-static NSMutableSet<NSString *> *gConsumedDirectPaths;
 
 @implementation FFBrowserViewController
 
@@ -105,7 +101,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
 
-    // Reload once the background bad_query probe has finished.
+    // Reload once the background MCM scan has finished.
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
@@ -346,98 +342,16 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     if (self.loading) return;
     self.loading = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            gConsumedEscapedRoots = [NSMutableSet set];
-            gConsumedLinkTargets = [NSMutableSet set];
-            gConsumedDirectPaths = [NSMutableSet set];
-        });
-        NSString *escapedRoot = [self escapedRootForPath:self.currentPath];
+        // MHA is the only channel: every link in the MCM folders was
+        // activated at startup, so its token already covers the target.
+        // No per-directory extension consumption is needed.
         NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
-
-        // Real paths outside the app's own container (e.g. the MobileGestalt
-        // Caches directory opened from the editor, or an MCM lease target)
-        // need their own sandbox extension. Consume the /var form once.
-        NSString *varPath = [self varFormOfPath:self.currentPath];
-        BOOL outsideOwnContainer = varPath.length &&
-            ![self.currentPath hasPrefix:NSHomeDirectory()];
-        if (outsideOwnContainer && !escapedRoot.length && !linkTarget.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedDirectPaths) {
-                cached = [gConsumedDirectPaths containsObject:varPath];
-            }
-            if (!cached) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(varPath, nil, NO, &error);
-                FFLogTag(@"Browser", @"escaped reconnect direct=%@ path=%@ handle=%lld error=%@",
-                    varPath, self.currentPath, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedDirectPaths) {
-                        [gConsumedDirectPaths addObject:varPath];
-                    }
-                }
-            }
-        }
-
-        // Inside [BadQuery] Escaped the sandbox extension may be gone after a
-        // restart. Re-consume the matching real root, and if the current path
-        // is itself a symlink (a container UUID/bundle-id link), consume its
-        // target too. Every step is written to FuckFile Log.txt.
-        if (escapedRoot.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedEscapedRoots) {
-                cached = [gConsumedEscapedRoots containsObject:escapedRoot];
-            }
-            if (!cached) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(escapedRoot, nil, NO, &error);
-                FFLogTag(@"Browser", @"escaped reconnect root=%@ path=%@ handle=%lld error=%@",
-                    escapedRoot, self.currentPath, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedEscapedRoots) {
-                        [gConsumedEscapedRoots addObject:escapedRoot];
-                    }
-                }
-            }
-        }
         if (linkTarget.length) {
-            // Primary channel: the MHA class-2 lease already covers this
-            // container with a proper token, so skip the bad_query
-            // consume entirely. bad_query only fills the gap when the
-            // MHA lookup was denied for this container.
             BOOL mhaCovered = [[MCMManager sharedManager] hasActiveLeaseForPath:linkTarget];
-            if (mhaCovered) {
-                FFLogTag(@"Browser", @"MHA lease covers target=%@ (skip bad_query)",
-                         linkTarget);
-            } else {
-                BOOL cached = NO;
-                @synchronized (gConsumedLinkTargets) {
-                    cached = [gConsumedLinkTargets containsObject:linkTarget];
-                }
-                if (!cached) {
-                    NSString *error = nil;
-                    int64_t handle = BadQueryConsumePath(linkTarget, nil, NO, &error);
-                    FFLogTag(@"Browser", @"no MHA lease; bad_query fallback target=%@ handle=%lld error=%@",
-                        linkTarget, handle, error ?: @"(nil)");
-                    if (handle >= 0) {
-                        @synchronized (gConsumedLinkTargets) {
-                            [gConsumedLinkTargets addObject:linkTarget];
-                        }
-                    }
-                }
-            }
+            FFLogTag(@"Browser", @"target=%@ mha-lease-covered=%d",
+                     linkTarget, mhaCovered);
         }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
-        if (loaded.count == 0 && self.loadError.length && varPath.length) {
-            // The first open may have raced the token issuance; consume again
-            // (failure is not cached) and try once more before showing the
-            // error alert.
-            NSString *error = nil;
-            int64_t retryHandle = BadQueryConsumePath(varPath, nil, NO, &error);
-            FFLogTag(@"Browser", @"escaped retry direct=%@ handle=%lld error=%@",
-                varPath, retryHandle, error ?: @"(nil)");
-            loaded = [self loadDirectoryContents];
-        }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
             self.hasLoaded = YES;
@@ -452,27 +366,6 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     });
 }
 
-- (NSString *)escapedRootForPath:(NSString *)path
-{
-    NSArray<NSString *> *parts = path.pathComponents;
-    NSUInteger index = [parts indexOfObject:@"[BadQuery] Escaped"];
-    if (index == NSNotFound || index + 1 >= parts.count) return nil;
-    NSString *folder = parts[index + 1];
-    static NSDictionary<NSString *, NSString *> *map;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        map = @{
-            @"App Data": @"/var/mobile/Containers/Data/Application",
-            @"InternalDaemon": @"/var/mobile/Containers/Data/InternalDaemon",
-            @"PluginKitPlugin": @"/var/mobile/Containers/Data/PluginKitPlugin",
-            @"App Groups": @"/var/mobile/Containers/Shared/AppGroup",
-            @"System Groups": @"/var/mobile/Containers/Shared/SystemGroup",
-            @"SystemGroup (new path)": @"/var/containers/Shared/SystemGroup",
-        };
-    });
-    return map[folder];
-}
-
 - (NSString *)symlinkTargetOfPath:(NSString *)path
 {
     struct stat status = {0};
@@ -485,20 +378,12 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
     return [NSString stringWithUTF8String:target];
 }
 
-- (NSString *)varFormOfPath:(NSString *)path
-{
-    if ([path hasPrefix:@"/private/var"]) return [path substringFromIndex:8];
-    if ([path hasPrefix:@"/var"]) return path;
-    return nil;
-}
-
 - (void)presentLoadError
 {
     NSString *message = self.loadError.length ? self.loadError : @"未知错误";
     message = [message stringByAppendingString:
-        @"\n\n沙盒扩展可能已经失效。App 已尝试自动重新消费 token；"
-        @"如果仍然失败，请到「bad_query 探针控制台」点「枚举容器」重建链接，"
-        @"或点「重新运行探针」后重试。"];
+        @"\n\n该容器未被 MHA 授权（containermanagerd 拒绝发 token），"
+        @"或 token 已失效。可在「运行日志」重跑探针后重试。"];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开目录"
         message:message preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;

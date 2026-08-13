@@ -1,7 +1,6 @@
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
 #import "FFLogViewController.h"
-#import "BadQueryProbe.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -135,7 +134,7 @@
                 cell.imageView.image = [UIImage systemImageNamed:@"info.circle.fill"];
             } else {
                 cell.textLabel.text = @"致谢";
-                cell.detailTextLabel.text = @"MCM：FilzaSlop · 逃逸：bad_query";
+                cell.detailTextLabel.text = @"MCM：FilzaSlop · 身份：MobileHouseArrest";
                 cell.imageView.image = [UIImage systemImageNamed:@"person.3.fill"];
             }
             break;
@@ -168,7 +167,7 @@
 - (void)presentCredits
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"致谢"
-        message:@"MCM 身份绕过：0xjohnnydev/FilzaSlop\n沙箱逃逸：forcequitOS/bad_query"
+        message:@"MCM 身份绕过：0xjohnnydev/FilzaSlop"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];

@@ -21,16 +21,18 @@ static BOOL FFLSSafeIdentifier(NSString *identifier)
         ![identifier containsString:@".."] && [identifier containsString:@"."];
 }
 
-static NSString *FFLSCachePath(void)
+static NSString *FFLSCachePathForMode(BOOL groupsOnly)
 {
     NSString *documents = NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [documents stringByAppendingPathComponent:@"LSIdentifierCache.plist"];
+    return [documents stringByAppendingPathComponent:
+        groupsOnly ? @"LSGroupCache.plist" : @"LSIdentifierCache.plist"];
 }
 
-static NSArray<NSString *> *FFLSCachedIdentifiersForSize(unsigned long long storeSize)
+static NSArray<NSString *> *FFLSCachedIdentifiersForSize(unsigned long long storeSize, BOOL groupsOnly)
 {
-    NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:FFLSCachePath()];
+    NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:
+        FFLSCachePathForMode(groupsOnly)];
     if (![cache[@"StoreSize"] isKindOfClass:NSNumber.class] ||
         [cache[@"StoreSize"] unsignedLongLongValue] != storeSize)
         return nil;
@@ -43,14 +45,32 @@ static NSArray<NSString *> *FFLSCachedIdentifiersForSize(unsigned long long stor
     return safe;
 }
 
-static void FFLSWriteCache(unsigned long long storeSize, NSArray<NSString *> *identifiers)
+static void FFLSWriteCache(unsigned long long storeSize, NSArray<NSString *> *identifiers,
+                           BOOL groupsOnly)
 {
     NSDictionary *cache = @{ @"StoreSize": @(storeSize), @"Identifiers": identifiers };
-    [cache writeToFile:FFLSCachePath() atomically:YES];
+    [cache writeToFile:FFLSCachePathForMode(groupsOnly) atomically:YES];
 }
+
+static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
+                                                   NSUInteger maxCandidates,
+                                                   BOOL groupsOnly);
 
 NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
                                                       NSUInteger maxCandidates)
+{
+    return FFLSDiscoverWithPrefix(lsdContainerRoot, maxCandidates, NO);
+}
+
+NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
+                                                  NSUInteger maxCandidates)
+{
+    return FFLSDiscoverWithPrefix(lsdContainerRoot, maxCandidates, YES);
+}
+
+static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
+                                                   NSUInteger maxCandidates,
+                                                   BOOL groupsOnly)
 {
     if (!lsdContainerRoot.length || maxCandidates == 0) return @[];
     NSString *caches = [lsdContainerRoot stringByAppendingPathComponent:@"Library/Caches"];
@@ -78,11 +98,11 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
         return @[];
     }
 
-    NSArray<NSString *> *cached = FFLSCachedIdentifiersForSize(totalStoreSize);
+    NSArray<NSString *> *cached = FFLSCachedIdentifiersForSize(totalStoreSize, groupsOnly);
     if (cached) {
-        FFLogTag(@"LSDiscovery", @"store unchanged (%llu bytes, %lu files); reused cached candidates=%lu",
-                 totalStoreSize, (unsigned long)storePaths.count,
-                 (unsigned long)cached.count);
+        FFLogTag(@"LSDiscovery", @"store unchanged mode=%@ (%llu bytes, %lu files); reused cached candidates=%lu",
+                 groupsOnly ? @"groups" : @"apps", totalStoreSize,
+                 (unsigned long)storePaths.count, (unsigned long)cached.count);
         if (cached.count > maxCandidates)
             return [cached subarrayWithRange:NSMakeRange(0, maxCandidates)];
         return cached;
@@ -114,6 +134,13 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
                 NSString *candidate = [[NSString alloc]
                     initWithBytes:bytes + start length:length
                     encoding:NSUTF8StringEncoding];
+                if (groupsOnly) {
+                    // Keep only "group.<team>.<name>" shaped identifiers.
+                    if (![candidate hasPrefix:@"group."]) {
+                        start = NSNotFound;
+                        continue;
+                    }
+                }
                 if (FFLSSafeIdentifier(candidate)) {
                     NSString *key = candidate.lowercaseString;
                     if (!byLowercase[key]) byLowercase[key] = candidate;
@@ -134,10 +161,11 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
         FFLogTag(@"LSDiscovery", @"candidate limit (%lu) reached; scan truncated",
                  (unsigned long)kMaximumCandidateCount);
     NSArray<NSString *> *result = byLowercase.allValues;
-    FFLogTag(@"LSDiscovery", @"scan complete storeFiles=%lu bytes=%llu candidates=%lu",
+    FFLogTag(@"LSDiscovery", @"scan complete mode=%@ storeFiles=%lu bytes=%llu candidates=%lu",
+             groupsOnly ? @"groups" : @"apps",
              (unsigned long)storePaths.count, totalStoreSize,
              (unsigned long)result.count);
-    FFLSWriteCache(totalStoreSize, result);
+    FFLSWriteCache(totalStoreSize, result, groupsOnly);
     if (result.count > maxCandidates)
         return [result subarrayWithRange:NSMakeRange(0, maxCandidates)];
     return result;

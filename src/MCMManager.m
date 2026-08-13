@@ -6,7 +6,6 @@
 
 #import "MCMManager.h"
 #import "MCMBridge.h"
-#import "BadQueryProbe.h"
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
 
@@ -24,11 +23,6 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
 
 NSNotificationName const FFMCMAppLinksUpdatedNotification =
     @"FFMCMAppLinksUpdatedNotification";
-
-// Sandbox handle consumed through the bad_query variant matrix for the
-// MobileGestalt group. Kept alive for the whole process: releasing it would
-// revoke the escape and the editor would go empty again.
-static int64_t gBadQueryGestaltHandle = -1;
 
 // Private LaunchServices API used only for installed-app discovery.
 @interface NSObject (MCMLaunchServices)
@@ -207,102 +201,6 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
     return [self activate:2 identifier:identifier group:NO error:error];
 }
 
-- (NSString *)mobileGestaltPath:(NSString **)error
-{
-    // Fast path: the escaped path may already be reachable from a previous
-    // probe run without a fresh MCM activation.
-    NSArray<NSString *> *candidates = @[
-        @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-        @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-    ];
-    for (NSString *candidate in candidates) {
-        if (access(candidate.fileSystemRepresentation, R_OK) == 0) return candidate;
-    }
-
-    NSArray<NSDictionary *> *routes = @[
-        @{@"Class": @13, @"Identifier": @"systemgroup.com.apple.mobilegestaltcache",
-          @"Group": @YES, @"Part": @3, @"Domain": @"",
-          @"File": @"com.apple.MobileGestalt.plist"},
-        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3,
-          @"Domain": @"../../../../../../containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-          @"File": @"com.apple.MobileGestalt.plist"},
-        @{@"Class": @12, @"Identifier": @"com.apple.geod", @"Group": @NO,
-          @"Part": @3, @"Domain": @"..",
-          @"File": @"Caches/com.apple.MobileGestalt.plist"},
-    ];
-    for (NSDictionary *route in routes) {
-        NSString *detail = nil;
-        NSString *root = [self activateScoped:[route[@"Class"] unsignedLongLongValue]
-            identifier:route[@"Identifier"] group:[route[@"Group"] boolValue]
-            part:[route[@"Part"] unsignedLongLongValue]
-            partDomain:[route[@"Domain"] length] ? route[@"Domain"] : nil
-            flags:kMCMReadWritePartFlags error:&detail];
-        if (!root) {
-            FFLogTag(@"MCM", @"gestalt route FAIL class=%llu detail=%@",
-                [route[@"Class"] unsignedLongLongValue], detail ?: @"(nil)");
-            continue;
-        }
-        NSString *path = [root stringByAppendingPathComponent:route[@"File"]];
-        struct stat status = {0};
-        if (lstat(path.fileSystemRepresentation, &status) == 0) {
-            FFLogTag(@"MCM", @"gestalt path OK %@", path);
-            return path;
-        }
-        FFLogTag(@"MCM", @"gestalt route reached root=%@ but file missing %@ errno=%d",
-            root, path, errno);
-    }
-
-    // iOS 26.6 fallback: MCM's class-13 activation is denied at token
-    // issuance, but the bad_query variant matrix still issues tokens for
-    // group=systemgroup.com.apple.mobilegestaltcache (flags 0x900000000 /
-    // 0x800000000, part 0/3, traversal 0/1). Consume one handle per target
-    // and keep it so the editor can read and rewrite the plist.
-    if (gBadQueryGestaltHandle < 0) {
-        NSArray<NSString *> *targets = @[
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-            @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache",
-            @"/var/mobile/Containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches",
-        ];
-        for (NSString *target in targets) {
-            NSString *detail = nil;
-            FFLogTag(@"MCM", @"gestalt bad_query consume begin target=%@", target);
-            int64_t handle = BadQueryConsumePath(target, nil, NO, &detail);
-            if (handle >= 0) {
-                gBadQueryGestaltHandle = handle;
-                FFLogTag(@"MCM", @"gestalt bad_query consume OK handle=%lld target=%@",
-                    handle, target);
-                break;
-            }
-            FFLogTag(@"MCM", @"gestalt bad_query consume FAIL code=%lld target=%@ error=%@",
-                handle, target, detail ?: @"(nil)");
-        }
-    }
-    if (gBadQueryGestaltHandle >= 0) {
-        for (NSString *candidate in candidates) {
-            if (access(candidate.fileSystemRepresentation, R_OK) == 0) {
-                FFLogTag(@"MCM", @"gestalt reachable via bad_query path=%@ handle=%lld",
-                    candidate, gBadQueryGestaltHandle);
-                return candidate;
-            }
-        }
-    }
-
-    // Last resort: the symlink bad_query creates inside Device Storage.
-    NSString *escaped = [MCMVirtualRoot() stringByAppendingPathComponent:@"[BadQuery] Escaped"];
-    NSArray<NSString *> *children = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtPath:escaped error:nil];
-    for (NSString *child in children ?: @[]) {
-        if ([child containsString:@"MobileGestalt"]) {
-            NSString *path = [escaped stringByAppendingPathComponent:child];
-            if (access(path.fileSystemRepresentation, R_OK) == 0) return path;
-        }
-    }
-    if (error) *error = @"MobileGestalt.plist is not reachable (no MCM route granted access)";
-    return nil;
-}
-
 #pragma mark - Virtual root link installation
 
 - (void)recordLink:(NSString *)directory identifier:(NSString *)identifier target:(NSString *)target
@@ -356,6 +254,61 @@ static NSString *MCMNormalizedPath(NSString *path)
                      containerClass, identifier, group, error ?: @"(nil)");
         return;
     }
+    [self installLinkForTarget:target directory:directory identifier:identifier
+        containerClass:containerClass];
+}
+
+// Class-2 lookup with a flags matrix fallback: when the canonical
+// query (0x900000000, part 0) is denied for an identifier, retry the
+// other flags combinations containermanagerd has accepted on this OS.
+- (NSString *)activateClass2WithMatrix:(NSString *)identifier error:(NSString **)error
+{
+    NSString *detail = nil;
+    NSString *path = [self activate:2 identifier:identifier group:NO error:&detail];
+    if (path.length) return path;
+
+    static NSArray<NSNumber *> *flags;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        flags = @[@(0x800000000ULL), @(0x8100000000ULL), @(0x080000000ULL)];
+    });
+    for (NSNumber *flag in flags) {
+        MCMLease *lease = [MCMLease leaseForClass:2 identifier:identifier group:NO
+            part:0 flags:flag.unsignedLongLongValue error:&detail];
+        if (!lease) continue;
+        [lease activate:&detail];
+        int descriptor = open(lease.rootPath.fileSystemRepresentation,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor >= 0) {
+            close(descriptor);
+            @synchronized (_leases) {
+                _leases[MCMKey(2, identifier)] = lease;
+            }
+            FFLogTag(@"MCM", @"class-2 matrix hit id=%@ flags=0x%llx root=%@",
+                     identifier, flag.unsignedLongLongValue, lease.rootPath);
+            return lease.rootPath;
+        }
+        [lease invalidate];
+    }
+    if (error) *error = detail ?: @"class-2 lookup denied (matrix exhausted)";
+    return nil;
+}
+
+- (void)installLinkClass2Matrix:(NSString *)directory identifier:(NSString *)identifier
+{
+    NSString *error = nil;
+    NSString *target = [self activateClass2WithMatrix:identifier error:&error];
+    if (!target.length) {
+        FFLogTag(@"MCM", @"class-2 matrix FAIL id=%@ error=%@", identifier, error ?: @"(nil)");
+        return;
+    }
+    [self installLinkForTarget:target directory:directory identifier:identifier
+        containerClass:2];
+}
+
+- (void)installLinkForTarget:(NSString *)target directory:(NSString *)directory
+                  identifier:(NSString *)identifier containerClass:(uint64_t)containerClass
+{
     NSString *link = [directory stringByAppendingPathComponent:identifier];
     struct stat status = {0};
     if (lstat(link.fileSystemRepresentation, &status) == 0) {
@@ -663,6 +616,13 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     });
 }
 
+- (void)rescan
+{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [self startOnce];
+    });
+}
+
 - (void)startOnce
 {
     NSString *actual = NSBundle.mainBundle.bundleIdentifier;
@@ -698,6 +658,7 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
 
     NSMutableOrderedSet *appIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(2)];
+    __block NSArray<NSString *> *groupCandidates = @[];
     [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
     [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
     NSDictionary *custom = MCMCustomIdentifiers();
@@ -705,7 +666,7 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
             [appIdentifiers addObject:value];
     for (NSString *identifier in appIdentifiers)
-        [self installLink:apps identifier:identifier containerClass:2 group:NO];
+        [self installLinkClass2Matrix:apps identifier:identifier];
 
     // iOS 26 hides third-party apps from ContainerManager/LaunchServices
     // enumeration, but the LaunchServices store inside com.apple.lsd still
@@ -723,8 +684,11 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
         FFLogTag(@"MCM", @"LaunchServices store container unavailable detail=%@",
                  lsdError ?: @"(nil)");
     } else {
+        // Full-store confirmation: every candidate the csstore byte scan
+        // produced is confirmed with a class-2 direct lookup. Failures
+        // are silent (the store yields thousands of stale strings).
         NSArray<NSString *> *candidates =
-            FFLSDiscoverInstalledIdentifiers(lsdContainer, 4096);
+            FFLSDiscoverInstalledIdentifiers(lsdContainer, 65536);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSUInteger confirmed = 0;
             for (NSString *identifier in candidates) {
@@ -745,6 +709,10 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
         });
+
+        // App Group candidates from the same store (extracted now;
+        // confirmed below once the group identifier set exists).
+        groupCandidates = FFLSDiscoverGroupIdentifiers(lsdContainer, 65536);
     }
 
     NSMutableOrderedSet *groupIdentifiers =
@@ -761,6 +729,29 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     for (NSString *identifier in groupIdentifiers)
         [self installLink:groups identifier:identifier containerClass:7 group:YES];
 
+    // Confirm each "group.<team>.<name>" candidate with a class-7 lookup
+    // on a background queue; links appear via the updated notification.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger confirmed = 0;
+        for (NSString *identifier in groupCandidates) {
+            @synchronized (groupIdentifiers) {
+                if ([groupIdentifiers containsObject:identifier]) continue;
+            }
+            if ([self activate:7 identifier:identifier group:YES error:nil]) {
+                @synchronized (groupIdentifiers) {
+                    [groupIdentifiers addObject:identifier];
+                }
+                confirmed++;
+            }
+            [self installLink:groups identifier:identifier containerClass:7
+                        group:YES logFailure:NO];
+        }
+        FFLogTag(@"MCM", @"LaunchServices group candidates=%lu newly-linked=%lu",
+                 (unsigned long)groupCandidates.count, (unsigned long)confirmed);
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+    });
+
     NSMutableOrderedSet *extensionIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(4)];
     for (id value in [custom[@"ExtensionData"] isKindOfClass:NSArray.class] ? custom[@"ExtensionData"] : @[])
@@ -772,47 +763,6 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     [self installDirectFilesystemLinks:apps containerRoot:@"/private/var/mobile/Containers/Data/Application"];
     [self installDirectFilesystemLinks:groups containerRoot:@"/private/var/mobile/Containers/Shared/AppGroup"];
     [self installDirectFilesystemLinks:extensions containerRoot:@"/private/var/mobile/Containers/Data/PluginKitPlugin"];
-
-    // Union with the bad_query path-first enumeration. The bad_query
-    // sweep contributes the UUID list; the MHA class-2 route is the
-    // primary channel that opens each container with a proper token.
-    // For every identifier the bad_query sweep resolved, activate the
-    // class-2 route first so the container is covered by an MHA token
-    // for the whole process; only when the class-2 lookup is denied do
-    // we fall back to the raw bad_query path (the browser will then
-    // consume a bad_query handle per directory).
-    NSArray<NSDictionary *> *escapedIndex =
-        BadQueryEscapedIndexEntries(@"App Data");
-    NSUInteger mhaLinked = 0;
-    NSUInteger fallbackLinked = 0;
-    NSUInteger mhaDenied = 0;
-    for (NSDictionary *entry in escapedIndex) {
-        NSString *identifier = entry[@"Identifier"];
-        NSString *uuidPath = entry[@"Path"];
-        if (!MCMSafeIdentifier(identifier) || !uuidPath.length) continue;
-        NSString *link = [apps stringByAppendingPathComponent:identifier];
-        struct stat status = {0};
-        if (lstat(link.fileSystemRepresentation, &status) == 0) continue;
-
-        // Primary channel: MHA class-2 direct lookup. Keeps the lease
-        // cached so every later read of this container uses the MHA
-        // token, never the bad_query one.
-        NSString *error = nil;
-        NSString *mhaPath = [self activate:2 identifier:identifier
-                                     group:NO error:&error];
-        if (!mhaPath.length) mhaDenied++;
-        // Both routes resolve to the same physical container path; prefer
-        // the MHA-provided form when it succeeds.
-        NSString *target = mhaPath.length ? mhaPath : uuidPath;
-        if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-            continue;
-        [self recordLink:apps identifier:identifier target:target];
-        if (mhaPath.length) mhaLinked++;
-        else fallbackLinked++;
-    }
-    FFLogTag(@"MCM", @"bad_query union index=%lu mha-linked=%lu fallback=%lu mha-denied=%lu",
-             (unsigned long)escapedIndex.count, (unsigned long)mhaLinked,
-             (unsigned long)fallbackLinked, (unsigned long)mhaDenied);
 
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},

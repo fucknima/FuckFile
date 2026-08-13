@@ -16,4 +16,9 @@ NS_ASSUME_NONNULL_BEGIN
 NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
                                                       NSUInteger maxCandidates);
 
+// Same store scan, but returns "group.<team>.<name>" App Group candidates
+// so the caller can confirm them with class-7 lookups. Cached separately.
+NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
+                                                  NSUInteger maxCandidates);
+
 NS_ASSUME_NONNULL_END
