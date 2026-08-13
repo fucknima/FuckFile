@@ -23,6 +23,11 @@ jobs:
           cd /opt/theos
           git checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
           git submodule update --init --recursive
+          # Build the pinned ldid and expose it on PATH (theos signs with
+          # whatever 'ldid' resolves to).
+          make -C /opt/theos/vendor/ldid
+          sudo ln -sf /opt/theos/vendor/ldid/ldid /usr/local/bin/ldid
+          ldid -v 2>&1 | head -1 || true
 
       - name: Build
         run: |
