@@ -37,6 +37,11 @@ FOUNDATION_EXPORT NSNotificationName const FFMCMAppLinksUpdatedNotification;
 // back to the bad_query escaped link. Returns nil if no route grants access.
 - (nullable NSString *)mobileGestaltPath:(NSString * _Nullable * _Nullable)error;
 
+// YES when an activated MHA lease covers the given path (the container
+// token is already consumed process-wide, so no bad_query fallback is
+// needed to read it).
+- (BOOL)hasActiveLeaseForPath:(NSString *)path;
+
 // Map of category folder name -> (link name -> symlink target), refreshed by
 // -start. Used by the browser to show which roots are active.
 @property(nonatomic, readonly) NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *categoryLinks;

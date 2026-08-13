@@ -401,18 +401,28 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
             }
         }
         if (linkTarget.length) {
-            BOOL cached = NO;
-            @synchronized (gConsumedLinkTargets) {
-                cached = [gConsumedLinkTargets containsObject:linkTarget];
-            }
-            if (!cached) {
-                NSString *error = nil;
-                int64_t handle = BadQueryConsumePath(linkTarget, nil, NO, &error);
-                FFLogTag(@"Browser", @"escaped reconnect target=%@ handle=%lld error=%@",
-                    linkTarget, handle, error ?: @"(nil)");
-                if (handle >= 0) {
-                    @synchronized (gConsumedLinkTargets) {
-                        [gConsumedLinkTargets addObject:linkTarget];
+            // Primary channel: the MHA class-2 lease already covers this
+            // container with a proper token, so skip the bad_query
+            // consume entirely. bad_query only fills the gap when the
+            // MHA lookup was denied for this container.
+            BOOL mhaCovered = [[MCMManager sharedManager] hasActiveLeaseForPath:linkTarget];
+            if (mhaCovered) {
+                FFLogTag(@"Browser", @"MHA lease covers target=%@ (skip bad_query)",
+                         linkTarget);
+            } else {
+                BOOL cached = NO;
+                @synchronized (gConsumedLinkTargets) {
+                    cached = [gConsumedLinkTargets containsObject:linkTarget];
+                }
+                if (!cached) {
+                    NSString *error = nil;
+                    int64_t handle = BadQueryConsumePath(linkTarget, nil, NO, &error);
+                    FFLogTag(@"Browser", @"no MHA lease; bad_query fallback target=%@ handle=%lld error=%@",
+                        linkTarget, handle, error ?: @"(nil)");
+                    if (handle >= 0) {
+                        @synchronized (gConsumedLinkTargets) {
+                            [gConsumedLinkTargets addObject:linkTarget];
+                        }
                     }
                 }
             }

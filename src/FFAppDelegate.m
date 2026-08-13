@@ -32,19 +32,20 @@
         FFLog(@"BadQueryProbe run begin");
         BadQueryProbeRun();
         FFLog(@"BadQueryProbe run done");
-        FFLog(@"BadQueryReconnect begin");
-        BadQueryReconnectEscapedRoots();
-        FFLog(@"BadQueryReconnect done");
-        // Full container enumeration (fsgetpath sweep -> UUID/bundle-id
-        // links + INDEX.plist). Runs before the MCM start so the App Data
-        // union picks up the fresh index and third-party links appear on
-        // the first launch as well.
+        // bad_query sweep only contributes the UUID enumeration + index.
         FFLog(@"BadQueryEnumerate begin");
         BadQueryEnumerateAllContainers();
         FFLog(@"BadQueryEnumerate done");
+        // Primary channel: MHA class-2 lookups open every discovered
+        // container with a proper token and build the App Data links.
         FFLog(@"MCM start begin");
         [[MCMManager sharedManager] start];
         FFLog(@"MCM start done");
+        // bad_query handles stay alive only as a browsing fallback for
+        // containers the MHA route was denied.
+        FFLog(@"BadQueryReconnect begin");
+        BadQueryReconnectEscapedRoots();
+        FFLog(@"BadQueryReconnect done");
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:@"FFProbeFinished" object:nil];

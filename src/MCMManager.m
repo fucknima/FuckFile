@@ -315,6 +315,28 @@ static NSString *MCMKey(uint64_t containerClass, NSString *identifier)
     map[identifier] = target;
 }
 
+static NSString *MCMNormalizedPath(NSString *path)
+{
+    NSString *result = path.stringByStandardizingPath;
+    if ([result isEqualToString:@"/var"] || [result hasPrefix:@"/var/"])
+        result = [@"/private" stringByAppendingString:result];
+    return result;
+}
+
+- (BOOL)hasActiveLeaseForPath:(NSString *)path
+{
+    if (!path.length || !path.isAbsolutePath) return NO;
+    NSString *candidate = MCMNormalizedPath(path);
+    @synchronized (_leases) {
+        for (MCMLease *lease in _leases.allValues)
+            if (lease.rootPath.length &&
+                ([candidate isEqualToString:lease.rootPath] ||
+                 [candidate hasPrefix:[lease.rootPath stringByAppendingString:@"/"]]))
+                return YES;
+    }
+    return NO;
+}
+
 - (void)installLink:(NSString *)directory identifier:(NSString *)identifier
     containerClass:(uint64_t)containerClass group:(BOOL)group
 {
@@ -751,26 +773,46 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     [self installDirectFilesystemLinks:groups containerRoot:@"/private/var/mobile/Containers/Shared/AppGroup"];
     [self installDirectFilesystemLinks:extensions containerRoot:@"/private/var/mobile/Containers/Data/PluginKitPlugin"];
 
-    // Union with the bad_query path-first enumeration: container UUIDs
-    // resolved to bundle identifiers by fsgetpath + metadata plists become
-    // bundle-id links here even when the class-2 direct lookup is denied.
+    // Union with the bad_query path-first enumeration. The bad_query
+    // sweep contributes the UUID list; the MHA class-2 route is the
+    // primary channel that opens each container with a proper token.
+    // For every identifier the bad_query sweep resolved, activate the
+    // class-2 route first so the container is covered by an MHA token
+    // for the whole process; only when the class-2 lookup is denied do
+    // we fall back to the raw bad_query path (the browser will then
+    // consume a bad_query handle per directory).
     NSArray<NSDictionary *> *escapedIndex =
         BadQueryEscapedIndexEntries(@"App Data");
-    NSUInteger unionLinks = 0;
+    NSUInteger mhaLinked = 0;
+    NSUInteger fallbackLinked = 0;
+    NSUInteger mhaDenied = 0;
     for (NSDictionary *entry in escapedIndex) {
         NSString *identifier = entry[@"Identifier"];
-        NSString *target = entry[@"Path"];
-        if (!MCMSafeIdentifier(identifier) || !target.length) continue;
+        NSString *uuidPath = entry[@"Path"];
+        if (!MCMSafeIdentifier(identifier) || !uuidPath.length) continue;
         NSString *link = [apps stringByAppendingPathComponent:identifier];
         struct stat status = {0};
         if (lstat(link.fileSystemRepresentation, &status) == 0) continue;
+
+        // Primary channel: MHA class-2 direct lookup. Keeps the lease
+        // cached so every later read of this container uses the MHA
+        // token, never the bad_query one.
+        NSString *error = nil;
+        NSString *mhaPath = [self activate:2 identifier:identifier
+                                     group:NO error:&error];
+        if (!mhaPath.length) mhaDenied++;
+        // Both routes resolve to the same physical container path; prefer
+        // the MHA-provided form when it succeeds.
+        NSString *target = mhaPath.length ? mhaPath : uuidPath;
         if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
             continue;
         [self recordLink:apps identifier:identifier target:target];
-        unionLinks++;
+        if (mhaPath.length) mhaLinked++;
+        else fallbackLinked++;
     }
-    FFLogTag(@"MCM", @"bad_query union index=%lu links added=%lu",
-             (unsigned long)escapedIndex.count, (unsigned long)unionLinks);
+    FFLogTag(@"MCM", @"bad_query union index=%lu mha-linked=%lu fallback=%lu mha-denied=%lu",
+             (unsigned long)escapedIndex.count, (unsigned long)mhaLinked,
+             (unsigned long)fallbackLinked, (unsigned long)mhaDenied);
 
     NSArray<NSDictionary *> *additionalCategories = @[
         @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO), @"CustomKey": @"VPNData", @"Fallback": @[]},
