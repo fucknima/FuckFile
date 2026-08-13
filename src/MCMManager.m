@@ -8,6 +8,7 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
+#import "FFAppNames.h"
 
 #import <fcntl.h>
 #import <limits.h>
