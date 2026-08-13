@@ -91,6 +91,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic, copy) NSString *batchNormalTitle;
+@property(nonatomic, weak) UINavigationController *previewNavigation;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
@@ -1698,8 +1699,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 #pragma mark - Preview
 
 // Opens a path from search/favorites/recents: directories push a
-// browser, files open the preview directly.
+// browser, files open the preview directly. Uses the caller's
+// navigation controller (a freshly created browser has none).
 - (void)openItemAtPath:(NSString *)path title:(NSString *)title
+     navigationController:(UINavigationController *)nav
             completion:(void (^)(BOOL))completion
 {
     struct stat status = {0};
@@ -1712,7 +1715,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         FFBrowserViewController *browser =
             [[FFBrowserViewController alloc] initWithPath:path];
         browser.title = title.length ? title : path.lastPathComponent;
-        [self.navigationController pushViewController:browser animated:YES];
+        [nav pushViewController:browser animated:YES];
         if (completion) completion(YES);
         return;
     }
@@ -1735,6 +1738,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             item.linkTarget = [NSString stringWithUTF8String:target];
         }
     }
+    self.previewNavigation = nav;
     [self previewEntry:item];
     if (completion) completion(YES);
 }
@@ -1762,7 +1766,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     if ([ext isEqualToString:@"pdf"]) {
         FFPdfPreviewViewController *viewer =
             [[FFPdfPreviewViewController alloc] initWithPath:item.path];
-        [self.navigationController pushViewController:viewer animated:YES];
+        UINavigationController *nav = self.previewNavigation ?: self.navigationController;
+        [nav pushViewController:viewer animated:YES];
         return;
     }
     [self previewData:item];
@@ -1788,7 +1793,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
         action:@selector(shareCurrentItem:)];
     self.interactionItem = item;
-    [self.navigationController pushViewController:viewer animated:YES];
+    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
+    [nav pushViewController:viewer animated:YES];
 }
 
 - (void)previewMedia:(FFEntry *)item
@@ -1796,7 +1802,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     NSURL *url = [NSURL fileURLWithPath:item.path];
     AVPlayerViewController *player = [AVPlayerViewController new];
     player.player = [AVPlayer playerWithURL:url];
-    [self.navigationController pushViewController:player animated:YES];
+    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
+    [nav pushViewController:player animated:YES];
     [player.player play];
 }
 
@@ -1894,7 +1901,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
         action:@selector(shareCurrentText:)];
     self.interactionText = body;
-    [self.navigationController pushViewController:viewer animated:YES];
+    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
+    [nav pushViewController:viewer animated:YES];
 }
 
 - (void)shareCurrentItem:(id)sender

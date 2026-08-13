@@ -1,6 +1,7 @@
 #import "FFBookmarksViewController.h"
 #import "FFBookmarksService.h"
 #import "FFBrowserViewController.h"
+#import "MCMManager.h"
 
 @interface FFBookmarksViewController ()
 @property(nonatomic) FFBookmarksMode mode;
@@ -91,7 +92,8 @@
     FFBrowserViewController *browser = [[FFBrowserViewController alloc]
         initWithPath:MCMVirtualRoot()];
     browser.title = bookmark.name;
-    [browser openItemAtPath:bookmark.path title:bookmark.name completion:^(BOOL available) {
+    [browser openItemAtPath:bookmark.path title:bookmark.name
+        navigationController:self.navigationController completion:^(BOOL available) {
         if (!available) {
             [weakSelf presentUnavailable:bookmark];
             return;

@@ -170,7 +170,8 @@
         initWithPath:MCMVirtualRoot()];
     browser.title = item.name;
     __weak typeof(self) weakSelf = self;
-    [browser openItemAtPath:item.path title:item.name completion:^(BOOL available) {
+    [browser openItemAtPath:item.path title:item.name
+        navigationController:self.navigationController completion:^(BOOL available) {
         if (!available) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"
                 message:@"该文件已不存在。" preferredStyle:UIAlertControllerStyleAlert];
