@@ -706,8 +706,24 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
             }
             FFLogTag(@"MCM", @"LaunchServices candidates=%lu newly-linked=%lu",
                      (unsigned long)candidates.count, (unsigned long)confirmed);
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+
+            // Display names for the confirmed set only: the proximity
+            // scoring runs against identifiers that are actually
+            // installed, so a wrong guess can never leak into the
+            // folder list.
+            NSSet<NSString *> *confirmedSet = nil;
+            @synchronized (appIdentifiers) {
+                confirmedSet = [NSSet setWithArray:appIdentifiers.array];
+            }
+            NSDictionary<NSString *, NSString *> *storeNames =
+                FFLSDiscoverAppNames(lsdContainer, confirmedSet);
+            if (storeNames.count) {
+                FFAppNamesRegisterStoreNames(storeNames);
+                FFLogTag(@"MCM", @"LaunchServices display names registered=%lu",
+                         (unsigned long)storeNames.count);
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:FFMCMAppLinksUpdatedNotification object:nil];
+            }
         });
 
         // App Group candidates from the same store (extracted now;

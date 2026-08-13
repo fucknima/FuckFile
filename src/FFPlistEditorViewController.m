@@ -50,9 +50,13 @@
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
             target:self action:@selector(addEntry)],
     ];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"回退" style:UIBarButtonItemStylePlain target:self
-        action:@selector(revert)];
+    // The root editor shows 回退 (reload from disk); nested scopes keep
+    // the system back button for drill-down navigation.
+    if (self.keyPath.count == 0) {
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+            initWithTitle:@"回退" style:UIBarButtonItemStylePlain target:self
+            action:@selector(revert)];
+    }
 
     if (self.root) {
         [self reloadScope];
@@ -148,7 +152,7 @@
                 });
             });
         }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [self presentOnTop:alert];
 }
 
 #pragma mark - Description
@@ -476,12 +480,26 @@ static NSString *FFPlistValueSummary(id value)
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:alert animated:YES completion:^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.5 * NSEC_PER_SEC),
-            dispatch_get_main_queue(), ^{
-                [alert dismissViewControllerAnimated:YES completion:nil];
-            });
-    }];
+    [self presentOnTop:alert];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.5 * NSEC_PER_SEC),
+        dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:nil];
+        });
+}
+
+// UIKit silently drops presentViewController when an alert is already
+// up, which made 回退 look dead right after a flash. Dismiss whatever
+// is on top first.
+- (void)presentOnTop:(UIViewController *)controller
+{
+    if (self.presentedViewController) {
+        UIViewController *presented = self.presentedViewController;
+        [presented dismissViewControllerAnimated:NO completion:^{
+            [self presentViewController:controller animated:YES completion:nil];
+        }];
+    } else {
+        [self presentViewController:controller animated:YES completion:nil];
+    }
 }
 
 @end

@@ -21,4 +21,12 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
 NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
                                                   NSUInteger maxCandidates);
 
+// Extracts a bundle-id -> localized display-name map from the same
+// store. Only identifiers in the whitelist (the class-2-confirmed
+// installed set) are considered; candidates near each identifier are
+// scored and the best one above the threshold wins, so garbage
+// mappings are confined to real installed apps only.
+NSDictionary<NSString *, NSString *> *FFLSDiscoverAppNames(
+    NSString *lsdContainerRoot, NSSet<NSString *> *whitelist);
+
 NS_ASSUME_NONNULL_END
