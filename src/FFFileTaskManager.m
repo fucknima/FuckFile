@@ -14,6 +14,7 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *taskList;
 @property(nonatomic, strong) dispatch_queue_t workQueue;
 @property(nonatomic, strong) NSLock *lock;
+@property(nonatomic) NSTimeInterval lastProgressNotify;
 @end
 
 @implementation FFFileTaskManager
@@ -103,6 +104,15 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         [[NSNotificationCenter defaultCenter]
             postNotificationName:FFFileTaskManagerDidChangeNotification object:self];
     });
+}
+
+// 进度通知限频：每 0.15 秒最多一次，避免 64KB 块级通知刷爆主线程。
+- (void)notifyChangeThrottled
+{
+    NSTimeInterval now = [NSDate date].timeIntervalSinceReferenceDate;
+    if (now - self.lastProgressNotify < 0.15) return;
+    self.lastProgressNotify = now;
+    [self notifyChange];
 }
 
 - (void)executeTask:(FFFileTask *)task
