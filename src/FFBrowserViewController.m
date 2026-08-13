@@ -796,9 +796,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             [self reloadEntries];
         }];
     toggleHidden.state = self.showHiddenFiles ? UIMenuElementStateOn : UIMenuElementStateOff;
-    UIMenu *sort = [UIMenu menuWithTitle:@"排序" image:[self symbolImage:@"arrow.up.arrow.down" tint:nil]
+    UIMenu *sort = [UIMenu menuWithTitle:@"排序"
         children:@[[self sortMenu]]];
-    UIMenu *filter = [UIMenu menuWithTitle:@"筛选" image:[self symbolImage:@"line.3.horizontal.decrease.circle" tint:nil]
+    UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
         children:@[paste, select, sort, filter, toggleHidden]];
