@@ -323,23 +323,29 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
         [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
         return NO;
     }
-    // Commit: remove a stale destination first (extract target) then
-    // atomically move the fully-written temp dir into place.
-    if ([[NSFileManager defaultManager] fileExistsAtPath:destDir]) {
-        NSError *removeError = nil;
-        if (![[NSFileManager defaultManager] removeItemAtPath:destDir error:&removeError]) {
-            [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
-            if (error) *error = removeError;
+    // Commit: 若目标已存在，先把旧目录备份到 .old，再放入新目录，
+    // 成功后清理备份；任何一步失败都恢复备份，绝不先删旧目录。
+    NSString *backupPath = nil;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    if ([manager fileExistsAtPath:destDir]) {
+        backupPath = [NSString stringWithFormat:@"%@.old%@", destDir,
+            [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+        if (![manager moveItemAtPath:destDir toPath:backupPath error:error]) {
+            [manager removeItemAtPath:tempDir error:nil];
             return NO;
         }
     }
     NSError *moveError = nil;
-    if (![[NSFileManager defaultManager] moveItemAtPath:tempDir toPath:destDir
-        error:&moveError]) {
-        [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+    if (![manager moveItemAtPath:tempDir toPath:destDir error:&moveError]) {
+        // 放入失败：恢复备份，清理临时目录。
+        if (backupPath)
+            [manager moveItemAtPath:backupPath toPath:destDir error:nil];
+        [manager removeItemAtPath:tempDir error:nil];
         if (error) *error = moveError;
         return NO;
     }
+    if (backupPath)
+        [manager removeItemAtPath:backupPath error:nil];
     if (entryNames) *entryNames = entries;
     return YES;
 }

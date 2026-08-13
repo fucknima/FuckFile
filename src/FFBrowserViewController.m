@@ -11,6 +11,7 @@
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
+#import "FFPreviewRouter.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
 
@@ -49,24 +50,6 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
     FFFilterModeCode,
 };
 
-@interface FFEntry : NSObject
-@property(nonatomic, copy) NSString *name;
-@property(nonatomic, copy) NSString *displayName;
-@property(nonatomic, copy) NSString *path;
-@property(nonatomic) BOOL isDirectory;
-@property(nonatomic) BOOL isSymlink;
-@property(nonatomic, copy) NSString *linkTarget;
-@property(nonatomic, copy) NSString *detail;
-@property(nonatomic, copy) NSString *fullDetail;
-@property(nonatomic) unsigned long long size;
-@property(nonatomic, strong) NSDate *modificationDate;
-@property(nonatomic, strong) NSDate *creationDate;
-@property(nonatomic) mode_t mode;
-@property(nonatomic) uid_t uid;
-@property(nonatomic) gid_t gid;
-@property(nonatomic, strong) UIImage *thumbnail;
-@end
-
 @implementation FFEntry
 @end
 
@@ -91,7 +74,6 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic, copy) NSString *batchNormalTitle;
-@property(nonatomic, weak) UINavigationController *previewNavigation;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
@@ -1502,14 +1484,55 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         handler:^(__unused UIAlertAction *action) {
             NSString *newName = alert.textFields.firstObject.text;
             if (![weakSelf validNewName:newName]) return;
-            NSString *newPath = [weakSelf.currentPath stringByAppendingPathComponent:newName];
-            NSError *error = nil;
-            if (![[FFFileOperationService sharedService] renameItemAtPath:item.path
-                toPath:newPath error:&error])
-                [weakSelf showError:error];
-            [weakSelf reloadEntries];
+            [weakSelf performRenameItem:item toName:newName overwrite:NO];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// 重命名冲突处理：目标已存在时提供 取消 / 覆盖 / 保留两者。
+- (void)performRenameItem:(FFEntry *)item toName:(NSString *)newName
+                overwrite:(BOOL)overwrite
+{
+    NSString *newPath = [self.currentPath stringByAppendingPathComponent:newName];
+    NSError *error = nil;
+    if ([[FFFileOperationService sharedService] renameItemAtPath:item.path
+        toPath:newPath overwrite:overwrite error:&error]) {
+        [self reloadEntries];
+        return;
+    }
+    if (error.code != EEXIST) {
+        [self showError:error];
+        [self reloadEntries];
+        return;
+    }
+    // 目标存在：提供覆盖 / 保留两者 / 取消。
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"名称已存在"
+        message:[NSString stringWithFormat:@"“%@” 已存在，是否覆盖？", newName]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"覆盖" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [weakSelf performRenameItem:item toName:newName overwrite:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"保留两者" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *copyName = [weakSelf uniqueDestinationForName:newName];
+            if (!copyName) {
+                [weakSelf flash:@"无法生成不冲突的名称"];
+                return;
+            }
+            NSString *copyPath = [weakSelf.currentPath stringByAppendingPathComponent:copyName];
+            NSError *moveError = nil;
+            if (![[FFFileOperationService sharedService] renameItemAtPath:item.path
+                toPath:copyPath error:&moveError])
+                [weakSelf showError:moveError];
+            [weakSelf reloadEntries];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height - 60, 1, 1);
+    [self presentOnTop:sheet];
 }
 
 - (void)deleteEntry:(FFEntry *)item
@@ -1738,186 +1761,23 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             item.linkTarget = [NSString stringWithUTF8String:target];
         }
     }
-    self.previewNavigation = nav;
-    [self previewEntry:item];
+    [FFPreviewRouter previewItem:item navigationController:nav];
     if (completion) completion(YES);
 }
 
 - (void)previewEntry:(FFEntry *)item
 {
-    NSString *ext = item.name.pathExtension.lowercaseString;
-    static NSSet<NSString *> *images;
-    static NSSet<NSString *> *videos;
-    static NSSet<NSString *> *audios;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        images = [NSSet setWithArray:@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"]];
-        videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"]];
-        audios = [NSSet setWithArray:@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"]];
-    });
-    if ([images containsObject:ext]) {
-        [self previewImage:item];
-        return;
-    }
-    if ([videos containsObject:ext] || [audios containsObject:ext]) {
-        [self previewMedia:item];
-        return;
-    }
-    if ([ext isEqualToString:@"pdf"]) {
-        FFPdfPreviewViewController *viewer =
-            [[FFPdfPreviewViewController alloc] initWithPath:item.path];
-        UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-        [nav pushViewController:viewer animated:YES];
-        return;
-    }
-    [self previewData:item];
+    [FFPreviewRouter previewItem:item navigationController:self.navigationController];
 }
 
-- (void)previewImage:(FFEntry *)item
-{
-    UIImage *image = [UIImage imageWithContentsOfFile:item.path];
-    if (!image) {
-        [self flash:@"图片解码失败"];
-        return;
-    }
-    UIViewController *viewer = [UIViewController new];
-    viewer.title = item.name;
-    UIImageView *imageView = [[UIImageView alloc] initWithFrame:viewer.view.bounds];
-    imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    imageView.contentMode = UIViewContentModeScaleAspectFit;
-    imageView.backgroundColor = [UIColor systemBackgroundColor];
-    imageView.image = image;
-    imageView.userInteractionEnabled = YES;
-    [viewer.view addSubview:imageView];
-    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
-        action:@selector(shareCurrentItem:)];
-    self.interactionItem = item;
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:viewer animated:YES];
-}
 
-- (void)previewMedia:(FFEntry *)item
-{
-    NSURL *url = [NSURL fileURLWithPath:item.path];
-    AVPlayerViewController *player = [AVPlayerViewController new];
-    player.player = [AVPlayer playerWithURL:url];
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:player animated:YES];
-    [player.player play];
-}
 
-- (void)previewData:(FFEntry *)item
-{
-    NSData *data = [NSData dataWithContentsOfFile:item.path];
-    if (!data) {
-        [self flash:@"读取文件失败"];
-        return;
-    }
-    // Structured plist editing: any parseable plist opens the plist editor.
-    NSDictionary *plist = nil;
-    if (data.length > 0) {
-        NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
-        plist = [NSPropertyListSerialization propertyListWithData:data
-            options:NSPropertyListImmutable format:&format error:nil];
-    }
-    if ([plist isKindOfClass:NSDictionary.class] || [plist isKindOfClass:NSArray.class]) {
-        FFPlistEditorViewController *editor =
-            [[FFPlistEditorViewController alloc] initWithPath:item.path];
-        [self.navigationController pushViewController:editor animated:YES];
-        return;
-    }
-    NSString *candidate = [self stringFromData:data];
-    if (candidate && [self looksTextual:candidate]) {
-        FFTextEditorViewController *editor =
-            [[FFTextEditorViewController alloc] initWithPath:item.path];
-        [self.navigationController pushViewController:editor animated:YES];
-        return;
-    }
-    NSString *text = [self hexdump:data maxBytes:data.length <= 1024 * 1024 ? data.length : 1024 * 1024];
-    [self presentText:item.name body:text];
-}
 
-- (NSString *)stringFromData:(NSData *)data
-{
-    NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (utf8) return utf8;
-    NSString *utf16 = [[NSString alloc] initWithData:data encoding:NSUTF16StringEncoding];
-    if (utf16) return utf16;
-    NSString *isoLatin1 = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    return isoLatin1;
-}
 
-- (BOOL)looksTextual:(NSString *)candidate
-{
-    if (candidate.length == 0) return YES;
-    NSUInteger printable = 0;
-    for (NSUInteger i = 0; i < candidate.length && i < 4096; i++) {
-        unichar c = [candidate characterAtIndex:i];
-        if (c >= 0x20 && c != 0x7F) printable++;
-    }
-    return printable * 10 >= candidate.length * 9;
-}
 
-- (NSString *)hexdump:(NSData *)data maxBytes:(NSUInteger)maxBytes
-{
-    const uint8_t *bytes = data.bytes;
-    NSUInteger count = MIN(data.length, maxBytes);
-    NSMutableString *result = [NSMutableString string];
-    for (NSUInteger offset = 0; offset < count; offset += 16) {
-        [result appendFormat:@"%08lx  ", (unsigned long)offset];
-        NSUInteger lineLength = MIN((NSUInteger)16, count - offset);
-        for (NSUInteger i = 0; i < 16; i++) {
-            if (i < lineLength) [result appendFormat:@"%02x ", bytes[offset + i]];
-            else [result appendString:@"   "];
-            if (i == 7) [result appendString:@" "];
-        }
-        [result appendString:@" |"];
-        for (NSUInteger i = 0; i < lineLength; i++) {
-            uint8_t c = bytes[offset + i];
-            [result appendFormat:@"%c", (c >= 0x20 && c != 0x7F) ? c : '.'];
-        }
-        [result appendString:@"|\n"];
-    }
-    if (data.length > maxBytes)
-        [result appendFormat:@"\n… 已截断：共 %lu 字节，仅显示前 %lu 字节\n",
-            (unsigned long)maxBytes, (unsigned long)data.length];
-    return result;
-}
 
-- (void)presentText:(NSString *)title body:(NSString *)body
-{
-    UIViewController *viewer = [UIViewController new];
-    viewer.title = title;
-    UITextView *textView = [[UITextView alloc] initWithFrame:viewer.view.bounds];
-    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    textView.editable = NO;
-    textView.selectable = YES;
-    textView.font = [UIFont fontWithName:@"Menlo" size:12];
-    textView.text = body;
-    textView.backgroundColor = [UIColor systemBackgroundColor];
-    [viewer.view addSubview:textView];
-    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
-        action:@selector(shareCurrentText:)];
-    self.interactionText = body;
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:viewer animated:YES];
-}
 
-- (void)shareCurrentItem:(id)sender
-{
-    if (!self.interactionItem) return;
-    [self shareEntry:self.interactionItem];
-}
 
-- (void)shareCurrentText:(id)sender
-{
-    UIActivityViewController *activity = [[UIActivityViewController alloc]
-        initWithActivityItems:@[self.interactionText ?: @""] applicationActivities:nil];
-    activity.popoverPresentationController.sourceView = self.view;
-    [self presentViewController:activity animated:YES completion:nil];
-}
 
 #pragma mark - Helpers
 

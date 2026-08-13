@@ -1,5 +1,6 @@
 #import "FFPlistEditorViewController.h"
 #import "FFLogger.h"
+#import "FFPathPolicy.h"
 
 // 深度可变复制：嵌套字典/数组全部转为可变版本。
 // 浅层 mutableCopy 会让深层结构保持不可变，编辑时赋值会崩溃。
@@ -411,6 +412,15 @@ static NSString *FFPlistValueSummary(id value)
         format:format options:0 error:&error];
     if (!data) {
         [self flash:[NSString stringWithFormat:@"序列化失败：%@", error.localizedDescription]];
+        return;
+    }
+    // 写入前统一路径校验。
+    NSString *detail = nil;
+    NSString *finalName = nil;
+    if (![FFPathPolicy resolveParentForMutation:self.filePath
+        finalName:&finalName errorMessage:&detail]) {
+        [self flash:[NSString stringWithFormat:@"无法保存：%@",
+            detail ?: @"路径不合法"]];
         return;
     }
     if ([data writeToFile:self.filePath options:NSDataWritingAtomic error:&error]) {

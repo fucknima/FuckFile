@@ -1,4 +1,5 @@
 #import "FFCopyEngine.h"
+#import "FFPathPolicy.h"
 
 #import <dirent.h>
 #import <errno.h>
@@ -30,6 +31,16 @@ static void setError(NSError **error, int code, NSString *operation, NSString *p
               progress:(void (^)(unsigned long long, unsigned long long))progress
                  error:(NSError **)error
 {
+    // 目标位置必须通过统一路径校验（父链合法、无未知符号链接）。
+    NSString *detail = nil;
+    NSString *finalName = nil;
+    if (![FFPathPolicy resolveParentForMutation:destination
+        finalName:&finalName errorMessage:&detail]) {
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EPERM userInfo:@{
+            NSLocalizedDescriptionKey: [NSString stringWithFormat:@"复制目标不合法：%@",
+                detail ?: destination]}];
+        return NO;
+    }
     unsigned long long total = [self sizeOfItemAtPath:source];
     return [self copyItemAtPath:source toPath:destination
                           total:total copied:0 progress:progress error:error];

@@ -24,6 +24,7 @@ FuckFile_FILES = \
 	src/FFTextEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
+	src/FFPreviewRouter.m \
 	src/FFThumbnailService.m \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \

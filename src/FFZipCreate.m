@@ -149,6 +149,16 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         return NO;
     }
 
+    // 源和目标相同是危险的：压缩可能覆盖自身输入。
+    for (NSString *source in sourcePaths) {
+        if ([source isEqualToString:destinationPath] ||
+            [source.stringByStandardizingPath isEqualToString:
+                destinationPath.stringByStandardizingPath]) {
+            if (error) *error = FFZipError(@"压缩目标不能是源文件本身");
+            return NO;
+        }
+    }
+
     // Collect entries up front (needed for progress totals).
     NSMutableArray<NSValue *> *values = [NSMutableArray array];
     for (NSString *source in sourcePaths)
@@ -157,6 +167,16 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         if (error) *error = FFZipError(@"没有可压缩的文件");
         return NO;
     }
+    // 归档内条目也不能与目标同名（解压后自我覆盖源树）。
+    NSString *targetName = destinationPath.lastPathComponent;
+    for (NSValue *value in values) {
+        FFZipEntry entry;
+        [value getValue:&entry];
+        if ([entry.relativeName isEqualToString:targetName]) {
+            if (error) *error = FFZipError(@"压缩目标与源文件同名");
+            return NO;
+        }
+    }
     unsigned long long totalBytes = 0;
     for (NSValue *value in values) {
         FFZipEntry entry;
@@ -164,11 +184,14 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         totalBytes += entry.size;
     }
 
-    FILE *file = fopen(destinationPath.fileSystemRepresentation, "wb");
+    // 先写临时文件，全部成功后原子替换目标；失败/取消时保留旧文件。
+    NSString *tempPath = [NSString stringWithFormat:@"%@.%@.tmp",
+        destinationPath, [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    FILE *file = fopen(tempPath.fileSystemRepresentation, "wb");
     if (!file) {
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
             NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
-                destinationPath, strerror(errno)]}];
+                tempPath, strerror(errno)]}];
         return NO;
     }
 
@@ -307,7 +330,20 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         FFZipWriteU16(file, 0);
     }
     fclose(file);
-    if (!ok)
-        unlink(destinationPath.fileSystemRepresentation);
-    return ok;
+    if (!ok) {
+        // 失败/取消：清理临时文件，旧目标文件不受影响。
+        unlink(tempPath.fileSystemRepresentation);
+        return NO;
+    }
+    // 成功：原子替换目标（rename 覆盖已有文件是原子的）。
+    if (rename(tempPath.fileSystemRepresentation,
+               destinationPath.fileSystemRepresentation) != 0) {
+        int saved = errno;
+        unlink(tempPath.fileSystemRepresentation);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
+            NSLocalizedDescriptionKey: [NSString stringWithFormat:@"替换目标失败：%@ (%s)",
+                destinationPath, strerror(saved)]}];
+        return NO;
+    }
+    return YES;
 }

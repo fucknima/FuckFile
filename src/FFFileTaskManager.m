@@ -172,11 +172,10 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             }
             if (action == FFConflictActionReplaceAll) applyAll = action;
             if (action == FFConflictActionReplace || action == FFConflictActionReplaceAll) {
-                NSError *removeError = nil;
-                if (![[NSFileManager defaultManager] removeItemAtPath:destination error:&removeError]) {
-                    task.failedCount++;
-                    task.error = removeError;
-                    continue;
+                // 目标保留：文件走 temp+rename 原子覆盖；目录由下方
+                // 备份-替换机制处理。这里不做删除。
+                if (!S_ISDIR(existing.st_mode) || S_ISLNK(existing.st_mode)) {
+                    // 文件/链接：留给 temp+rename 覆盖。
                 }
             } else {
                 destination = [self uniqueDestinationForName:name inDirectory:task.destination];
@@ -188,7 +187,11 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         }
         unsigned long long fileTotal = [FFCopyEngine sizeOfItemAtPath:source];
         NSError *error = nil;
-        BOOL copied = [FFCopyEngine copyItemAtPath:source toPath:destination
+        // 复制到同目录临时文件，成功后原子替换目标。
+        // 这避免了“先删目标再复制”的窗口，也避免 O_EXCL 与已有目标冲突。
+        NSString *tempDestination = [destination stringByAppendingFormat:@".%d.tmp",
+            (int)getpid() * 31 + (int)(arc4random() % 100000)];
+        BOOL copied = [FFCopyEngine copyItemAtPath:source toPath:tempDestination
             progress:^(unsigned long long fileCopied, unsigned long long fileAll) {
                 weakTask.completedBytes = completed + fileCopied;
                 weakTask.progress = weakTask.totalBytes > 0
@@ -202,12 +205,33 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
                             (double)(weakTask.totalBytes - weakTask.completedBytes) /
                             weakTask.averageBytesPerSecond;
                 }
-                [self notifyChange];
+                [self notifyChangeThrottled];
             } error:&error];
         if (!copied) {
+            // 失败：清理临时文件，目标保持原样。
+            [[NSFileManager defaultManager] removeItemAtPath:tempDestination error:nil];
             task.failedCount++;
             task.error = error;
             continue;
+        }
+        // 原子替换：rename 覆盖已有目标（同目录，原子）。
+        if (rename(tempDestination.fileSystemRepresentation,
+                   destination.fileSystemRepresentation) != 0) {
+            int saved = errno;
+            // 目录替换：rename 无法覆盖非空目录，改用备份-替换-清理。
+            BOOL handled = NO;
+            if ((saved == ENOTEMPTY || saved == EEXIST || saved == EISDIR) &&
+                [self replaceDirectoryBackup:tempDestination destination:destination]) {
+                handled = YES;
+            }
+            if (!handled) {
+                [[NSFileManager defaultManager] removeItemAtPath:tempDestination error:nil];
+                task.failedCount++;
+                task.error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                        @"替换目标失败：%@ (%s)", destination, strerror(saved)]}];
+                continue;
+            }
         }
         completed += fileTotal;
         task.completedBytes = completed;
@@ -245,6 +269,32 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             return candidate;
     }
     return nil;
+}
+
+// 目录原子替换：把旧目录备份到 .old，放入新目录，成功后清理备份；
+// 失败时恢复备份。任何一步失败都不破坏原数据。
+- (BOOL)replaceDirectoryBackup:(NSString *)tempDestination
+                   destination:(NSString *)destination
+{
+    NSString *backupPath = [NSString stringWithFormat:@"%@.old%@", destination,
+        [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    NSFileManager *fm = NSFileManager.defaultManager;
+
+    // 1. 备份旧目录（rename 原子）。
+    if ([fm fileExistsAtPath:destination]) {
+        if (![fm moveItemAtPath:destination toPath:backupPath error:nil]) return NO;
+    }
+    // 2. 放入新目录。
+    if (![fm moveItemAtPath:tempDestination toPath:destination error:nil]) {
+        // 失败：恢复备份。
+        if ([fm fileExistsAtPath:backupPath])
+            [fm moveItemAtPath:backupPath toPath:destination error:nil];
+        return NO;
+    }
+    // 3. 清理备份（失败仅产生垃圾目录，不影响结果）。
+    if ([fm fileExistsAtPath:backupPath])
+        [fm removeItemAtPath:backupPath error:nil];
+    return YES;
 }
 
 - (BOOL)executeExtractTask:(FFFileTask *)task
