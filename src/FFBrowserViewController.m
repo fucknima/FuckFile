@@ -29,6 +29,17 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
     FFSortModeName = 0,
     FFSortModeSize,
     FFSortModeDate,
+    FFSortModeKind,
+};
+
+typedef NS_ENUM(NSInteger, FFFilterMode) {
+    FFFilterModeAll = 0,
+    FFFilterModeImages,
+    FFFilterModeVideos,
+    FFFilterModeAudio,
+    FFFilterModeDocuments,
+    FFFilterModeArchives,
+    FFFilterModeCode,
 };
 
 @interface FFEntry : NSObject
@@ -66,6 +77,9 @@ typedef NS_ENUM(NSInteger, FFSortMode) {
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, copy) NSString *searchText;
 @property(nonatomic) FFSortMode sortMode;
+@property(nonatomic) BOOL sortDescending;
+@property(nonatomic) FFFilterMode filterMode;
+@property(nonatomic, strong) UIBarButtonItem *filterItem;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
@@ -141,9 +155,20 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         style:UIBarButtonItemStylePlain target:self action:@selector(toggleBatchMode)];
     self.navigationItem.rightBarButtonItems = @[self.pasteItem, self.sortItem, self.editItem];
 
-    UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.clockwise" tint:nil]
-        style:UIBarButtonItemStylePlain target:self action:@selector(reloadEntries)];
+    self.filterItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"line.3.horizontal.decrease.circle" tint:nil]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    self.filterItem.menu = [self filterMenu];
+    UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+    UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+    UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+    addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
     self.toolbarItems = @[
+        self.filterItem,
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
         addItem,
     ];
@@ -213,10 +238,19 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.batchToolbarItems = [self buildBatchToolbarItems];
         self.toolbarItems = self.batchToolbarItems;
     } else {
+        UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
+            style:UIBarButtonItemStylePlain target:nil action:nil];
+        UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+        UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+        UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
+            identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+        addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
         self.toolbarItems = @[
+            self.filterItem,
             [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
-            [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"arrow.clockwise" tint:nil]
-                style:UIBarButtonItemStylePlain target:self action:@selector(reloadEntries)],
+            addItem,
         ];
     }
     [self updatePasteState];
@@ -488,20 +522,31 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         (unsigned long)files, (unsigned long)links, (unsigned long)lstatFailures);
     [self decorateEntries:result];
     [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
+        // Folder-first ordering is a display preference, unaffected by
+        // the sort direction.
         if (left.isDirectory != right.isDirectory)
             return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        NSComparisonResult comparison = NSOrderedSame;
         switch (self.sortMode) {
             case FFSortModeSize:
                 if (left.size != right.size)
-                    return left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
+                    comparison = left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
                 break;
             case FFSortModeDate:
-                return [right.modificationDate compare:left.modificationDate];
+                comparison = [right.modificationDate compare:left.modificationDate];
+                break;
+            case FFSortModeKind:
+                comparison = [[self kindName:left] compare:[self kindName:right]];
+                break;
             case FFSortModeName:
             default:
                 break;
         }
-        return [left.name compare:right.name options:NSNumericSearch];
+        if (comparison == NSOrderedSame)
+            comparison = [left.name compare:right.name options:NSNumericSearch];
+        if (self.sortDescending)
+            comparison = -comparison;
+        return comparison;
     }];
     return result;
 }
@@ -607,13 +652,19 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (void)applyFilter
 {
+    NSArray<FFEntry *> *source = self.entries;
+    if (self.filterMode != FFFilterModeAll)
+        source = [source filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:
+            ^BOOL(FFEntry *item, __unused NSDictionary *bindings) {
+                return [self entry:item matchesFilter:self.filterMode];
+            }]];
     if (!self.searchText.length) {
-        self.filteredEntries = self.entries;
+        self.filteredEntries = source;
         return;
     }
     NSPredicate *predicate = [NSPredicate predicateWithFormat:
         @"name contains[cd] %@ OR path contains[cd] %@", self.searchText, self.searchText];
-    self.filteredEntries = [self.entries filteredArrayUsingPredicate:predicate];
+    self.filteredEntries = [source filteredArrayUsingPredicate:predicate];
 }
 
 #pragma mark - Search
@@ -635,10 +686,21 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeSize]; }];
     UIAction *date = [UIAction actionWithTitle:@"修改时间" image:[self symbolImage:@"calendar" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeDate]; }];
+    UIAction *kind = [UIAction actionWithTitle:@"类型" image:[self symbolImage:@"square.grid.2x2" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeKind]; }];
     name.state = self.sortMode == FFSortModeName ? UIMenuElementStateOn : UIMenuElementStateOff;
     size.state = self.sortMode == FFSortModeSize ? UIMenuElementStateOn : UIMenuElementStateOff;
     date.state = self.sortMode == FFSortModeDate ? UIMenuElementStateOn : UIMenuElementStateOff;
-    return [UIMenu menuWithTitle:@"排序方式" children:@[name, size, date]];
+    kind.state = self.sortMode == FFSortModeKind ? UIMenuElementStateOn : UIMenuElementStateOff;
+    NSString *directionTitle = self.sortDescending ? @"降序" : @"升序";
+    UIAction *direction = [UIAction actionWithTitle:directionTitle
+        image:[self symbolImage:self.sortDescending ? @"arrow.down" : @"arrow.up" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) {
+            self.sortDescending = !self.sortDescending;
+            self.sortItem.menu = [self sortMenu];
+            [self reloadEntries];
+        }];
+    return [UIMenu menuWithTitle:@"排序方式" children:@[name, size, date, kind, direction]];
 }
 
 - (void)setSortMode:(FFSortMode)sortMode
@@ -646,6 +708,64 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     _sortMode = sortMode;
     self.sortItem.menu = [self sortMenu];
     [self reloadEntries];
+}
+
+#pragma mark - Filter menu
+
+static NSString *FFFilterTitle(FFFilterMode mode)
+{
+    switch (mode) {
+        case FFFilterModeImages: return @"图片";
+        case FFFilterModeVideos: return @"视频";
+        case FFFilterModeAudio: return @"音频";
+        case FFFilterModeDocuments: return @"文档";
+        case FFFilterModeArchives: return @"压缩包";
+        case FFFilterModeCode: return @"代码";
+        case FFFilterModeAll: default: return @"全部";
+    }
+}
+
+- (BOOL)entry:(FFEntry *)item matchesFilter:(FFFilterMode)mode
+{
+    if (item.isDirectory || mode == FFFilterModeAll) return YES;
+    NSString *ext = item.name.pathExtension.lowercaseString;
+    switch (mode) {
+        case FFFilterModeImages:
+            return [@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext];
+        case FFFilterModeVideos:
+            return [@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext];
+        case FFFilterModeAudio:
+            return [@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext];
+        case FFFilterModeDocuments:
+            return [@[@"txt", @"log", @"md", @"json", @"xml", @"plist", @"csv", @"pdf",
+                      @"rtf", @"doc", @"docx", @"xls", @"xlsx", @"ppt", @"pptx",
+                      @"pages", @"numbers", @"key"] containsObject:ext];
+        case FFFilterModeArchives:
+            return [@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
+        case FFFilterModeCode:
+            return [@[@"c", @"h", @"m", @"mm", @"swift", @"sh", @"py", @"js", @"ts",
+                      @"html", @"css", @"java", @"kt", @"go", @"rs", @"rb", @"php"] containsObject:ext];
+        case FFFilterModeAll: default:
+            return YES;
+    }
+}
+
+- (UIMenu *)filterMenu
+{
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    for (NSInteger mode = FFFilterModeAll; mode <= FFFilterModeCode; mode++) {
+        FFFilterMode filterMode = (FFFilterMode)mode;
+        UIAction *action = [UIAction actionWithTitle:FFFilterTitle(filterMode)
+            image:nil identifier:nil handler:^(__unused UIAction *act) {
+                self.filterMode = filterMode;
+                self.filterItem.menu = [self filterMenu];
+                [self applyFilter];
+                [self.tableView reloadData];
+            }];
+        action.state = self.filterMode == filterMode ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }
+    return [UIMenu menuWithTitle:@"筛选" children:actions];
 }
 
 #pragma mark - Table view
@@ -790,6 +910,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
             UIAction *cut = [UIAction actionWithTitle:@"剪切" image:[self symbolImage:@"scissors" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+            UIAction *duplicate = [UIAction actionWithTitle:@"创建副本" image:[self symbolImage:@"plus.square.on.square" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf duplicateEntry:item]; }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
             UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
@@ -802,7 +924,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
             NSMutableArray *children = [NSMutableArray arrayWithArray:
-                @[view, copy, cut, rename, copyPath, share, properties, delete]];
+                @[view, copy, cut, duplicate, rename, copyPath, share, properties, delete]];
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
@@ -858,6 +980,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"复制" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"创建副本" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf duplicateEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"剪切" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault
@@ -949,6 +1073,81 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             return candidate;
     }
     return nil;
+}
+
+- (void)createFolder
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"新建文件夹"
+        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"文件夹名称";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text;
+            if (![weakSelf validNewName:name]) return;
+            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            NSError *error = nil;
+            if (![[NSFileManager defaultManager] createDirectoryAtPath:path
+                withIntermediateDirectories:NO attributes:nil error:&error])
+                [weakSelf showError:error];
+            [weakSelf reloadEntries];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)createFile
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"新建文件"
+        message:self.currentPath preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"文件名";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text;
+            if (![weakSelf validNewName:name]) return;
+            NSString *path = [weakSelf.currentPath stringByAppendingPathComponent:name];
+            int fd = open(path.fileSystemRepresentation,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
+            if (fd < 0) {
+                [weakSelf showError:[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
+                        name, strerror(errno)]}]];
+            } else {
+                close(fd);
+            }
+            [weakSelf reloadEntries];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)duplicateEntry:(FFEntry *)item
+{
+    NSString *destination = [self uniqueDestinationForName:item.name];
+    if (!destination) {
+        [self flash:@"无法确定副本目标"];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        BOOL ok = [FFCopyEngine copyItemAtPath:item.path toPath:destination error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ok) {
+                [weakSelf flash:@"副本已创建"];
+                [weakSelf reloadEntries];
+            } else {
+                [weakSelf showError:error];
+            }
+        });
+    });
 }
 
 - (BOOL)validNewName:(NSString *)name
