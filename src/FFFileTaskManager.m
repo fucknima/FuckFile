@@ -3,6 +3,9 @@
 #import "FFZipExtract.h"
 #import "FFLogger.h"
 
+#import <errno.h>
+#import <sys/stat.h>
+
 NSNotificationName const FFFileTaskManagerDidChangeNotification =
     @"FFFileTaskManagerDidChangeNotification";
 
