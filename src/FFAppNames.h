@@ -12,4 +12,7 @@ NSString *FFAppDisplayName(NSString *identifier);
 // when the container has no readable metadata.
 NSString * _Nullable FFAppContainerItemName(NSString *containerPath);
 
+// YES for 8-4-4-4-12 container UUID directory names (36 chars, dashes).
+BOOL FFIsUUIDShapedName(NSString *name);
+
 NS_ASSUME_NONNULL_END

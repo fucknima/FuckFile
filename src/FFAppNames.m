@@ -119,3 +119,19 @@ NSString *FFAppContainerItemName(NSString *containerPath)
         ? metadata[@"itemName"] : nil;
     return name.length ? name : nil;
 }
+
+BOOL FFIsUUIDShapedName(NSString *name)
+{
+    if (name.length != 36) return NO;
+    NSArray<NSString *> *parts = [name componentsSeparatedByString:@"-"];
+    if (parts.count != 5) return NO;
+    NSUInteger lengths[5] = {8, 4, 4, 4, 12};
+    NSCharacterSet *hex = [NSCharacterSet characterSetWithCharactersInString:
+        @"0123456789abcdefABCDEF"];
+    for (NSUInteger index = 0; index < 5; index++) {
+        NSString *part = parts[index];
+        if (part.length != lengths[index]) return NO;
+        if ([part stringByTrimmingCharactersInSet:hex].length) return NO;
+    }
+    return YES;
+}
