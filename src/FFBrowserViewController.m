@@ -1159,7 +1159,7 @@ static NSMutableSet<NSString *> *gConsumedDirectPaths;
                 stringByAppendingPathComponent:@"Extracted"];
             destination = [extracted stringByAppendingPathComponent:
                 [stem stringByAppendingFormat:@"-%@",
-                    [NSUUID UUID].UUIDString substringToIndex:8]];
+                    [[[NSUUID UUID] UUIDString] substringToIndex:8]]];
             NSError *fallbackError = nil;
             if (!FFZipExtract(item.path, destination, &entries, &fallbackError))
                 error = fallbackError;
