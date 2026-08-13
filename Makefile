@@ -26,6 +26,8 @@ FuckFile_FILES = \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFSearchViewController.m \
+	src/FFBookmarksService.m \
+	src/FFBookmarksViewController.m \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m

@@ -11,6 +11,7 @@
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
 #import "FFThumbnailService.h"
+#import "FFBookmarksService.h"
 
 #import <AVKit/AVKit.h>
 #import <CommonCrypto/CommonDigest.h>
@@ -923,6 +924,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFEntry *item = self.filteredEntries[indexPath.row];
+    [[FFRecentService sharedService] recordPath:item.path
+        name:item.displayName.length ? item.displayName : item.name
+        isDirectory:item.isDirectory];
     if (item.isDirectory) {
         FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
         next.title = item.displayName.length ? item.displayName : item.name;
@@ -960,6 +964,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
             UIAction *duplicate = [UIAction actionWithTitle:@"创建副本" image:[self symbolImage:@"plus.square.on.square" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf duplicateEntry:item]; }];
+            UIAction *favorite = [UIAction actionWithTitle:
+                [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
+                image:[self symbolImage:@"star" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleFavorite:item]; }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
             UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
@@ -972,7 +980,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
             NSMutableArray *children = [NSMutableArray arrayWithArray:
-                @[view, copy, cut, duplicate, rename, copyPath, share, properties, delete]];
+                @[view, copy, cut, duplicate, favorite, rename, copyPath, share, properties, delete]];
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
@@ -1030,6 +1038,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"创建副本" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf duplicateEntry:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:
+        [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf toggleFavorite:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"剪切" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault
@@ -1200,6 +1212,15 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             [weakSelf reloadEntries];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)toggleFavorite:(FFEntry *)item
+{
+    BOOL wasFavorite = [[FFFavoritesService sharedService] isFavoritePath:item.path];
+    [[FFFavoritesService sharedService] togglePath:item.path
+        name:item.displayName.length ? item.displayName : item.name
+        isDirectory:item.isDirectory];
+    [self flash:wasFavorite ? @"已取消收藏" : @"已收藏"];
 }
 
 - (void)duplicateEntry:(FFEntry *)item

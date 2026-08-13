@@ -3,6 +3,7 @@
 #import "FFLogViewController.h"
 #import "FFTasksViewController.h"
 #import "FFSearchViewController.h"
+#import "FFBookmarksViewController.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -82,7 +83,7 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 1;
+        case 0: return 3;
         case 1: return 3;
         case 2: return 2;
         default: return 0;
@@ -112,11 +113,21 @@
 
     switch (indexPath.section) {
         case 0: {
-            cell.textLabel.text = @"设备存储";
-            cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu 个分类目录 · %lu 个已逃逸链接", (unsigned long)self.categoryCount,
-                (unsigned long)self.linkCount];
-            cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"设备存储";
+                cell.detailTextLabel.text = [NSString stringWithFormat:
+                    @"%lu 个分类目录 · %lu 个已逃逸链接", (unsigned long)self.categoryCount,
+                    (unsigned long)self.linkCount];
+                cell.imageView.image = [UIImage systemImageNamed:@"folder.fill"];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"收藏";
+                cell.detailTextLabel.text = @"收藏的文件夹与文件";
+                cell.imageView.image = [UIImage systemImageNamed:@"star"];
+            } else {
+                cell.textLabel.text = @"最近访问";
+                cell.detailTextLabel.text = @"最近打开的目录与文件";
+                cell.imageView.image = [UIImage systemImageNamed:@"clock"];
+            }
             break;
         }
         case 1: {
@@ -161,7 +172,13 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+            if (indexPath.row == 0) {
+                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+            } else if (indexPath.row == 1) {
+                next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeFavorites];
+            } else {
+                next = [[FFBookmarksViewController alloc] initWithMode:FFBookmarksModeRecent];
+            }
             break;
         case 1:
             if (indexPath.row == 0) {
