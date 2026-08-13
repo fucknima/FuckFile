@@ -77,14 +77,11 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
             cell.accessoryView = toggle;
             cell.imageView.image = [UIImage systemImageNamed:@"eye"];
         } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"列表与网格";
-            cell.detailTextLabel.text = @"网格视图";
-            UISwitch *toggle = [UISwitch new];
-            toggle.on = self.gridMode;
-            [toggle addTarget:self action:@selector(gridModeChanged:)
-             forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle;
+            cell.textLabel.text = @"网格视图";
+            cell.detailTextLabel.text = @"列表视图（网格即将推出）";
             cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2"];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = nil;
         } else {
             cell.textLabel.text = @"关于";
             cell.detailTextLabel.text = [NSString stringWithFormat:

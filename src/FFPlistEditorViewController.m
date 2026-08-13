@@ -1,6 +1,23 @@
 #import "FFPlistEditorViewController.h"
 #import "FFLogger.h"
 
+// 深度可变复制：嵌套字典/数组全部转为可变版本。
+// 浅层 mutableCopy 会让深层结构保持不可变，编辑时赋值会崩溃。
+static id FFDeepMutableCopy(id object)
+{
+    if ([object isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+        for (id key in object) dict[key] = FFDeepMutableCopy(object[key]);
+        return dict;
+    }
+    if ([object isKindOfClass:NSArray.class]) {
+        NSMutableArray *array = [NSMutableArray array];
+        for (id item in object) [array addObject:FFDeepMutableCopy(item)];
+        return array;
+    }
+    return object;
+}
+
 @interface FFPlistEditorViewController ()
 @property(nonatomic, strong) id root;
 @property(nonatomic, copy) NSArray *keyPath;
@@ -71,7 +88,7 @@
                 });
                 return;
             }
-            weakSelf.root = [plist mutableCopy];
+            weakSelf.root = FFDeepMutableCopy(plist);
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadScope]; });
         });
     }
