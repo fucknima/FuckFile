@@ -32,6 +32,7 @@ static int64_t gBadQueryGestaltHandle = -1;
 + (id)defaultWorkspace;
 - (NSArray *)allApplications;
 - (NSString *)applicationIdentifier;
+- (NSString *)bundleIdentifier;
 @end
 
 static NSString *const kMCMAppDataDirectoryName = @"[MHA-C2] App Data";
@@ -445,10 +446,59 @@ static NSArray<NSString *> *MCMInstalledApplicationIdentifiers(void)
     for (id proxy in applications) {
         NSString *identifier = [proxy respondsToSelector:@selector(applicationIdentifier)]
             ? [proxy applicationIdentifier] : nil;
+        if (!MCMSafeIdentifier(identifier) &&
+            [proxy respondsToSelector:@selector(bundleIdentifier)])
+            identifier = [proxy bundleIdentifier];
         if (MCMSafeIdentifier(identifier)) [result addObject:identifier];
         if (result.count >= 1024) break;
     }
     return result.array;
+}
+
+static NSArray<NSString *> *MCMResearchTargetIdentifiers(void)
+{
+    // Enumeration returns near-empty results on iOS 26 even though direct
+    // lookups succeed. Seed known first-party identifiers so the MHA bypass
+    // can resolve them by name when discovery is denied or incomplete.
+    return @[
+        @"com.apple.mobilesafari",
+        @"com.apple.mobilenotes",
+        @"com.apple.Maps",
+        @"com.apple.facetime",
+        @"com.apple.iBooks",
+        @"com.apple.podcasts",
+        @"com.apple.PosterBoard",
+        @"com.apple.mobilemail",
+        @"com.apple.weather",
+        @"com.apple.camera",
+        @"com.apple.Health",
+        @"com.apple.Fitness",
+        @"com.apple.tips",
+        @"com.apple.Passbook",
+        @"com.apple.reminders",
+        @"com.apple.stocks",
+        @"com.apple.news",
+        @"com.apple.Home",
+        @"com.apple.tv",
+        @"com.apple.shortcuts",
+        @"com.apple.freeform",
+        @"com.apple.calculator",
+        @"com.apple.MobileSMS",
+        @"com.apple.InCallService",
+        @"com.apple.Preferences",
+        @"com.apple.springboard",
+        @"com.apple.Photos",
+        @"com.apple.AppStore",
+        @"com.apple.Music",
+        @"com.apple.Bridge",
+        @"com.apple.Clock",
+        @"com.apple.VoiceMemos",
+        @"com.apple.Translate",
+        @"com.apple.measure",
+        @"com.apple.compass",
+        @"com.apple.Magnifier",
+        @"com.apple.DocumentsApp",
+    ];
 }
 
 static NSDictionary *MCMCustomIdentifiers(void)
@@ -626,6 +676,7 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
     NSMutableOrderedSet *appIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(2)];
     [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
+    [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
     NSDictionary *custom = MCMCustomIdentifiers();
     for (id value in [custom[@"AppData"] isKindOfClass:NSArray.class] ? custom[@"AppData"] : @[])
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
@@ -662,6 +713,12 @@ static NSDictionary *MCMRunExperimentalProbe(MCMManager *manager, NSString *dire
 
     NSMutableOrderedSet *groupIdentifiers =
         [NSMutableOrderedSet orderedSetWithArray:MCMDynamicIdentifiers(7)];
+    [groupIdentifiers addObjectsFromArray:@[
+        @"group.com.apple.notes",
+        @"group.com.apple.safari",
+        @"group.com.apple.weather",
+        @"group.com.apple.stocks",
+    ]];
     for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
         if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
             [groupIdentifiers addObject:value];
