@@ -210,7 +210,32 @@
         return;
     }
     FFFoundItem *item = self.results[indexPath.row];
-    // 文件直接打开预览，文件夹进入目录；不存在则提示。
+    // 点击结果先弹窗确认：打开 / 跳转所在目录。
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
+        message:item.path preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"打开"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [weakSelf openFoundItem:item];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"跳转所在目录"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        NSString *parent = item.path.stringByDeletingLastPathComponent;
+        FFBrowserViewController *browser =
+            [[FFBrowserViewController alloc] initWithPath:parent];
+        [weakSelf.navigationController pushViewController:browser animated:YES];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)openFoundItem:(FFFoundItem *)item
+{
+    // 文件打开预览，文件夹进入目录；不存在则提示。
     FFBrowserViewController *browser = [[FFBrowserViewController alloc]
         initWithPath:MCMVirtualRoot()];
     browser.title = item.name;
