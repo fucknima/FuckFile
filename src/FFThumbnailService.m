@@ -213,8 +213,15 @@ static NSString *FFThumbnailDiskRoot(void)
 {
     [self.memoryCache removeAllObjects];
     dispatch_async(self.workQueue, ^{
+        NSString *root = FFThumbnailDiskRoot();
+        // 目录不存在时视为已清理成功（NSFileManager 会把 ENOENT 当失败）。
+        BOOL isDirectory = NO;
+        if (![[NSFileManager defaultManager] fileExistsAtPath:root isDirectory:&isDirectory]) {
+            FFLogTag(@"Thumbnail", @"cache clear skipped (absent)");
+            return;
+        }
         NSError *error = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:FFThumbnailDiskRoot() error:&error];
+        [[NSFileManager defaultManager] removeItemAtPath:root error:&error];
         if (error)
             FFLogTag(@"Thumbnail", @"cache clear FAIL error=%@", error);
         else
