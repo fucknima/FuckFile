@@ -1,4 +1,5 @@
 #import "FFPathPolicy.h"
+#import "FFLogger.h"
 
 #import <limits.h>
 #import <string.h>
@@ -97,6 +98,8 @@ static BOOL FFIsRealDirectory(NSString *path)
                     ok = NO;
                     if (errorMessage) *errorMessage = [NSString stringWithFormat:
                         @"容器路径包含符号链接或不可访问：%@", nextPath];
+                    FFLogTag(@"FFPathPolicy", @"reject container chain path=%@ part=%@",
+                        path, nextPath);
                     break;
                 }
                 realCurrent = effective;
@@ -119,8 +122,12 @@ static BOOL FFIsRealDirectory(NSString *path)
     // because the sandbox cannot open system container paths).
     if (!FFIsRealDirectory(current)) {
         if (errorMessage) *errorMessage = @"父目录不可访问";
+        FFLogTag(@"FFPathPolicy", @"reject final parent path=%@", path);
         return nil;
     }
+    // 链校验成功，但记录解析结果供诊断。
+    FFLogTag(@"FFPathPolicy", @"resolve path=%@ parent=%@ final=%@",
+        path, current, last);
     if (finalName) *finalName = last;
     return current;
 }

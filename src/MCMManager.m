@@ -8,6 +8,7 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
+#import "FFFileOperationService.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -579,6 +580,10 @@ static NSDictionary *MCMCustomIdentifiers(void)
              (unsigned long)seeded, (unsigned long)linkedSeeded);
     [self postScanProgress:1.0 linked:linkedSeeded total:seeded scanning:NO];
 
+    // 启动自检：向第一个已链接的第三方 App 容器写入临时文件再删除，
+    // 直接报告写能力（含 errno），便于区分"build 太旧"与"真写失败"。
+    [self runWriteProbe:appIdentifiers];
+
     // iOS 26 hides third-party apps from ContainerManager/LaunchServices
     // enumeration, but the LaunchServices store inside com.apple.lsd still
     // lists every installed identifier. Confirm each candidate with a
@@ -642,6 +647,49 @@ static NSDictionary *MCMCustomIdentifiers(void)
             completion();
         });
     }
+}
+
+// 写能力自检：选第一个非 MHA 的已链接容器，在 tmp（或 Documents）
+// 下创建临时文件再删除，结果写入日志。任何失败都会给出 errno。
+- (void)runWriteProbe:(NSOrderedSet<NSString *> *)appIdentifiers
+{
+    NSString *root = MCMVirtualRoot();
+    if (!root.length) {
+        FFLogTag(@"WriteProbe", @"skipped: virtual root missing");
+        return;
+    }
+    NSString *target = nil;
+    for (NSString *identifier in appIdentifiers) {
+        if ([identifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"])
+            continue;
+        NSString *link = [[root stringByAppendingPathComponent:@"App Data"]
+            stringByAppendingPathComponent:identifier];
+        NSString *tmp = [link stringByAppendingPathComponent:@"tmp"];
+        NSString *docs = [link stringByAppendingPathComponent:@"Documents"];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:tmp isDirectory:&isDir] && isDir)
+            target = tmp;
+        else if ([[NSFileManager defaultManager] fileExistsAtPath:docs isDirectory:&isDir] && isDir)
+            target = docs;
+        if (target) break;
+    }
+    if (!target) {
+        FFLogTag(@"WriteProbe", @"skipped: no linked third-party container");
+        return;
+    }
+    NSString *probe = [target stringByAppendingPathComponent:@".ffwriteprobe"];
+    NSError *error = nil;
+    if (![[FFFileOperationService sharedService] createEmptyFileAtPath:probe error:&error]) {
+        FFLogTag(@"WriteProbe", @"create FAIL dir=%@ errno=%ld (%@)",
+            target, (long)error.code, error.localizedDescription);
+        return;
+    }
+    if (![[FFFileOperationService sharedService] removeItemAtPath:probe error:&error]) {
+        FFLogTag(@"WriteProbe", @"delete FAIL dir=%@ errno=%ld (%@)",
+            target, (long)error.code, error.localizedDescription);
+        return;
+    }
+    FFLogTag(@"WriteProbe", @"OK dir=%@", target);
 }
 
 @end

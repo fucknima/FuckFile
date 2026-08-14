@@ -141,6 +141,8 @@
     NSString *finalName = nil;
     if (![FFPathPolicy resolveParentForMutation:self.filePath
         finalName:&finalName errorMessage:&detail]) {
+        FFLogTag(@"TextEditor", @"save REJECT path=%@ reason=%@",
+            self.filePath, detail ?: @"路径不合法");
         [self flash:[NSString stringWithFormat:@"无法保存：%@",
             detail ?: @"路径不合法"]];
         return;

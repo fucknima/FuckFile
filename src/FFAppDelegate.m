@@ -10,6 +10,7 @@
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
     FFLog(@"==== FuckFile launch ====");
+    FFLog(@"build=%s %s", __DATE__, __TIME__);
     FFLog(@"device=%@ iOS=%@ build=%@ bundle=%@ log=%@",
         UIDevice.currentDevice.model,
         UIDevice.currentDevice.systemVersion,

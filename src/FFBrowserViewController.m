@@ -1688,8 +1688,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             NSError *error = nil;
-            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error])
+            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error]) {
+                FFLogTag(@"Browser", @"delete FAIL path=%@ errno=%ld (%@)",
+                    item.path, (long)error.code, error.localizedDescription);
                 [weakSelf showError:error];
+            }
             [weakSelf reloadEntries];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
