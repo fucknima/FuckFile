@@ -22,8 +22,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // YES when the path is (or is below) one of our App Data links: a
 // symlink whose target points into /var/.../Containers/...
-+ (BOOL)isAppLinkPath:(NSString *)path;
-
 // Resolves the parent path and final name of `path` for a mutation:
 // returns the real parent directory (with our App Data link segments
 // replaced by their container targets) and, in *finalName, the entry
