@@ -117,7 +117,8 @@ static NSError *FFOperationError(int code, NSString *operation, NSString *path)
         if (error) *error = FFOperationError(EPERM, @"删除", path);
         return NO;
     }
-    return [self removeRecursivelyAtPath:path error:error];
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    return [self removeRecursivelyAtPath:target error:error];
 }
 
 // 递归删除：lstat 逐项判断（不跟随符号链接），目录内容删除后 rmdir。

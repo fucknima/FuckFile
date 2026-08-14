@@ -1,12 +1,10 @@
 #import "FFPathPolicy.h"
 #import "FFLogger.h"
 
-#import <limits.h>
+#import <errno.h>
+#import <fcntl.h>
 #import <string.h>
-#import <sys/stat.h>
-
-// Our App Data links live under this folder name in the virtual root.
-static NSString *const kFFAppDataFolderName = @"App Data";
+#import <unistd.h>
 
 @implementation FFPathPolicy
 
@@ -16,42 +14,9 @@ static NSString *const kFFAppDataFolderName = @"App Data";
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
 }
 
-// A link is ours when it is a symlink whose target points into the
-// real container tree (/var/... or /private/var/...).
-+ (BOOL)isAppLinkPath:(NSString *)path
-{
-    struct stat status = {0};
-    if (lstat(path.fileSystemRepresentation, &status) != 0 || !S_ISLNK(status.st_mode))
-        return NO;
-    char target[PATH_MAX] = {0};
-    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-    if (length <= 0) return NO;
-    target[length] = '\0';
-    NSString *resolved = [NSString stringWithUTF8String:target];
-    return [resolved hasPrefix:@"/var/"] || [resolved hasPrefix:@"/private/var/"];
-}
-
-// Follows one symlink level if it is one of our App Data links; returns
-// the real target path or nil when the path is a foreign/unknown link.
-static NSString *FFResolveOwnLink(NSString *path)
-{
-    if (![FFPathPolicy isAppLinkPath:path]) return nil;
-    char target[PATH_MAX] = {0};
-    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-    if (length <= 0) return nil;
-    target[length] = '\0';
-    return [NSString stringWithUTF8String:target];
-}
-
-// Validates that the directory at `path` exists and is a real
-// directory (not a symlink). Returns YES when safe.
-static BOOL FFIsRealDirectory(NSString *path)
-{
-    struct stat status = {0};
-    if (lstat(path.fileSystemRepresentation, &status) != 0) return NO;
-    return S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode);
-}
-
+// Filza 式写入前置校验：直接以只读目录方式 open 目标父目录一次。
+// 容器路径在 MHA profile/extension 的前缀覆盖内即可打开；不依赖
+// 逐级 openat（"/" 不在前缀内会 EPERM）也不依赖符号链接链。
 + (NSString *)resolveParentForMutation:(NSString *)path
                              finalName:(NSString **)finalName
                          errorMessage:(NSString **)errorMessage
@@ -70,66 +35,22 @@ static BOOL FFIsRealDirectory(NSString *path)
         if (errorMessage) *errorMessage = @"路径名不合法";
         return nil;
     }
-
-    // Walk the parent chain, resolving our own App Data links into
-    // their /var targets. Every other level must be a real directory.
-    NSArray<NSString *> *components = parent.pathComponents;
-    if (components.count == 0 || ![[components firstObject] isEqualToString:@"/"]) {
-        if (errorMessage) *errorMessage = @"父目录不合法";
+    // O_NOFOLLOW 防止父目录本身是指向系统位置的符号链接；
+    // 中间组件（我们的 App Data 链接）由内核跟随到 /private/var，
+    // 命中 MHA 前缀则放行，否则 EPERM。
+    int descriptor = open(parent.fileSystemRepresentation,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        int saved = errno;
+        FFLogTag(@"FFPathPolicy", @"open parent FAIL path=%@ errno=%d (%s)",
+            parent, saved, strerror(saved));
+        if (errorMessage) *errorMessage = [NSString stringWithFormat:
+            @"父目录不可访问 errno=%d (%s)", saved, strerror(saved)];
         return nil;
     }
-    NSString *current = @"/";
-    for (NSUInteger index = 1; index < components.count; index++) {
-        NSString *component = components[index];
-        NSString *candidate = [current stringByAppendingPathComponent:component];
-        NSString *real = FFResolveOwnLink(candidate);
-        if (real) {
-            // Our App Data link: validate the resolved /var target
-            // chain level by level (directories only).
-            NSArray<NSString *> *realComponents = real.pathComponents;
-            NSString *realCurrent = @"/";
-            BOOL ok = YES;
-            for (NSUInteger ri = 1; ri < realComponents.count; ri++) {
-                NSString *part = realComponents[ri];
-                NSString *nextPath = [realCurrent stringByAppendingPathComponent:part];
-                NSString *nested = FFResolveOwnLink(nextPath);
-                NSString *effective = nested ?: nextPath;
-                if (!FFIsRealDirectory(effective)) {
-                    ok = NO;
-                    if (errorMessage) *errorMessage = [NSString stringWithFormat:
-                        @"容器路径包含符号链接或不可访问：%@", nextPath];
-                    FFLogTag(@"FFPathPolicy", @"reject container chain path=%@ part=%@",
-                        path, nextPath);
-                    break;
-                }
-                realCurrent = effective;
-            }
-            if (!ok) return nil;
-            current = real;
-            continue;
-        }
-        // Ordinary path component: must be a real directory. A foreign
-        // symlink here could redirect the mutation — reject it.
-        if (!FFIsRealDirectory(candidate)) {
-            if (errorMessage) *errorMessage = [NSString stringWithFormat:
-                @"父目录包含符号链接或不可访问：%@", candidate];
-            return nil;
-        }
-        current = candidate;
-    }
-
-    // Final parent must be a real directory right now (lstat, not open,
-    // because the sandbox cannot open system container paths).
-    if (!FFIsRealDirectory(current)) {
-        if (errorMessage) *errorMessage = @"父目录不可访问";
-        FFLogTag(@"FFPathPolicy", @"reject final parent path=%@", path);
-        return nil;
-    }
-    // 链校验成功，但记录解析结果供诊断。
-    FFLogTag(@"FFPathPolicy", @"resolve path=%@ parent=%@ final=%@",
-        path, current, last);
+    close(descriptor);
     if (finalName) *finalName = last;
-    return current;
+    return parent;
 }
 
 @end

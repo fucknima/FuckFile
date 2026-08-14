@@ -421,18 +421,20 @@ static NSString *FFPlistValueSummary(id value)
         [self flash:[NSString stringWithFormat:@"序列化失败：%@", error.localizedDescription]];
         return;
     }
-    // 写入前统一路径校验。
+    // 写入前统一路径校验；写入目标使用校验通过的父目录路径。
     NSString *detail = nil;
     NSString *finalName = nil;
-    if (![FFPathPolicy resolveParentForMutation:self.filePath
-        finalName:&finalName errorMessage:&detail]) {
+    NSString *parent = [FFPathPolicy resolveParentForMutation:self.filePath
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         FFLogTag(@"PlistEditor", @"save REJECT path=%@ reason=%@",
             self.filePath, detail ?: @"路径不合法");
         [self flash:[NSString stringWithFormat:@"无法保存：%@",
             detail ?: @"路径不合法"]];
         return;
     }
-    if ([data writeToFile:self.filePath options:NSDataWritingAtomic error:&error]) {
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    if ([data writeToFile:target options:NSDataWritingAtomic error:&error]) {
         [self flash:@"已保存"];
         FFLogTag(@"PlistEditor", @"saved %@ (%lu bytes)", self.filePath,
             (unsigned long)data.length);

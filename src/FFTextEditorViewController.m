@@ -139,16 +139,18 @@
     // 写入前统一路径校验，避免符号链接竞态越界写入。
     NSString *detail = nil;
     NSString *finalName = nil;
-    if (![FFPathPolicy resolveParentForMutation:self.filePath
-        finalName:&finalName errorMessage:&detail]) {
+    NSString *parent = [FFPathPolicy resolveParentForMutation:self.filePath
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         FFLogTag(@"TextEditor", @"save REJECT path=%@ reason=%@",
             self.filePath, detail ?: @"路径不合法");
         [self flash:[NSString stringWithFormat:@"无法保存：%@",
             detail ?: @"路径不合法"]];
         return;
     }
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
     NSError *error = nil;
-    if ([data writeToFile:self.filePath options:NSDataWritingAtomic error:&error]) {
+    if ([data writeToFile:target options:NSDataWritingAtomic error:&error]) {
         [self flash:@"已保存"];
         self.changed = NO;
         self.navigationItem.rightBarButtonItem.enabled = NO;
