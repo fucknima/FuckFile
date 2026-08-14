@@ -8,6 +8,9 @@
 @interface FFSearchViewController () <UISearchBarDelegate>
 @property(nonatomic, strong) UISearchBar *searchBar;
 @property(nonatomic, strong) NSArray<NSString *> *history;
+@property(nonatomic, strong) UIView *searchBackdrop;
+@property(nonatomic, strong) UIActivityIndicatorView *spinner;
+@property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) NSMutableArray<FFFoundItem *> *results;
 @property(nonatomic) BOOL searching;
 @property(nonatomic) BOOL finished;
@@ -39,6 +42,25 @@
 
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
+
+    self.searchBackdrop = [[UIView alloc] init];
+    self.spinner = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.spinner.hidesWhenStopped = YES;
+    self.statusLabel = [UILabel new];
+    self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.statusLabel.textColor = UIColor.secondaryLabelColor;
+    self.statusLabel.textAlignment = NSTextAlignmentCenter;
+    UIStackView *stack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[self.spinner, self.statusLabel]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 10;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.searchBackdrop addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.centerXAnchor constraintEqualToAnchor:self.searchBackdrop.centerXAnchor],
+        [stack.topAnchor constraintEqualToAnchor:self.searchBackdrop.topAnchor constant:60],
+    ]];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"清空历史" style:UIBarButtonItemStylePlain
         target:self action:@selector(clearHistoryTapped)];
@@ -60,6 +82,7 @@
         [[FFSearchService sharedService] cancel];
         self.searching = NO;
         [self.results removeAllObjects];
+        [self updateSearchBackground];
         [self.tableView reloadData];
         return;
     }
@@ -72,7 +95,26 @@
     [searchBar resignFirstResponder];
     [NSObject cancelPreviousPerformRequestsWithTarget:self
         selector:@selector(beginSearch:) object:searchBar.text];
+    NSString *query = [searchBar.text stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (query.length) {
+        [[FFSearchService sharedService] addHistory:query];
+        self.history = [[FFSearchService sharedService] history];
+    }
     [self beginSearch:searchBar.text];
+}
+
+- (void)updateSearchBackground
+{
+    if (self.searching) {
+        [self.spinner startAnimating];
+        self.statusLabel.text = [NSString stringWithFormat:
+            @"搜索中… 已找到 %lu 个结果", (unsigned long)self.results.count];
+        self.tableView.backgroundView = self.searchBackdrop;
+    } else {
+        [self.spinner stopAnimating];
+        self.tableView.backgroundView = nil;
+    }
 }
 
 - (void)beginSearch:(NSString *)query
@@ -81,11 +123,10 @@
     query = [query stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (query.length == 0) return;
-    [[FFSearchService sharedService] addHistory:query];
-    self.history = [[FFSearchService sharedService] history];
     self.searching = YES;
     self.finished = NO;
     [self.results removeAllObjects];
+    [self updateSearchBackground];
     [self.tableView reloadData];
     FFLogTag(@"Search", @"begin query=%@ root=%@", query, MCMVirtualRoot());
 
@@ -95,11 +136,13 @@
         underRoot:searchRoot
         batch:^(NSArray<FFFoundItem *> *batch) {
             [weakSelf.results addObjectsFromArray:batch];
+            [weakSelf updateSearchBackground];
             [weakSelf.tableView reloadData];
         }
         completion:^(BOOL finished) {
             weakSelf.searching = NO;
             weakSelf.finished = finished;
+            [weakSelf updateSearchBackground];
             [weakSelf.tableView reloadData];
             FFLogTag(@"Search", @"done query=%@ finished=%d results=%lu",
                      query, finished, (unsigned long)weakSelf.results.count);
@@ -161,6 +204,8 @@
     if (showingHistory) {
         NSString *query = self.history[indexPath.row];
         self.searchBar.text = query;
+        [[FFSearchService sharedService] addHistory:query];
+        self.history = [[FFSearchService sharedService] history];
         [self beginSearch:query];
         return;
     }
