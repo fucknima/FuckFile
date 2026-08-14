@@ -77,7 +77,7 @@
 - (void)reloadStatus
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
+        NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"AppData"];
         NSFileManager *manager = NSFileManager.defaultManager;
         NSUInteger count = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
         NSUInteger active = 0;
@@ -191,8 +191,8 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            next = [[FFBrowserViewController alloc] initWithPath:
-                [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"]];
+            // 进入虚拟根：显示 AppData 文件夹、MobileGestalt 链接与日志文件。
+            next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             break;
         case 1:
             if (indexPath.row == 0) next = [FFSearchViewController new];

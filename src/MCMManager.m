@@ -555,10 +555,17 @@ static NSDictionary *MCMCustomIdentifiers(void)
     [fm createDirectoryAtPath:root withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-    // Scope: App Data only. Links live in an "App Data" folder next to
+    // Scope: App Data only. Links live in an "AppData" folder next to
     // the log file inside our own container root. All other container
     // classes are intentionally not probed anymore.
-    NSString *apps = [root stringByAppendingPathComponent:@"App Data"];
+    NSString *apps = [root stringByAppendingPathComponent:@"AppData"];
+    // 迁移旧目录名（"App Data" -> "AppData"），仅当目标不存在。
+    NSString *legacyApps = [root stringByAppendingPathComponent:@"App Data"];
+    BOOL legacyIsDir = NO;
+    BOOL legacyExists = [fm fileExistsAtPath:legacyApps isDirectory:&legacyIsDir];
+    BOOL newExists = [fm fileExistsAtPath:apps];
+    if (legacyExists && !newExists && legacyIsDir)
+        [fm moveItemAtPath:legacyApps toPath:apps error:nil];
     [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
     [self removeLegacyDirectoriesUnder:root];
@@ -668,7 +675,7 @@ static NSDictionary *MCMCustomIdentifiers(void)
     for (NSString *identifier in appIdentifiers) {
         if ([identifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"])
             continue;
-        NSString *link = [[root stringByAppendingPathComponent:@"App Data"]
+        NSString *link = [[root stringByAppendingPathComponent:@"AppData"]
             stringByAppendingPathComponent:identifier];
         NSString *tmp = [link stringByAppendingPathComponent:@"tmp"];
         NSString *docs = [link stringByAppendingPathComponent:@"Documents"];
