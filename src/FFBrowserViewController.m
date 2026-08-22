@@ -14,6 +14,7 @@
 #import "FFPreviewRouter.h"
 #import "FFFileAssociationService.h"
 #import "FFViewerRegistry.h"
+#import "FFPathPolicy.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
 
@@ -57,7 +58,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout>
+@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
@@ -110,9 +111,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
-    [self setupCollectionView];
+    // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
+    // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
+    // flowlayout 断言闪退的源头 —— 不创建就彻底消除这一类崩溃。
     self.gridMode = [NSUserDefaults.standardUserDefaults
         boolForKey:@"FFSettingsGridMode"];
+    if (self.gridMode) [self setupCollectionView];
     [self applyLayoutModeAnimated:NO];
 
     self.refreshControl = [UIRefreshControl new];
@@ -478,7 +482,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.loading = NO;
             [self applyFilter];
             [self.tableView reloadData];
-            [self.collectionView reloadData];
+            if (self.collectionView) [self.collectionView reloadData];
             [self.refreshControl endRefreshing];
             [self updateEmptyState];
             [self applyLayoutModeAnimated:NO];
@@ -796,6 +800,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
+    UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
     UIAction *toggleGrid = [UIAction actionWithTitle:@"网格视图"
         image:[self symbolImage:@"square.grid.2x2" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) {
@@ -815,7 +821,83 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, select, sort, filter, toggleGrid, toggleHidden]];
+        children:@[paste, import, select, sort, filter, toggleGrid, toggleHidden]];
+}
+
+#pragma mark - Import from Files app
+
+// 外部导入：系统文件选择器（拷贝模式），选中后复制进当前目录。
+- (void)importFilesTapped
+{
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"public.data", @"public.content"]
+                       inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = YES;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+// 目标重名时自动加序号，绝不静默覆盖。
+- (NSString *)importDestinationForName:(NSString *)name inDirectory:(NSString *)directory
+{
+    NSString *candidate = [directory stringByAppendingPathComponent:name];
+    if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    NSString *base = name.stringByDeletingPathExtension;
+    NSString *ext = name.pathExtension.length ?
+        [@"." stringByAppendingString:name.pathExtension] : @"";
+    for (NSInteger index = 2; index < 1000; index++) {
+        candidate = [directory stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@ (%ld)%@", base, (long)index, ext]];
+        if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+- (void)documentPicker:(__unused UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+{
+    if (urls.count == 0) return;
+    NSMutableArray<NSURL *> *picked = [urls mutableCopy];
+    NSString *targetDirectory = self.currentPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger imported = 0;
+        NSString *firstFailure = nil;
+        for (NSURL *url in picked) {
+            [url startAccessingSecurityScopedResource];
+            @try {
+                // 与写入操作一致：先经路径安全策略解析父链再落盘。
+                NSString *detail = nil;
+                NSString *finalName = nil;
+                NSString *parent = [FFPathPolicy resolveParentForMutation:targetDirectory
+                    finalName:&finalName errorMessage:&detail];
+                if (!parent) { firstFailure = detail ?: @"路径不可写"; continue; }
+                NSString *destination = [weakSelf importDestinationForName:url.lastPathComponent
+                    inDirectory:parent];
+                if (!destination || ![NSFileManager.defaultManager copyItemAtPath:url.path
+                        toPath:destination error:nil]) {
+                    firstFailure = url.lastPathComponent ?: @"未知文件";
+                    continue;
+                }
+                imported++;
+            } @finally {
+                [url stopAccessingSecurityScopedResource];
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (imported > 0)
+                [weakSelf reloadEntries];
+            NSString *message = firstFailure ?
+                [NSString stringWithFormat:@"已导入 %lu 项；失败：%@",
+                    (unsigned long)imported, firstFailure] :
+                [NSString stringWithFormat:@"已导入 %lu 项到当前目录。", (unsigned long)imported];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
 }
 
 #pragma mark - Sort menu
@@ -1133,6 +1215,16 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 - (void)applyLayoutModeAnimated:(BOOL)animated
 {
     BOOL useGrid = self.gridMode && !self.editing;
+    if (useGrid && !self.collectionView) [self setupCollectionView];
+    if (!useGrid && self.collectionView && !self.collectionView.hidden) {
+        // 退出网格即销毁：不留隐藏布局对象。
+        [self.collectionView removeFromSuperview];
+        self.collectionView = nil;
+    }
+    if (!self.collectionView) {
+        self.tableView.hidden = NO;
+        return;
+    }
     self.collectionView.hidden = !useGrid;
     self.tableView.hidden = useGrid;
     if (useGrid) {
@@ -1161,7 +1253,13 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                   layout:(UICollectionViewLayout *)collectionViewLayout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath
 {
-    CGFloat width = (collectionView.bounds.size.width - 24 - 16) / 3.0;
+    // 防御性尺寸：未完成布局（宽度为 0）或极窄时给安全默认值；floor
+    // 防止浮点累加使整行宽度超出可用宽度 —— 超出会触发 flowlayout
+    // 断言闪退（复制/剪切的横幅、压缩弹窗的键盘都会引发隐藏网格的
+    // 布局提交，iOS 27 上隐藏视图同样参与 CATransaction 布局）。
+    CGFloat available = collectionView.bounds.size.width - 24 - 16;
+    if (available < 120) return CGSizeMake(44, 72);
+    CGFloat width = floor(available / 3.0);
     return CGSizeMake(width, width + 28);
 }
 

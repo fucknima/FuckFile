@@ -361,6 +361,8 @@ static const NSUInteger kPageSize = 64 * 1024;
                 self.filePath, (unsigned long)applied);
             [self.patches removeAllObjects];
             [self.originals removeAllObjects];
+            // 磁盘已更新：作废页缓存，重新 pread 反映新字节。
+            self.pageCache = nil;
             [self.tableView reloadData];
             [self refreshHeader];
             [self updateBarState];

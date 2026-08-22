@@ -4,6 +4,23 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>All Files</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+				<string>public.archive</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>FuckFile</string>
 	<key>CFBundleExecutable</key>

@@ -100,6 +100,8 @@
                     strongSelf->_archivePath, error.localizedDescription);
             } else {
                 strongSelf.entries = entries ?: @[];
+                FFLogTag(@"Archive", @"list %@ entries=%lu",
+                    strongSelf->_archivePath, (unsigned long)strongSelf.entries.count);
                 [strongSelf rebuildVisibleNodes];
             }
             [strongSelf.tableView reloadData];
@@ -159,6 +161,8 @@
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section
 {
     if (self.unsupportedMessage || self.loadError || !self.entries) return 1;
+    // 空归档或结构无法展示时给显式状态行，绝不留空白列表。
+    if (self.entries.count == 0 || self.visibleNodes.count == 0) return 1;
     return (NSInteger)self.visibleNodes.count;
 }
 
@@ -191,6 +195,22 @@
     }
     if (self.loading || !self.entries || self.visibleNodes == nil) {
         config.text = @"正在读取归档…";
+        cell.contentConfiguration = config;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+    if (self.entries.count == 0) {
+        config.image = [UIImage systemImageNamed:@"tray"];
+        config.text = @"空归档";
+        config.secondaryText = @"该压缩包内没有文件";
+        cell.contentConfiguration = config;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+    if (self.visibleNodes.count == 0) {
+        config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+        config.text = @"无法解析包内结构";
+        config.secondaryText = @"已读到条目但无法组织为目录，可尝试「全部解压」";
         cell.contentConfiguration = config;
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
