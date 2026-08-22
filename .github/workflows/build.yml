@@ -78,6 +78,7 @@ jobs:
           mkdir -p "$APP/PlugIns/FFShareExtension.appex"
           xcrun clang -fobjc-arc -fmodules -isysroot "$SDK" \
             "${ARCHS_ARGS[@]}" -miphoneos-version-min=15.0 \
+            -bundle -Wl,-undefined,dynamic_lookup \
             -framework UIKit -framework Foundation \
             -framework UniformTypeIdentifiers \
             ShareExtension/FFShareViewController.m \
