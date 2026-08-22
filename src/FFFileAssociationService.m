@@ -151,7 +151,7 @@ static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overri
     NSMutableSet<NSString *> *all = [NSMutableSet setWithArray:
         FFDefaultAssociations().allKeys];
     [all addObjectsFromArray:self.overrides.allKeys];
-    return [all sortedArrayUsingSelector:@selector(compare:)];
+    return [all.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 
 - (void)resetAllOverrides
