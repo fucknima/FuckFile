@@ -145,9 +145,13 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             NSArray<FFFileTask *> *tasks = [FFFileTaskManager sharedManager].tasks;
             BOOL affectsHere = NO;
             for (FFFileTask *task in tasks) {
-                if (task.destination.length &&
-                    [task.destination isEqualToString:strongSelf.currentPath] &&
-                    task.state != FFFileTaskStateQueued) {
+                if (task.destination.length == 0 ||
+                    task.state == FFFileTaskStateQueued) continue;
+                // 任务目标可能是本目录内的子路径（压缩 → 当前目录/xx.zip，
+                // 解压 → 当前目录/xx 解压目录），比较目的地所在的父目录。
+                NSString *destinationParent =
+                    task.destination.stringByDeletingLastPathComponent;
+                if ([destinationParent isEqualToString:strongSelf.currentPath]) {
                     affectsHere = YES;
                     break;
                 }
@@ -871,8 +875,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - Import from Files app
 
-// 外部导入：系统文件选择器（拷贝模式）。固定导入到与 Device Storage
-// 同级的 ~/Documents/Imported/，不写当前浏览目录。
+// 外部导入：系统文件选择器（拷贝模式）。文件落到发起导入的当前目录，
+// 写入经路径安全策略校验，重名自动加序号。
 - (void)importFilesTapped
 {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
@@ -904,11 +908,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 {
     if (urls.count == 0) return;
     NSMutableArray<NSURL *> *picked = [urls mutableCopy];
-    // 固定导入目录：~/Documents/Imported/（与 Device Storage 同级）。
-    NSString *importedDirectory = [[FFPathPolicy documentsRoot]
-        stringByAppendingPathComponent:@"Imported"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:importedDirectory
-        withIntermediateDirectories:YES attributes:nil error:nil];
+    // 从哪个文件夹的右上角导入就落到哪个文件夹（写入经路径安全策略）。
+    NSString *targetDirectory = self.currentPath;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSUInteger imported = 0;
@@ -916,8 +917,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         for (NSURL *url in picked) {
             [url startAccessingSecurityScopedResource];
             @try {
+                NSString *detail = nil;
+                NSString *finalName = nil;
+                NSString *parent = [FFPathPolicy resolveParentForMutation:targetDirectory
+                    finalName:&finalName errorMessage:&detail];
+                if (!parent) { firstFailure = detail ?: @"路径不可写"; continue; }
                 NSString *destination = [weakSelf importDestinationForName:url.lastPathComponent
-                    inDirectory:importedDirectory];
+                    inDirectory:parent];
                 if (!destination || ![NSFileManager.defaultManager copyItemAtPath:url.path
                         toPath:destination error:nil]) {
                     firstFailure = url.lastPathComponent ?: @"未知文件";
@@ -934,16 +940,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             NSString *message = firstFailure ?
                 [NSString stringWithFormat:@"已导入 %lu 项；失败：%@",
                     (unsigned long)imported, firstFailure] :
-                [NSString stringWithFormat:@"已导入 %lu 项到 Imported 目录。", (unsigned long)imported];
+                [NSString stringWithFormat:@"已导入 %lu 项到当前目录。", (unsigned long)imported];
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
                 message:message preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
-                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                    FFBrowserViewController *browser =
-                        [[FFBrowserViewController alloc] initWithPath:importedDirectory];
-                    browser.title = @"Imported";
-                    [weakSelf.navigationController pushViewController:browser animated:YES];
-                }]];
             [alert addAction:[UIAlertAction actionWithTitle:@"好"
                 style:UIAlertActionStyleCancel handler:nil]];
             [weakSelf presentViewController:alert animated:YES completion:nil];

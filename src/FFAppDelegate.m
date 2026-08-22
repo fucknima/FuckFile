@@ -79,19 +79,38 @@
     return [self importIncomingFileURL:url];
 }
 
-// 接收外部传入的文件：拷贝到 ~/Documents/Imported/（与 Device Storage
-// 同级，重名自动加序号），成功后给出「前往查看」入口。绝不原地打开外部路径。
+// 接收外部传入的文件：拷贝到 ~/Documents/Device Storage/Imported/
+// （与 AppData 同级目录，重名自动加序号），成功后给出「前往查看」入口。
+// 绝不原地打开外部路径。
 - (BOOL)importIncomingFileURL:(NSURL *)url
 {
     if (!url || !url.isFileURL) {
         FFLog(@"import REJECT non-file URL: %@", url);
         return NO;
     }
+    // iOS 27 冷启动时同一 URL 会经 launchOptions 和 openURL: 各投递一次；
+    // 第二次时 Inbox 源文件已被消费 → “no such file”。按路径去重。
+    static NSMutableSet<NSString *> *handled;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        handled = [NSMutableSet set];
+    });
+    NSString *key = url.path;
+    BOOL isNew = YES;
+    @synchronized (handled) {
+        isNew = ![handled containsObject:key];
+        if (isNew) [handled addObject:key];
+    }
+    if (!isNew) {
+        FFLog(@"import SKIP already handled: %@", key);
+        return YES;
+    }
     FFLog(@"import BEGIN url=%@", url.path);
     NSString *documents = NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // 导入位置：与 Device Storage 同级，不进当前浏览目录。
-    NSString *importedDirectory = [documents stringByAppendingPathComponent:@"Imported"];
+    // 导入位置：Device Storage/Imported（与 AppData 同级，浏览器内可见）。
+    NSString *importedDirectory = [[documents stringByAppendingPathComponent:
+        @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
     [[NSFileManager defaultManager] createDirectoryAtPath:importedDirectory
         withIntermediateDirectories:YES attributes:nil error:nil];
 

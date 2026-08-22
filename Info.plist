@@ -12,12 +12,24 @@
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Alternate</string>
+			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
 				<string>public.archive</string>
+				<string>public.image</string>
+				<string>public.movie</string>
+				<string>public.audiovisual-content</string>
+				<string>public.audio</string>
+				<string>public.text</string>
+				<string>public.plain-text</string>
+				<string>public.pdf</string>
+				<string>public.xml</string>
+				<string>public.html</string>
+				<string>com.apple.quicktime-movie</string>
+				<string>public.jpeg</string>
+				<string>public.png</string>
 			</array>
 		</dict>
 	</array>

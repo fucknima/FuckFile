@@ -107,9 +107,11 @@
 @end
 
 // Retains a file URL for a barButtonItem share action without needing
-// a full view controller subclass.
+// a full view controller subclass. UIBarButtonItem's responder chain
+// does not reach the presenting VC, so the nav is held directly.
 @interface FFFileShareTarget : NSObject
 @property(nonatomic, copy) NSURL *fileURL;
+@property(nonatomic, weak) UINavigationController *nav;
 - (void)share:(UIBarButtonItem *)sender;
 @end
 
@@ -120,18 +122,16 @@
     UIActivityViewController *activity = [[UIActivityViewController alloc]
         initWithActivityItems:@[self.fileURL] applicationActivities:nil];
     activity.popoverPresentationController.barButtonItem = sender;
-    // 沿响应链找到所在视图控制器来呈现。
-    UIResponder *responder = sender;
-    while (responder && ![responder isKindOfClass:UIViewController.class])
-        responder = responder.nextResponder;
-    if (responder)
-        [(UIViewController *)responder presentViewController:activity
-            animated:YES completion:nil];
+    UIViewController *presenter = self.nav.topViewController;
+    if (presenter)
+        [presenter presentViewController:activity animated:YES completion:nil];
 }
 @end
 
 @interface FFViewerRegistry ()
 @property(nonatomic, strong) NSArray<FFViewerInfo *> *viewers;
+// 当前打开操作的 nav（share target 呈现用，响应链到不了 barButtonItem）。
+@property(nonatomic, weak) UINavigationController *currentNav;
 @end
 
 @implementation FFViewerRegistry
@@ -223,6 +223,7 @@ navigationController:(UINavigationController *)nav
         [FFPreviewRouter toastOnNav:nav message:unavailable ?: @"该查看器不可用"];
         return NO;
     }
+    self.currentNav = nav;
     UIViewController *viewer = [self viewControllerForViewerID:viewerID path:path title:title];
     if (!viewer) {
         // 例：图片解码失败 —— 让调用方走 fallback 而不是推入空页面。
@@ -242,7 +243,7 @@ navigationController:(UINavigationController *)nav
                                                     path:(NSString *)path
                                                    title:(__unused NSString *)title
 {
-    if ([viewerID isEqualToString:@"image"])     return [self imageViewerAtPath:path];
+    if ([viewerID isEqualToString:@"image"])     return [self imageViewerAtPath:path title:title];
     if ([viewerID isEqualToString:@"media"])     return [self mediaViewerAtPath:path];
     if ([viewerID isEqualToString:@"plist"])     return [[FFPlistEditorViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"text"])      return [[FFTextEditorViewController alloc] initWithPath:path];
@@ -258,7 +259,7 @@ navigationController:(UINavigationController *)nav
 
 #pragma mark - Image
 
-- (UIViewController *)imageViewerAtPath:(NSString *)path
+- (UIViewController *)imageViewerAtPath:(NSString *)path title:(NSString *)title
 {
     UIImage *image = [UIImage imageWithContentsOfFile:path];
     if (!image) return nil; // caller falls back (e.g. Quick Look)
@@ -272,6 +273,7 @@ navigationController:(UINavigationController *)nav
 
     FFFileShareTarget *target = [FFFileShareTarget new];
     target.fileURL = [NSURL fileURLWithPath:path];
+    target.nav = self.currentNav;
     UIBarButtonItem *share = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                              target:target action:@selector(share:)];

@@ -9,9 +9,11 @@
 #import "FFTextEditorViewController.h"
 #import "FFLogger.h"
 
-// Retains shared text for the barButtonItem share action.
+// Retains shared text for the barButtonItem share action. UIBarButtonItem's
+// responder chain doesn't reach the presenting VC, so nav is held directly.
 @interface FFTextShareTarget : NSObject
 @property(nonatomic, copy) NSString *text;
+@property(nonatomic, weak) UINavigationController *nav;
 - (void)share:(UIBarButtonItem *)sender;
 @end
 
@@ -22,13 +24,9 @@
     UIActivityViewController *activity = [[UIActivityViewController alloc]
         initWithActivityItems:@[self.text] applicationActivities:nil];
     activity.popoverPresentationController.barButtonItem = sender;
-    // 沿响应链找到所在视图控制器来呈现。
-    UIResponder *responder = sender;
-    while (responder && ![responder isKindOfClass:UIViewController.class])
-        responder = responder.nextResponder;
-    if (responder)
-        [(UIViewController *)responder presentViewController:activity
-            animated:YES completion:nil];
+    UIViewController *presenter = self.nav.topViewController;
+    if (presenter)
+        [presenter presentViewController:activity animated:YES completion:nil];
 }
 @end
 
@@ -185,6 +183,7 @@ navigationController:(UINavigationController *)nav
 
     FFTextShareTarget *target = [FFTextShareTarget new];
     target.text = body;
+    target.nav = nav;
     UIBarButtonItem *share = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                              target:target action:@selector(share:)];
