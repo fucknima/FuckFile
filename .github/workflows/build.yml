@@ -69,16 +69,7 @@ jobs:
             --output-partial-info-plist "$APP/icon-partial-info.plist" \
             && ls -la "$APP/Assets.car" || exit 1
           # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
-          python3 - "$APP/Info.plist" "$APP/icon-partial-info.plist" << 'PYEOF'
-import plistlib, sys
-info_path, partial_path = sys.argv[1], sys.argv[2]
-partial = plistlib.load(open(partial_path, 'rb'))
-info = plistlib.load(open(info_path, 'rb'))
-if 'CFBundleIcons' in partial:
-    info['CFBundleIcons'] = partial['CFBundleIcons']
-plistlib.dump(info, open(info_path, 'wb'))
-print('merged CFBundleIcons from actool')
-PYEOF
+          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
           plutil -lint "$APP/Info.plist"
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
