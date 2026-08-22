@@ -94,10 +94,11 @@
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
-	<!-- NO：系统会把分享进来的文件拷贝进沙盒 tmp/Inbox（天然可读），
-	     避免冷启动时 open-in-place 临时授权失效导致的"没有权限"错误。 -->
+	<!-- YES：系统「文件 App → 我的 iPhone」里直接展示并访问 FuckFile 沙盒
+	     （Documents 全域）。分享进来的文件走 open-in-place 临时授权；
+	     冷启动双投递已按 URL 去重，不会再有"没有权限"误报。 -->
 	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 </dict>
