@@ -58,7 +58,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate>
+@interface FFBrowserViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
@@ -93,7 +93,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (instancetype)initWithPath:(NSString *)path
 {
-    self = [super initWithStyle:UITableViewStylePlain];
+    self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _currentPath = [path copy];
         _showHiddenFiles = [NSUserDefaults.standardUserDefaults
@@ -107,11 +107,18 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    // 自建 tableView（基类已从 UITableViewController 改为 UIViewController）。
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds
+        style:UITableViewStylePlain];
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
+    [self.view addSubview:self.tableView];
+    [self.tableView reloadData];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
     // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
     // flowlayout 断言闪退的源头 —— 不创建就彻底消除这一类崩溃。
@@ -123,6 +130,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
+    // 普通 UIViewController 需要手动挂载 refreshControl（iOS 10+ 官方方式）。
+    [self.tableView addSubview:self.refreshControl];
 
     // 任务中心变更：有任务落到当前目录（复制/移动/解压/压缩完成）时
     // 自动刷新列表，免去手动下拉。
@@ -326,19 +335,26 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (NSArray<UIBarButtonItem *> *)buildBatchToolbarItems
 {
-    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithTitle:@"全选"
+    // 图标按钮代替长文本：6 个中文标题在窄屏会被截断（分享/删除溢出）。
+    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"checkmark.circle" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchSelectAll)];
-    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:@"复制"
+    selectAll.accessibilityLabel = @"全选";
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"doc.on.doc" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
-    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithTitle:@"剪切"
+    copy.accessibilityLabel = @"复制";
+    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"scissors" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCut)];
-    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩"
+    cut.accessibilityLabel = @"剪切";
+    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"shippingbox" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
-    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
+    zip.accessibilityLabel = @"压缩";
+    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"square.and.arrow.up" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
-    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithTitle:@"删除"
+    share.accessibilityLabel = @"分享";
+    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"trash" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
     trash.tintColor = [UIColor systemRedColor];
+    trash.accessibilityLabel = @"删除";
     return @[selectAll, copy, cut, zip, share, trash];
 }
 
@@ -1450,6 +1466,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    // 编辑（多选）模式下禁用左滑：swipe 按钮与底部批量工具栏重叠。
+    if (self.editing) return nil;
     FFEntry *item = self.filteredEntries[indexPath.row];
     __weak typeof(self) weakSelf = self;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive

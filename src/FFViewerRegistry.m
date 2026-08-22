@@ -31,7 +31,6 @@
 // UIScrollView 捏合缩放 + 双击在 1x/3x 之间切换。
 @interface FFImageZoomView : UIView <UIScrollViewDelegate>
 @property(nonatomic, strong) UIImageView *imageView;
-@property(nonatomic, strong) UIScrollView *scrollViewRef;
 - (instancetype)initWithImage:(UIImage *)image;
 @end
 

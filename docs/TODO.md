@@ -59,6 +59,21 @@
 >   （TrollStore 一键跳转 + LSApplicationWorkspace 尝试）
 > - 待办：Hex 逐字节网格编辑、文本编辑器语法高亮（暂缓，见 ADR-011）、
 >   SQLite 记录编辑
+>
+> **真机回归修复第二波（2026-08-22 深夜）**：
+> - 压缩闪退根因实锤并修复：FFZipCreate 把含 ObjC 指针的结构体存入
+>   NSValue（ARC 不 retain，取出即悬垂指针）→ 后台任务线程
+>   EXC_ARM_PAC_FAIL；改为 ObjC 类管理生命周期
+> - 网格视图黑屏根因并修复：collectionView 曾是 UITableViewController
+>   self.view（=tableView）的子视图，被隐藏整体不可见；Browser 类改为
+>   UIViewController + 自建 tableView（网格与列表成为平级兄弟视图）
+> - 编辑模式禁用左滑（swipe 与底部批量栏重叠）；批量工具栏文字按钮改
+>   图标（窄屏不再截断溢出）
+> - 压缩包浏览器：树建不出来时降级平铺列表，不再出现"无法解析"死胡同
+> - 分享接收冷启动失败：拷贝增加 4 轮指数退避重试（0/0.5/1.5/3s），
+>   授权竞态下也能落盘
+> - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
+>   进包并写入 CFBundleIcons
 
 ## P0 架构初始化
 

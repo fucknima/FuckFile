@@ -57,6 +57,16 @@ jobs:
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
           ls -la "$APP/Base.lproj"
+          # Compile the app icon asset catalog (light + dark appearance).
+          # actool writes Assets.car into the bundle; the Info.plist keys
+          # (CFBundleIcons/AppIcon) are already in the repo plist.
+          xcrun actool Assets.xcassets \
+            --compile "$APP" \
+            --platform iphoneos \
+            --minimum-deployment-target 15.0 \
+            --app-icon AppIcon \
+            --output-format human-readable-readable-text \
+            && ls -la "$APP/Assets.car" || exit 1
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
           # Fail loudly: a broken signature produces an unusable artifact.

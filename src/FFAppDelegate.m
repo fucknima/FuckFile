@@ -97,11 +97,23 @@
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [url startAccessingSecurityScopedResource];
-        NSError *error = nil;
         NSString *name = url.lastPathComponent ?: @"imported";
         NSString *destination = [self importDestinationForName:name inDirectory:importedDirectory];
-        BOOL ok = destination && [[NSFileManager defaultManager]
-            copyItemAtPath:url.path toPath:destination error:&error];
+        NSError *error = nil;
+        BOOL ok = NO;
+        // 授权/Inbox 落盘可能有竞态：失败后退避重试，每次换新目标名。
+        NSTimeInterval delays[] = {0, 0.5, 1.5, 3.0};
+        for (NSUInteger attempt = 0; attempt < 4 && !ok; attempt++) {
+            if (delays[attempt] > 0) [NSThread sleepForTimeInterval:delays[attempt]];
+            error = nil;
+            ok = [[NSFileManager defaultManager]
+                copyItemAtPath:url.path toPath:destination error:&error];
+            FFLog(@"import attempt %lu %@ (%@)", attempt + 1,
+                ok ? @"OK" : @"FAIL", error.localizedDescription ?: @"");
+            if (!ok && attempt < 3)
+                destination = [self importDestinationForName:name
+                                                 inDirectory:importedDirectory] ?: destination;
+        }
         [url stopAccessingSecurityScopedResource];
         FFLog(@"import %@ -> %@ (%@)", ok ? @"OK" : @"FAIL", destination,
             error.localizedDescription ?: @"");

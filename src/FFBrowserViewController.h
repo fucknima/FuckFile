@@ -20,7 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, strong) UIImage *thumbnail;
 @end
 
-@interface FFBrowserViewController : UITableViewController
+// UIViewController + 自管 tableView：网格模式需要 tableView 与
+// collectionView 作为平级兄弟视图切换显示；UITableViewController 的
+// self.view 就是 tableView，子视图会随其隐藏而整体不可见（网格黑屏根因）。
+@interface FFBrowserViewController : UIViewController
+
+@property(nonatomic, strong) UITableView *tableView;
 
 - (instancetype)initWithPath:(NSString *)path;
 

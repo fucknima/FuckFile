@@ -149,6 +149,22 @@
                 return a.isDirectory ? NSOrderedAscending : NSOrderedDescending;
             return [a.name compare:b.name options:NSCaseInsensitiveSearch];
         }];
+    // 兜底：有条目但树建不出来（异常归档结构）→ 降级为平铺列表，
+    // 保证内容始终可见，绝不给用户一个空白/死胡同页面。
+    if (sorted.count == 0 && self.entries.count > 0) {
+        NSMutableArray<FFArchiveNode *> *flat = [NSMutableArray array];
+        for (FFArchiveEntry *entry in self.entries) {
+            FFArchiveNode *node = [FFArchiveNode new];
+            node.fullPath = entry.entryPath;
+            node.isDirectory = entry.isDirectory;
+            node.size = entry.size;
+            node.name = entry.entryPath;
+            [flat addObject:node];
+        }
+        sorted = flat;
+        FFLogTag(@"Archive", @"tree EMPTY -> flat list (%lu entries)",
+            (unsigned long)self.entries.count);
+    }
     self.visibleNodes = sorted;
 
     // Breadcrumb subtitle keeps the current location visible.
@@ -245,8 +261,13 @@
     if (!node || self.unsupportedMessage || self.loadError || self.loading ||
         !self.entries) return;
 
+    // 平铺降级模式下目录节点名带完整路径，取最后一段作为层级前缀。
     if (node.isDirectory) {
-        [self.pathStack addObject:node.name];
+        NSString *segment = node.name;
+        if ([segment hasSuffix:@"/"])
+            segment = [segment substringToIndex:segment.length - 1];
+        segment = segment.lastPathComponent;
+        [self.pathStack addObject:segment];
         [self rebuildVisibleNodes];
         [self.tableView reloadData];
         return;
