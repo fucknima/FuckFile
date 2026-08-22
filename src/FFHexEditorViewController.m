@@ -53,7 +53,7 @@ static const NSUInteger kPageSize = 64 * 1024;
             ((uint64_t)_fileSize + kPageSize - 1) / kPageSize);
         _patches = [NSMutableDictionary dictionary];
         _originals = [NSMutableDictionary dictionary];
-        _title = path.lastPathComponent;
+        self.title = path.lastPathComponent;
     }
     return self;
 }
