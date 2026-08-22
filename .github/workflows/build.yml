@@ -65,7 +65,7 @@ jobs:
             --platform iphoneos \
             --minimum-deployment-target 15.0 \
             --app-icon AppIcon \
-            --output-format human-readable-readable-text \
+            --output-format human-readable-text \
             && ls -la "$APP/Assets.car" || exit 1
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
