@@ -173,8 +173,10 @@ static const NSUInteger kSQLitePageRows = 200;
                 [_service schemaSQLForObject:index] ?: @""];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:
-                [NSString stringWithFormat:@"%@ 结构", weakSelf->_objectName]
+                [NSString stringWithFormat:@"%@ 结构", strongSelf->_objectName]
                 message:body.length > 2000
                     ? [NSString stringWithFormat:@"%@\n…", [body substringToIndex:2000]]
                     : body
@@ -185,7 +187,7 @@ static const NSUInteger kSQLitePageRows = 200;
                 }]];
             [alert addAction:[UIAlertAction actionWithTitle:@"好"
                 style:UIAlertActionStyleCancel handler:nil]];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
+            [strongSelf presentViewController:alert animated:YES completion:nil];
         });
     });
 }
