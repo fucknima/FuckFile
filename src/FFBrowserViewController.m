@@ -65,6 +65,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic) BOOL loading;
 @property(nonatomic) BOOL hasLoaded;
 @property(nonatomic) NSTimeInterval lastAutoReloadTime;
+@property(nonatomic, strong) UIRefreshControl *refreshControl;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @property(nonatomic, strong) UIBarButtonItem *sortItem;
 @property(nonatomic, strong) UIBarButtonItem *editItem;
