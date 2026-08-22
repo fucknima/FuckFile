@@ -1,6 +1,7 @@
 #import "FFAppDelegate.h"
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
+#import "FFImportService.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -68,6 +69,18 @@
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     if (incoming) [self importIncomingFileURL:incoming];
     return YES;
+}
+
+// 分享扩展写入 App Group 的文件，在这里搬运进 Imported（前台时触发）。
+- (void)applicationDidBecomeActive:(UIApplication *)application
+{
+    NSUInteger collected = [[FFImportService sharedService]
+        collectGroupInboxToImported];
+    if (collected > 0) {
+        FFLog(@"import from group inbox: %lu", (unsigned long)collected);
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"FFSettingsChangedNotification" object:nil];
+    }
 }
 
 #pragma mark - Incoming files（"打开方式" / AirDrop / 分享）

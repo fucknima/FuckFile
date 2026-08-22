@@ -71,10 +71,29 @@ jobs:
           # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
           plutil -lint "$APP/Info.plist"
-          # Strip any certificate-based signature down to ad-hoc so the
-          # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
+          # ---- Share Extension（系统分享面板收任意文件，≤25 个）----
+          # theos 对 appex 支持有限，这里用 xcrun 手动编译再嵌入 PlugIns/。
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          ARCHS_ARGS=(-arch arm64 -arch arm64e)
+          mkdir -p "$APP/PlugIns/FFShareExtension.appex"
+          xcrun clang -fobjc-arc -fmodules -isysroot "$SDK" \
+            "${ARCHS_ARGS[@]}" -miphoneos-version-min=15.0 \
+            -framework UIKit -framework Foundation \
+            -framework UniformTypeIdentifiers \
+            ShareExtension/FFShareViewController.m \
+            -o "$APP/PlugIns/FFShareExtension.appex/FFShareExtension" \
+            || exit 1
+          python3 -c "import plistlib,sys; p=plistlib.load(open('ShareExtension/Info.plist','rb')); plistlib.dump(p,open(sys.argv[1],'wb'),sort_keys=False)" "$APP/PlugIns/FFShareExtension.appex/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FFShareExtension" "$APP/PlugIns/FFShareExtension.appex/Info.plist" 2>/dev/null || true
+          # 扩展签名：先 codesign 生成签名，再 ldid 注入 application-groups entitlement。
+          codesign --force -s - "$APP/PlugIns/FFShareExtension.appex"
+          /usr/local/bin/ldid -S Entitlements.plist "$APP/PlugIns/FFShareExtension.appex/FFShareExtension" || true
+          plutil -lint "$APP/PlugIns/FFShareExtension.appex/Info.plist"
+          # Strip any certificate-based signature down to ad-hoc; inject the
+          # application-groups entitlement for the App Group bridge.
           # Fail loudly: a broken signature produces an unusable artifact.
           codesign --force -s - "$APP"
+          /usr/local/bin/ldid -S Entitlements.plist "$APP/FuckFile" || true
           rm -rf Payload FuckFile.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
