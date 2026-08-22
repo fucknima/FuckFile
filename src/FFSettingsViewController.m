@@ -82,10 +82,14 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
             cell.imageView.image = [UIImage systemImageNamed:@"eye"];
         } else if (indexPath.row == 1) {
             cell.textLabel.text = @"网格视图";
-            cell.detailTextLabel.text = @"列表视图（网格即将推出）";
+            cell.detailTextLabel.text = @"网格模式浏览文件（3 列）";
             cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2"];
+            UISwitch *toggle = [UISwitch new];
+            toggle.on = self.gridMode;
+            [toggle addTarget:self action:@selector(gridModeChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            cell.accessoryView = nil;
         } else {
             cell.textLabel.text = @"关于";
             cell.detailTextLabel.text = [NSString stringWithFormat:
@@ -196,6 +200,9 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
     self.gridMode = toggle.on;
     [NSUserDefaults.standardUserDefaults setBool:self.gridMode
                                           forKey:kFFSettingsGridMode];
+    // 已打开的浏览器页面即时切换网格/列表。
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"FFSettingsChangedNotification" object:nil];
 }
 
 + (BOOL)showsHiddenFilesByDefault

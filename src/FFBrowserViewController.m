@@ -188,7 +188,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             });
         }];
 
-    // 设置页修改（显示隐藏文件等）后，已打开的浏览器页面即时生效。
+    // 设置页修改（显示隐藏文件/网格视图等）后，已打开的浏览器页面即时生效。
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFSettingsChangedNotification"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
@@ -196,7 +196,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.showHiddenFiles = [NSUserDefaults.standardUserDefaults
                     boolForKey:@"FFSettingsShowHiddenFiles"];
+                strongSelf.gridMode = [NSUserDefaults.standardUserDefaults
+                    boolForKey:@"FFSettingsGridMode"];
                 if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
+                [strongSelf applyLayoutModeAnimated:NO];
                 [strongSelf reloadEntries];
             });
         }];
@@ -868,12 +871,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
     UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
-    UIAction *toggleGrid = [UIAction actionWithTitle:@"网格视图"
-        image:[self symbolImage:@"square.grid.2x2" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) {
-            [self toggleGridMode];
-        }];
-    toggleGrid.state = self.gridMode ? UIMenuElementStateOn : UIMenuElementStateOff;
     UIAction *toggleHidden = [UIAction actionWithTitle:@"显示隐藏文件"
         image:[self symbolImage:@"eye" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) {
@@ -887,7 +884,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, import, select, sort, filter, toggleGrid, toggleHidden]];
+        children:@[paste, import, select, sort, filter, toggleHidden]];
 }
 
 #pragma mark - Import from Files app
@@ -1299,15 +1296,6 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     if (useGrid) {
         [self.collectionView reloadData];
     }
-}
-
-- (void)toggleGridMode
-{
-    self.gridMode = !self.gridMode;
-    [NSUserDefaults.standardUserDefaults setBool:self.gridMode
-                                          forKey:@"FFSettingsGridMode"];
-    if (self.moreItem) self.moreItem.menu = [self moreMenu];
-    [self applyLayoutModeAnimated:NO];
 }
 
 #pragma mark - Collection view (grid)
