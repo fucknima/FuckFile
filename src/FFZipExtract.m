@@ -48,11 +48,15 @@ BOOL FFZipExtract(NSString *archivePath, NSString *destDir,
     return FFZipExtractWithProgress(archivePath, destDir, entryNames, nil, nil, error);
 }
 
-typedef struct {
-    NSString *name;      // sanitized full path inside archive
-    unsigned long long uncompressedSize;
-    BOOL isDirectory;
-} FFXEntry;
+// 提取计划中的一个条目。
+@interface FFXEntry : NSObject
+@property(nonatomic, copy) NSString *name;
+@property(nonatomic) unsigned long long uncompressedSize;
+@property(nonatomic) BOOL isDirectory;
+@end
+
+@implementation FFXEntry
+@end
 
 BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                   NSArray<NSString *> **entryNames,
