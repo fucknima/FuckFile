@@ -871,20 +871,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
     UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
-    UIAction *toggleHidden = [UIAction actionWithTitle:@"显示隐藏文件"
-        image:[self symbolImage:@"eye" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) {
-            self.showHiddenFiles = !self.showHiddenFiles;
-            self.moreItem.menu = [self moreMenu];
-            [self reloadEntries];
-        }];
-    toggleHidden.state = self.showHiddenFiles ? UIMenuElementStateOn : UIMenuElementStateOff;
     UIMenu *sort = [UIMenu menuWithTitle:@"排序"
         children:@[[self sortMenu]]];
     UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, import, select, sort, filter, toggleHidden]];
+        children:@[paste, import, select, sort, filter]];
 }
 
 #pragma mark - Import from Files app
