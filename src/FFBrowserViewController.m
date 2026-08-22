@@ -126,6 +126,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
     // 任务中心变更：有任务落到当前目录（复制/移动/解压/压缩完成）时
     // 自动刷新列表，免去手动下拉。
+    __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter]
         addObserverForName:FFFileTaskManagerDidChangeNotification object:nil queue:nil
         usingBlock:^(__unused NSNotification *note) {
@@ -152,7 +153,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         }];
 
     // Reload once the background MCM scan has finished.
-    __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
