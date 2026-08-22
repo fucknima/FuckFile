@@ -99,7 +99,7 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                 userInfo:@{NSLocalizedDescriptionKey:@"归档包含符号链接条目，已拒绝解压"}];
             return NO;
         }
-        if (!name.hasSuffix("/") && !FFXSafeEntryName(name)) {
+        if (![name hasSuffix:@"/"] && !FFXSafeEntryName(name)) {
             unzClose(zip);
             if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
                 userInfo:@{NSLocalizedDescriptionKey:
