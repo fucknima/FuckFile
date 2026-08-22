@@ -17,8 +17,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)createEmptyFileAtPath:(NSString *)path error:(NSError * _Nullable * _Nullable)error;
 
 // Renames/moves path -> newPath (same parent rename is atomic via
-// renameat on the validated parent fd).
+// renameat on the validated parent fd). Refuses to overwrite when
+// overwrite is NO (returns EEXIST so the UI can offer replace/keep).
 - (BOOL)renameItemAtPath:(NSString *)path toPath:(NSString *)newPath
+                   error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)renameItemAtPath:(NSString *)path toPath:(NSString *)newPath
+               overwrite:(BOOL)overwrite
                    error:(NSError * _Nullable * _Nullable)error;
 
 // Removes a single item (file, directory tree or our own app link).

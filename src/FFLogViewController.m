@@ -59,7 +59,9 @@
                 [text substringFromIndex:text.length - 256 * 1024]];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.textView.text = text ?: @"（暂无日志）";
-            [self.textView scrollRangeToVisible:NSMakeRange(self.textView.text.length - 1, 1)];
+            if (self.textView.text.length > 0)
+                [self.textView scrollRangeToVisible:NSMakeRange(
+                    self.textView.text.length - 1, 1)];
         });
     });
 }

@@ -2,7 +2,30 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface FFBrowserViewController : UITableViewController
+@interface FFEntry : NSObject
+@property(nonatomic, copy) NSString *name;
+@property(nonatomic, copy) NSString *displayName;
+@property(nonatomic, copy) NSString *path;
+@property(nonatomic) BOOL isDirectory;
+@property(nonatomic) BOOL isSymlink;
+@property(nonatomic, copy) NSString *linkTarget;
+@property(nonatomic, copy) NSString *detail;
+@property(nonatomic, copy) NSString *fullDetail;
+@property(nonatomic) unsigned long long size;
+@property(nonatomic, strong) NSDate *modificationDate;
+@property(nonatomic, strong) NSDate *creationDate;
+@property(nonatomic) mode_t mode;
+@property(nonatomic) uid_t uid;
+@property(nonatomic) gid_t gid;
+@property(nonatomic, strong) UIImage *thumbnail;
+@end
+
+// UIViewController + 自管 tableView：网格模式需要 tableView 与
+// collectionView 作为平级兄弟视图切换显示；UITableViewController 的
+// self.view 就是 tableView，子视图会随其隐藏而整体不可见（网格黑屏根因）。
+@interface FFBrowserViewController : UIViewController
+
+@property(nonatomic, strong) UITableView *tableView;
 
 - (instancetype)initWithPath:(NSString *)path;
 

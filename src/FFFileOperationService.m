@@ -2,8 +2,8 @@
 #import "FFPathPolicy.h"
 #import "FFLogger.h"
 
+#import <dirent.h>
 #import <errno.h>
-#import <fcntl.h>
 #import <string.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -28,72 +28,81 @@ static NSError *FFOperationError(int code, NSString *operation, NSString *path)
 - (BOOL)createDirectoryAtPath:(NSString *)path error:(NSError **)error
 {
     NSString *detail = nil;
-    int dirfd = [FFPathPolicy openParentDirectoryForPath:path
-                                      isFinalDirectory:YES errorMessage:&detail];
-    if (dirfd < 0) {
+    NSString *finalName = nil;
+    NSString *parent = [FFPathPolicy resolveParentForMutation:path
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         if (error) *error = FFOperationError(EPERM, @"创建目录", path);
         return NO;
     }
-    if (mkdirat(dirfd, path.lastPathComponent.fileSystemRepresentation, 0700) != 0) {
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    if (mkdir(target.fileSystemRepresentation, 0700) != 0) {
         int saved = errno;
-        close(dirfd);
         if (error) *error = FFOperationError(saved, @"创建目录", path);
         return NO;
     }
-    close(dirfd);
-    FFLogTag(@"FileOp", @"mkdir %@", path);
+    FFLogTag(@"FileOp", @"mkdir %@", target);
     return YES;
 }
 
 - (BOOL)createEmptyFileAtPath:(NSString *)path error:(NSError **)error
 {
     NSString *detail = nil;
-    int dirfd = [FFPathPolicy openParentDirectoryForPath:path
-                                      isFinalDirectory:NO errorMessage:&detail];
-    if (dirfd < 0) {
+    NSString *finalName = nil;
+    NSString *parent = [FFPathPolicy resolveParentForMutation:path
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         if (error) *error = FFOperationError(EPERM, @"创建文件", path);
         return NO;
     }
-    int fd = openat(dirfd, path.lastPathComponent.fileSystemRepresentation,
-                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    int fd = open(target.fileSystemRepresentation,
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) {
         int saved = errno;
-        close(dirfd);
         if (error) *error = FFOperationError(saved, @"创建文件", path);
         return NO;
     }
     close(fd);
-    close(dirfd);
-    FFLogTag(@"FileOp", @"create file %@", path);
+    FFLogTag(@"FileOp", @"create file %@", target);
     return YES;
 }
 
 - (BOOL)renameItemAtPath:(NSString *)path toPath:(NSString *)newPath
                    error:(NSError **)error
 {
-    // Same-directory rename: validate the shared parent once and use
-    // renameat. Cross-directory moves are handled as copy+remove by the
-    // task system, not here.
+    return [self renameItemAtPath:path toPath:newPath overwrite:NO error:error];
+}
+
+- (BOOL)renameItemAtPath:(NSString *)path toPath:(NSString *)newPath
+               overwrite:(BOOL)overwrite
+                   error:(NSError **)error
+{
+    // 同目录重命名：校验共享父目录后使用 rename（原子）。
     if (![path.stringByDeletingLastPathComponent
             isEqualToString:newPath.stringByDeletingLastPathComponent]) {
         if (error) *error = FFOperationError(EINVAL, @"重命名", path);
         return NO;
     }
+    // 默认禁止覆盖。
+    struct stat targetStatus = {0};
+    if (lstat(newPath.fileSystemRepresentation, &targetStatus) == 0 && !overwrite) {
+        if (error) *error = FFOperationError(EEXIST, @"重命名", newPath);
+        return NO;
+    }
     NSString *detail = nil;
-    int dirfd = [FFPathPolicy openParentDirectoryForPath:path
-                                      isFinalDirectory:NO errorMessage:&detail];
-    if (dirfd < 0) {
+    NSString *finalName = nil;
+    NSString *parent = [FFPathPolicy resolveParentForMutation:path
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         if (error) *error = FFOperationError(EPERM, @"重命名", path);
         return NO;
     }
-    if (renameat(dirfd, path.lastPathComponent.fileSystemRepresentation,
-                 dirfd, newPath.lastPathComponent.fileSystemRepresentation) != 0) {
+    if (rename(path.fileSystemRepresentation, newPath.fileSystemRepresentation) != 0) {
         int saved = errno;
-        close(dirfd);
         if (error) *error = FFOperationError(saved, @"重命名", path);
         return NO;
     }
-    close(dirfd);
     FFLogTag(@"FileOp", @"rename %@ -> %@", path, newPath);
     return YES;
 }
@@ -101,31 +110,57 @@ static NSError *FFOperationError(int code, NSString *operation, NSString *path)
 - (BOOL)removeItemAtPath:(NSString *)path error:(NSError **)error
 {
     NSString *detail = nil;
-    int dirfd = [FFPathPolicy openParentDirectoryForPath:path
-                                      isFinalDirectory:NO errorMessage:&detail];
-    if (dirfd < 0) {
+    NSString *finalName = nil;
+    NSString *parent = [FFPathPolicy resolveParentForMutation:path
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
         if (error) *error = FFOperationError(EPERM, @"删除", path);
         return NO;
     }
-    // Distinguish file vs directory to pick the right at-call.
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    return [self removeRecursivelyAtPath:target error:error];
+}
+
+// 递归删除：lstat 逐项判断（不跟随符号链接），目录内容删除后 rmdir。
+- (BOOL)removeRecursivelyAtPath:(NSString *)path error:(NSError **)error
+{
     struct stat status = {0};
-    if (fstatat(dirfd, path.lastPathComponent.fileSystemRepresentation, &status,
-                AT_SYMLINK_NOFOLLOW) != 0) {
+    if (lstat(path.fileSystemRepresentation, &status) != 0) {
         int saved = errno;
-        close(dirfd);
         if (error) *error = FFOperationError(saved, @"删除", path);
         return NO;
     }
-    int result = S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode)
-        ? unlinkat(dirfd, path.lastPathComponent.fileSystemRepresentation, AT_REMOVEDIR)
-        : unlinkat(dirfd, path.lastPathComponent.fileSystemRepresentation, 0);
-    if (result != 0) {
+    if (S_ISLNK(status.st_mode) || !S_ISDIR(status.st_mode)) {
+        if (unlink(path.fileSystemRepresentation) != 0) {
+            int saved = errno;
+            if (error) *error = FFOperationError(saved, @"删除", path);
+            return NO;
+        }
+        return YES;
+    }
+    DIR *dir = opendir(path.fileSystemRepresentation);
+    if (!dir) {
         int saved = errno;
-        close(dirfd);
         if (error) *error = FFOperationError(saved, @"删除", path);
         return NO;
     }
-    close(dirfd);
+    struct dirent *entry = NULL;
+    BOOL ok = YES;
+    while (ok && (entry = readdir(dir)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [NSFileManager.defaultManager
+            stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
+        if (!name) continue;
+        ok = [self removeRecursivelyAtPath:
+            [path stringByAppendingPathComponent:name] error:error];
+    }
+    closedir(dir);
+    if (!ok) return NO;
+    if (rmdir(path.fileSystemRepresentation) != 0) {
+        int saved = errno;
+        if (error) *error = FFOperationError(saved, @"删除", path);
+        return NO;
+    }
     FFLogTag(@"FileOp", @"delete %@", path);
     return YES;
 }

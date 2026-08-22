@@ -56,15 +56,21 @@ static void FFZipDOSTime(uint16_t *dosTime, uint16_t *dosDate)
         local->tm_mday);
 }
 
-typedef struct {
-    NSString *relativeName;   // archive entry name, "/"-suffixed for dirs
-    NSString *absolutePath;
-    BOOL isDirectory;
-    unsigned long long size;  // 0 for directories
-} FFZipEntry;
+// ARC 下结构体里的 ObjC 指针经 NSValue 存取不会 retain，取出即悬垂，
+// isEqualToString: 打在已释放对象上就是 EXC_ARM_PAC_FAIL（压缩闪退根因）。
+// 改用真正的 ObjC 类，让 ARC 管理生命周期。
+@interface FFZipPlanEntry : NSObject
+@property(nonatomic, copy) NSString *relativeName;   // 归档内路径，目录以 "/" 结尾
+@property(nonatomic, copy) NSString *absolutePath;
+@property(nonatomic) BOOL isDirectory;
+@property(nonatomic) unsigned long long size;
+@end
+
+@implementation FFZipPlanEntry
+@end
 
 static void FFZipCollectEntries(NSString *absolutePath, NSString *prefix,
-                                NSMutableArray<NSValue *> *entriesOut)
+                                NSMutableArray<FFZipPlanEntry *> *entriesOut)
 {
     struct stat status = {0};
     if (lstat(absolutePath.fileSystemRepresentation, &status) != 0) return;
@@ -73,13 +79,12 @@ static void FFZipCollectEntries(NSString *absolutePath, NSString *prefix,
 
     NSString *name = absolutePath.lastPathComponent;
     NSString *relative = prefix.length ? [prefix stringByAppendingPathComponent:name] : name;
-    FFZipEntry entry = {
-        .relativeName = isDirectory ? [relative stringByAppendingString:@"/"] : relative,
-        .absolutePath = absolutePath,
-        .isDirectory = isDirectory,
-        .size = isDirectory ? 0 : (unsigned long long)status.st_size,
-    };
-    [entriesOut addObject:[NSValue valueWithBytes:&entry objCType:@encode(FFZipEntry)]];
+    FFZipPlanEntry *entry = [FFZipPlanEntry new];
+    entry.relativeName = isDirectory ? [relative stringByAppendingString:@"/"] : relative;
+    entry.absolutePath = absolutePath;
+    entry.isDirectory = isDirectory;
+    entry.size = isDirectory ? 0 : (unsigned long long)status.st_size;
+    [entriesOut addObject:entry];
 
     if (!isDirectory) return;
     DIR *dir = opendir(absolutePath.fileSystemRepresentation);
@@ -149,26 +154,45 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         return NO;
     }
 
+    // 源和目标相同是危险的：压缩可能覆盖自身输入。
+    for (NSString *source in sourcePaths) {
+        if ([source isEqualToString:destinationPath] ||
+            [source.stringByStandardizingPath isEqualToString:
+                destinationPath.stringByStandardizingPath]) {
+            if (error) *error = FFZipError(@"压缩目标不能是源文件本身");
+            return NO;
+        }
+    }
+
     // Collect entries up front (needed for progress totals).
-    NSMutableArray<NSValue *> *values = [NSMutableArray array];
+    NSMutableArray<FFZipPlanEntry *> *values = [NSMutableArray array];
     for (NSString *source in sourcePaths)
         FFZipCollectEntries(source, @"", values);
     if (values.count == 0) {
         if (error) *error = FFZipError(@"没有可压缩的文件");
         return NO;
     }
+    // 归档内条目也不能与目标同名（解压后自我覆盖源树）。
+    NSString *targetName = destinationPath.lastPathComponent;
+    for (FFZipPlanEntry *entry in values) {
+        if ([entry.relativeName isEqualToString:targetName]) {
+            if (error) *error = FFZipError(@"压缩目标与源文件同名");
+            return NO;
+        }
+    }
     unsigned long long totalBytes = 0;
-    for (NSValue *value in values) {
-        FFZipEntry entry;
-        [value getValue:&entry];
+    for (FFZipPlanEntry *entry in values) {
         totalBytes += entry.size;
     }
 
-    FILE *file = fopen(destinationPath.fileSystemRepresentation, "wb");
+    // 先写临时文件，全部成功后原子替换目标；失败/取消时保留旧文件。
+    NSString *tempPath = [NSString stringWithFormat:@"%@.%@.tmp",
+        destinationPath, [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    FILE *file = fopen(tempPath.fileSystemRepresentation, "wb");
     if (!file) {
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
             NSLocalizedDescriptionKey: [NSString stringWithFormat:@"create %@: %s",
-                destinationPath, strerror(errno)]}];
+                tempPath, strerror(errno)]}];
         return NO;
     }
 
@@ -182,7 +206,7 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
     unsigned long long completedBytes = 0;
     BOOL ok = YES;
 
-    for (NSValue *value in values) {
+    for (FFZipPlanEntry *entry in values) {
         if (shouldCancel && shouldCancel()) {
             ok = NO;
             if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain
@@ -190,8 +214,6 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
                     NSLocalizedDescriptionKey: @"压缩已取消"}];
             break;
         }
-        FFZipEntry entry;
-        [value getValue:&entry];
 
         if (progressBlock)
             progressBlock(totalBytes > 0 ? (double)completedBytes / (double)totalBytes : 0,
@@ -307,7 +329,20 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         FFZipWriteU16(file, 0);
     }
     fclose(file);
-    if (!ok)
-        unlink(destinationPath.fileSystemRepresentation);
-    return ok;
+    if (!ok) {
+        // 失败/取消：清理临时文件，旧目标文件不受影响。
+        unlink(tempPath.fileSystemRepresentation);
+        return NO;
+    }
+    // 成功：原子替换目标（rename 覆盖已有文件是原子的）。
+    if (rename(tempPath.fileSystemRepresentation,
+               destinationPath.fileSystemRepresentation) != 0) {
+        int saved = errno;
+        unlink(tempPath.fileSystemRepresentation);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
+            NSLocalizedDescriptionKey: [NSString stringWithFormat:@"替换目标失败：%@ (%s)",
+                destinationPath, strerror(saved)]}];
+        return NO;
+    }
+    return YES;
 }

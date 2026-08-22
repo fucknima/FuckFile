@@ -4,8 +4,61 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>All Files</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+				<string>public.archive</string>
+				<string>public.image</string>
+				<string>public.movie</string>
+				<string>public.audiovisual-content</string>
+				<string>public.audio</string>
+				<string>public.text</string>
+				<string>public.plain-text</string>
+				<string>public.pdf</string>
+				<string>public.xml</string>
+				<string>public.html</string>
+				<string>com.apple.quicktime-movie</string>
+				<string>public.mpeg-4</string>
+				<string>public.avi</string>
+				<string>public.mpeg</string>
+				<string>public.3gpp</string>
+				<string>com.apple.m4v-video</string>
+				<string>public.mp3</string>
+				<string>public.wav</string>
+				<string>public.aiff-audio</string>
+				<string>public.aac-audio</string>
+				<string>public.jpeg</string>
+				<string>public.png</string>
+				<string>com.apple.m4a-audio</string>
+				<string>public.m4a</string>
+				<string>public.heic</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>FuckFile</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
 	<key>CFBundleExecutable</key>
 	<string>FuckFile</string>
 	<key>CFBundleIdentifier</key>
@@ -20,6 +73,10 @@
 	<string>1.1.4</string>
 	<key>CFBundleVersion</key>
 	<string>8</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>applestore</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>
@@ -37,7 +94,15 @@
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- 文件 App（我的 iPhone → FuckFile）可见性由 UIFileSharingEnabled 提供。
+	     OpenInPlace 必须保持 NO：YES 时分享进来的是临时安全作用域授权，
+	     冷启动后立即失效，文件拷贝失败（zip/ipa 等所有类型都受影响，表现为
+	     只跳转、文件不过来）。NO 时系统把文件完整拷进沙盒 Inbox，天然可读。 -->
 	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
+	<!-- 文件 App「我的 iPhone」显示第三方沙盒 app 需要此开关（LCSign 方案）。
+	     与 OpenInPlace=NO 不冲突：两者职责不同。 -->
+	<key>UISupportsDocumentBrowser</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
