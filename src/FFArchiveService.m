@@ -1,6 +1,6 @@
 #import "FFArchiveService.h"
 
-#import "minizip/unzip.h"
+#import "unzip.h"
 
 #import <fcntl.h>
 #import <unistd.h>

@@ -1,6 +1,6 @@
 #import "FFZipExtract.h"
 
-#import "minizip/unzip.h"
+#import "unzip.h"
 
 #import <errno.h>
 #import <fcntl.h>
