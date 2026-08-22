@@ -193,7 +193,7 @@ static const NSUInteger kSQLitePageRows = 200;
             }
             path = [NSTemporaryDirectory() stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"%@.csv",
-                    _objectName.stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
+                    [_objectName stringByReplacingOccurrencesOfString:@"/" withString:@"_"]]];
             [csv writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
