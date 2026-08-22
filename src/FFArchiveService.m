@@ -88,7 +88,7 @@ static uint32_t ArchiveU32(const uint8_t *b)
     uint32_t cdOffset = ArchiveU32(tail + eocd + 16);
     uint32_t cdSize = ArchiveU32(tail + eocd + 12);
     uint16_t entryCount = ArchiveU16(tail + eocd + 10);
-    if (cdSize == 0 || cdSize > 256 * 1024 * 1024 || entryCount > 100000) {
+    if (cdSize == 0 || cdSize > 256 * 1024 * 1024 || entryCount == 0) {
         close(fd);
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
             userInfo:@{NSLocalizedDescriptionKey:@"ZIP 目录异常或条目过多"}];
