@@ -12,6 +12,7 @@
 #import "FFPreviewRouter.h"
 #import "FFLogger.h"
 
+#import <objc/runtime.h>
 #import <AVKit/AVKit.h>
 
 // Private readwrite mirrors of the metadata properties.
@@ -277,6 +278,10 @@ navigationController:(UINavigationController *)nav
     UIBarButtonItem *share = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                              target:target action:@selector(share:)];
+    // UIBarButtonItem 对 target 是弱引用：不与视图控制器关联对象强持有，
+    // 目标会立刻释放，点击无反应。关联到按钮上随按钮存活。
+    objc_setAssociatedObject(share, "shareTarget", target,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     viewer.navigationItem.rightBarButtonItem = share;
     return viewer;
 }

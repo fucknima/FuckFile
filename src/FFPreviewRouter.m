@@ -7,6 +7,8 @@
 #import "FFHexEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
+
+#import <objc/runtime.h>
 #import "FFLogger.h"
 
 // Retains shared text for the barButtonItem share action. UIBarButtonItem's
@@ -187,6 +189,9 @@ navigationController:(UINavigationController *)nav
     UIBarButtonItem *share = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                              target:target action:@selector(share:)];
+    // UIBarButtonItem target 是弱引用：关联对象强持有，防止点击无反应。
+    objc_setAssociatedObject(share, "textShareTarget", target,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     viewer.navigationItem.rightBarButtonItem = share;
     [nav pushViewController:viewer animated:YES];
 }

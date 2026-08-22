@@ -28,8 +28,20 @@
 				<string>public.xml</string>
 				<string>public.html</string>
 				<string>com.apple.quicktime-movie</string>
+				<string>public.mpeg-4</string>
+				<string>public.avi</string>
+				<string>public.mpeg</string>
+				<string>public.3gpp</string>
+				<string>com.apple.m4v-video</string>
+				<string>public.mp3</string>
+				<string>public.wav</string>
+				<string>public.aiff-audio</string>
+				<string>public.aac-audio</string>
 				<string>public.jpeg</string>
 				<string>public.png</string>
+				<string>com.apple.m4a-audio</string>
+				<string>public.m4a</string>
+				<string>public.heic</string>
 			</array>
 		</dict>
 	</array>

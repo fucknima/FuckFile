@@ -147,11 +147,11 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             for (FFFileTask *task in tasks) {
                 if (task.destination.length == 0 ||
                     task.state == FFFileTaskStateQueued) continue;
-                // 任务目标可能是本目录内的子路径（压缩 → 当前目录/xx.zip，
-                // 解压 → 当前目录/xx 解压目录），比较目的地所在的父目录。
-                NSString *destinationParent =
-                    task.destination.stringByDeletingLastPathComponent;
-                if ([destinationParent isEqualToString:strongSelf.currentPath]) {
+                // 粘贴：目标文件夹就是当前目录；压缩/解压：目标文件/
+                // 目录的父级是当前目录。两种情况都刷新。
+                if ([task.destination isEqualToString:strongSelf.currentPath] ||
+                    [task.destination.stringByDeletingLastPathComponent
+                        isEqualToString:strongSelf.currentPath]) {
                     affectsHere = YES;
                     break;
                 }
@@ -295,7 +295,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated
 {
+    // 基类已是 UIViewController：editing 状态必须手动同步到 tableView。
     [super setEditing:editing animated:animated];
+    [self.tableView setEditing:editing animated:animated];
     self.editItem.title = editing ? @"完成" : @"多选";
     if (editing) {
         // 导航栏：左侧“取消”，右侧“全选”；标题显示已选数量。
@@ -908,8 +910,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 {
     if (urls.count == 0) return;
     NSMutableArray<NSURL *> *picked = [urls mutableCopy];
-    // 从哪个文件夹的右上角导入就落到哪个文件夹（写入经路径安全策略）。
-    NSString *targetDirectory = self.currentPath;
+    // 从哪个文件夹的右上角导入就落到哪个文件夹。目标目录是“目的地
+    // 目录”而非被创建的文件：传一个探针路径（父=当前目录）验证可写，
+    // 再用解析出的 parent（=当前目录）作为落盘根。
+    NSString *probePath = [self.currentPath stringByAppendingPathComponent:@".ff-import"];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSUInteger imported = 0;
@@ -919,7 +923,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             @try {
                 NSString *detail = nil;
                 NSString *finalName = nil;
-                NSString *parent = [FFPathPolicy resolveParentForMutation:targetDirectory
+                NSString *parent = [FFPathPolicy resolveParentForMutation:probePath
                     finalName:&finalName errorMessage:&detail];
                 if (!parent) { firstFailure = detail ?: @"路径不可写"; continue; }
                 NSString *destination = [weakSelf importDestinationForName:url.lastPathComponent

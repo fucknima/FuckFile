@@ -100,7 +100,7 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
         if (indexPath.row == 0) {
             cell.textLabel.text = @"支持的文件查看器";
             cell.detailTextLabel.text = @"图片/文本/plist/SQLite/Hex/Web 等";
-            cell.imageView.image = [UIImage systemImageNamed:@"square.grid.3x1.square"];
+            cell.imageView.image = [UIImage systemImageNamed:@"apps"];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         } else {
             cell.textLabel.text = @"文件关联";
