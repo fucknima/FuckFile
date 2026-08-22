@@ -5,6 +5,7 @@
 #import "FFSearchViewController.h"
 #import "FFBookmarksViewController.h"
 #import "FFSettingsViewController.h"
+#import "FFPathPolicy.h"
 #import "MCMManager.h"
 #import "FFFileTaskManager.h"
 #import "FFLogger.h"
@@ -103,7 +104,7 @@
 {
     switch (section) {
         case 0: return 1;
-        case 1: return 4;
+        case 1: return 5;
         case 2: return 1;
         default: return 0;
     }
@@ -166,6 +167,10 @@
                 cell.textLabel.text = @"最近访问";
                 cell.detailTextLabel.text = @"最近打开的目录与文件";
                 cell.imageView.image = [UIImage systemImageNamed:@"clock"];
+            } else if (indexPath.row == 3) {
+                cell.textLabel.text = @"导入";
+                cell.detailTextLabel.text = @"外部导入的文件（与设备存储同级）";
+                cell.imageView.image = [UIImage systemImageNamed:@"tray.and.arrow.down"];
             } else {
                 cell.textLabel.text = @"任务中心";
                 cell.detailTextLabel.text = self.activeTaskCount > 0
@@ -200,6 +205,17 @@
                 initWithMode:FFBookmarksModeFavorites];
             else if (indexPath.row == 2) next = [[FFBookmarksViewController alloc]
                 initWithMode:FFBookmarksModeRecent];
+            else if (indexPath.row == 3) {
+                // 导入目录：~/Documents/Imported/（与 Device Storage 同级）。
+                NSString *imported = [[FFPathPolicy documentsRoot]
+                    stringByAppendingPathComponent:@"Imported"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:imported
+                    withIntermediateDirectories:YES attributes:nil error:nil];
+                FFBrowserViewController *browser =
+                    [[FFBrowserViewController alloc] initWithPath:imported];
+                browser.title = @"Imported";
+                next = browser;
+            }
             else next = [FFTasksViewController new];
             break;
         case 2:

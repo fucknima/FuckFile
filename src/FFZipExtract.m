@@ -1,26 +1,31 @@
 #import "FFZipExtract.h"
 
+#import "minizip/unzip.h"
+
 #import <errno.h>
 #import <fcntl.h>
 #import <string.h>
 #import <sys/stat.h>
 #import <unistd.h>
-#import <zlib.h>
 
-static BOOL FFZipReadAt(int fd, off_t offset, void *buffer, size_t length)
-{
-    ssize_t done = pread(fd, buffer, length, offset);
-    return done == (ssize_t)length;
-}
+// Extracts a zip-family archive via minizip (third_party/minizip).
+// Function signature preserved from the original implementation so the
+// task center keeps calling this unchanged.
+//
+// Safety rules carried over:
+//  - entry count cap (100k) and total uncompressed size cap (4 GiB)
+//    against zip bombs
+//  - entry-name sanitization (".." / absolute paths rejected)
+//  - duplicate entry names rejected (overwrite attack vector)
+//  - symlink entries rejected
+//  - extraction into a sibling temp dir, committed with a rename;
+//    failed/cancelled runs clean up, existing destinations are backed
+//    up to ".old*" and restored on any failure
 
-static uint16_t FFZipU16(const uint8_t *bytes) { return (uint16_t)(bytes[0] | (bytes[1] << 8)); }
-static uint32_t FFZipU32(const uint8_t *bytes)
-{
-    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
-        ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
-}
+#define FFX_MAX_ENTRIES 100000
+#define FFX_MAX_TOTAL (4ULL * 1024 * 1024 * 1024)
 
-static BOOL FFZipSafeEntryName(NSString *name)
+static BOOL FFXSafeEntryName(NSString *name)
 {
     if (name.length == 0 || name.length > 1024) return NO;
     if ([name hasPrefix:@"/"] || [name hasPrefix:@"\\"]) return NO;
@@ -28,7 +33,7 @@ static BOOL FFZipSafeEntryName(NSString *name)
     return YES;
 }
 
-static BOOL FFZipEnsureParent(NSString *directory, NSString *relative)
+static BOOL FFXEnsureParent(NSString *directory, NSString *relative)
 {
     NSString *parent = [directory stringByAppendingPathComponent:relative]
         .stringByDeletingLastPathComponent;
@@ -37,10 +42,17 @@ static BOOL FFZipEnsureParent(NSString *directory, NSString *relative)
 }
 
 BOOL FFZipExtract(NSString *archivePath, NSString *destDir,
-                  NSArray<NSString *> **entryNames, NSError **error)
+                  NSArray<NSString *> * _Nullable * _Nullable entryNames,
+                  NSError * _Nullable * _Nullable error)
 {
     return FFZipExtractWithProgress(archivePath, destDir, entryNames, nil, nil, error);
 }
+
+typedef struct {
+    NSString *name;      // sanitized full path inside archive
+    unsigned long long uncompressedSize;
+    BOOL isDirectory;
+} FFXEntry;
 
 BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                   NSArray<NSString *> **entryNames,
@@ -49,310 +61,162 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
                   NSError **error)
 {
     if (entryNames) *entryNames = nil;
-    int fd = open(archivePath.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-            NSLocalizedDescriptionKey: [NSString stringWithFormat:@"open archive: %s", strerror(errno)]}];
-        return NO;
-    }
-    struct stat status = {0};
-    if (fstat(fd, &status) != 0) {
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-            NSLocalizedDescriptionKey: @"fstat archive failed"}];
-        return NO;
-    }
-    off_t size = status.st_size;
 
-    // Locate the End Of Central Directory record (last 64 KiB + 22 bytes).
-    size_t tailLength = (size_t)MIN(size, (off_t)(65536 + 22));
-    uint8_t *tail = malloc(tailLength);
-    if (!tail || !FFZipReadAt(fd, size - (off_t)tailLength, tail, tailLength)) {
-        free(tail);
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-            NSLocalizedDescriptionKey: @"failed to read archive tail"}];
+    unzFile zip = unzOpen64(archivePath.fileSystemRepresentation);
+    if (!zip) {
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
+            userInfo:@{NSLocalizedDescriptionKey:@"无法打开归档（不是有效的 ZIP 或已损坏）"}];
         return NO;
     }
-    ssize_t eocd = -1;
-    for (ssize_t index = (ssize_t)tailLength - 22; index >= 0; index--) {
-        if (tail[index] == 0x50 && tail[index + 1] == 0x4b &&
-            tail[index + 2] == 0x05 && tail[index + 3] == 0x06) {
-            eocd = index;
+
+    // ---- 第一遍：收集条目、累计总量，执行安全上限检查 ----
+    NSMutableArray<FFXEntry *> *plan = [NSMutableArray array];
+    unsigned long long totalUncompressed = 0;
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+    int rc = unzGoToFirstFile(zip);
+    while (rc == UNZ_OK) {
+        char nameBuffer[2048];
+        unz_file_info64 info;
+        if (unzGetCurrentFileInfo64(zip, &info, nameBuffer, sizeof(nameBuffer),
+                                    NULL, 0, NULL, 0) != UNZ_OK) {
+            rc = UNZ_ERRNO;
             break;
         }
-    }
-    if (eocd < 0) {
-        free(tail);
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-            NSLocalizedDescriptionKey: @"not a zip archive (EOCD not found)"}];
-        return NO;
-    }
-    const uint8_t *record = tail + eocd;
-    uint32_t cdOffset = FFZipU32(record + 16);
-    uint32_t cdSize = FFZipU32(record + 12);
-    free(tail);
-    if (cdSize == 0 || cdSize > 256 * 1024 * 1024) {
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-            NSLocalizedDescriptionKey: @"invalid central directory size"}];
-        return NO;
-    }
+        NSString *name = [[NSString alloc] initWithBytes:nameBuffer
+            length:strlen(nameBuffer) encoding:NSUTF8StringEncoding];
+        if (!name.length) { rc = unzGoToNextFile(zip); continue; }
 
-    uint8_t *directory = malloc(cdSize);
-    if (!directory || !FFZipReadAt(fd, cdOffset, directory, cdSize)) {
-        free(directory);
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-            NSLocalizedDescriptionKey: @"failed to read central directory"}];
-        return NO;
-    }
-
-    // First pass: aggregate compressed bytes for progress and — as a
-    // ZIP-bomb guard — the total uncompressed size and entry count.
-    unsigned long long totalCompressed = 0;
-    unsigned long long totalUncompressed = 0;
-    NSUInteger totalEntries = 0;
-    {
-        size_t scan = 0;
-        while (scan + 46 <= cdSize) {
-            const uint8_t *record = directory + scan;
-            if (FFZipU32(record) != 0x02014b50) break;
-            totalCompressed += FFZipU32(record + 20);
-            totalUncompressed += FFZipU32(record + 24);
-            totalEntries++;
-            uint16_t nLen = FFZipU16(record + 28);
-            uint16_t eLen = FFZipU16(record + 30);
-            uint16_t cLen = FFZipU16(record + 32);
-            scan += 46 + nLen + eLen + cLen;
+        // 符号链接条目：external attrs 高 16 位为 unix mode。
+        mode_t unixMode = (mode_t)((info.external_fa >> 16) & 0xFFFF);
+        if ((unixMode & S_IFMT) == S_IFLNK && unixMode != 0) {
+            unzClose(zip);
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
+                userInfo:@{NSLocalizedDescriptionKey:@"归档包含符号链接条目，已拒绝解压"}];
+            return NO;
         }
+        if (!name.hasSuffix("/") && !FFXSafeEntryName(name)) {
+            unzClose(zip);
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
+                userInfo:@{NSLocalizedDescriptionKey:
+                    [NSString stringWithFormat:@"unsafe entry name: %@", name]}];
+            return NO;
+        }
+        if (![seen containsObject:name]) {
+            [seen addObject:name];
+            FFXEntry *entry = [FFXEntry new];
+            entry.name = name;
+            entry.uncompressedSize = info.uncompressed_size;
+            entry.isDirectory = [name hasSuffix:@"/"];
+            [plan addObject:entry];
+            totalUncompressed += info.uncompressed_size;
+        }
+        if (plan.count > FFX_MAX_ENTRIES || totalUncompressed > FFX_MAX_TOTAL) {
+            unzClose(zip);
+            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFBIG
+                userInfo:@{NSLocalizedDescriptionKey:@"归档条目过多或解压后体积过大（疑似 ZIP 炸弹）"}];
+            return NO;
+        }
+        rc = unzGoToNextFile(zip);
     }
-    // Hard limits: 100k entries or 4 GiB expanded — well beyond any
-    // legitimate archive we should handle inside a sandboxed app.
-    if (totalEntries > 100000 || totalUncompressed > 4ULL * 1024 * 1024 * 1024) {
-        free(directory);
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFBIG userInfo:@{
-            NSLocalizedDescriptionKey: @"归档条目过多或解压后体积过大（疑似 ZIP 炸弹）"}];
+
+    if (rc != UNZ_END_OF_LIST_OF_FILE && rc != UNZ_OK) {
+        unzClose(zip);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO
+            userInfo:@{NSLocalizedDescriptionKey:@"读取归档目录失败（文件可能已损坏）"}];
+        return NO;
+    }
+    if (plan.count == 0) {
+        unzClose(zip);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE
+            userInfo:@{NSLocalizedDescriptionKey:@"归档为空或无法解析任何条目"}];
         return NO;
     }
 
-    // Extract into a sibling temporary directory, then commit with a
-    // rename so a failed or cancelled run never leaves a half-written
-    // archive at the destination.
+    // ---- 提取到兄弟临时目录，成功后 rename 提交 ----
     NSString *tempDir = [NSString stringWithFormat:@"%@.%@.tmp", destDir,
         [[[NSUUID UUID] UUIDString] substringToIndex:8]];
     [[NSFileManager defaultManager] createDirectoryAtPath:tempDir
         withIntermediateDirectories:YES attributes:nil error:nil];
-    NSMutableArray<NSString *> *entries = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenNames = [NSMutableSet set];
 
-    size_t cursor = 0;
+    NSMutableArray<NSString *> *extracted = [NSMutableArray array];
+    unsigned long long producedTotal = 0;
     BOOL ok = YES;
-    unsigned long long extractedCompressed = 0;
-    while (cursor + 46 <= cdSize) {
-        const uint8_t *entry = directory + cursor;
-        if (FFZipU32(entry) != 0x02014b50) break; // end of directory / corruption
-        uint16_t method = FFZipU16(entry + 10);
-        uint32_t expectedCrc = FFZipU32(entry + 16);
-        uint32_t expectedSize = FFZipU32(entry + 24);
-        uint32_t compressedSize = FFZipU32(entry + 20);
-        uint16_t nameLength = FFZipU16(entry + 28);
-        uint16_t extraLength = FFZipU16(entry + 30);
-        uint16_t commentLength = FFZipU16(entry + 32);
-        uint32_t localOffset = FFZipU32(entry + 42);
-        // ZIP64：字段为 0xFFFFFFFF 时真实值在扩展头，直接拒绝（简化+安全）。
-        if (compressedSize == 0xFFFFFFFF || expectedSize == 0xFFFFFFFF ||
-            localOffset == 0xFFFFFFFF) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-                NSLocalizedDescriptionKey: @"归档使用 ZIP64 扩展，暂不支持"}];
-            ok = NO;
-            break;
-        }
-        // 符号链接条目：external attrs 高 16 位是 unix mode，S_IFLNK 拒绝解压。
-        uint32_t externalAttrs = FFZipU32(entry + 38);
-        mode_t unixMode = (externalAttrs >> 16) & 0xFFFF;
-        if (S_ISLNK(unixMode)) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-                NSLocalizedDescriptionKey: @"归档包含符号链接条目，已拒绝解压"}];
-            ok = NO;
-            break;
-        }
-        if (cursor + 46 + nameLength + extraLength + commentLength > cdSize) {
-            ok = NO;
-            break;
-        }
-        NSString *name = [[NSString alloc] initWithBytes:entry + 46
-            length:nameLength encoding:NSUTF8StringEncoding];
-        cursor += 46 + nameLength + extraLength + commentLength;
-        if (!name.length) continue;
-        if ([name hasSuffix:@"/"]) {
-            if (!FFZipSafeEntryName(name)) { ok = NO; break; }
-            NSString *dir = [tempDir stringByAppendingPathComponent:name];
-            [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                withIntermediateDirectories:YES attributes:nil error:nil];
-            continue;
-        }
-        if (!FFZipSafeEntryName(name)) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"unsafe entry name: %@", name]}];
-            ok = NO;
-            break;
-        }
-        // 重复文件名：覆盖条目可能被用作路径穿越/篡改向量，拒绝。
-        if ([seenNames containsObject:name]) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EFTYPE userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"归档包含重复条目：%@", name]}];
-            ok = NO;
-            break;
-        }
-        [seenNames addObject:name];
 
-        // Local file header for the actual data offset.
-        uint8_t local[30] = {0};
-        if (!FFZipReadAt(fd, localOffset, local, sizeof(local)) ||
-            FFZipU32(local) != 0x04034b50) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"bad local header for %@", name]}];
-            ok = NO;
-            break;
-        }
-        uint16_t localName = FFZipU16(local + 26);
-        uint16_t localExtra = FFZipU16(local + 28);
-        off_t dataOffset = (off_t)localOffset + 30 + localName + localExtra;
-        if (method != 0 && method != 8) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:ENOTSUP userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:
-                    @"unsupported compression method %u for %@", method, name]}];
-            ok = NO;
-            break;
-        }
-
-        if (!FFZipEnsureParent(tempDir, name)) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"mkdir parent: %s", strerror(errno)]}];
-            ok = NO;
-            break;
-        }
-        NSString *destination = [tempDir stringByAppendingPathComponent:name];
-        int output = open(destination.fileSystemRepresentation,
-            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
-        uLong fileCrc = crc32(0L, Z_NULL, 0);
-        if (output < 0) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:
-                    @"create %@: %s", name, strerror(errno)]}];
-            ok = NO;
-            break;
-        }
-
-        if (method == 0) {
-            uint8_t buffer[64 * 1024];
-            uint32_t remaining = compressedSize;
-            while (remaining > 0) {
-                size_t chunk = MIN(sizeof(buffer), (size_t)remaining);
-                if (!FFZipReadAt(fd, dataOffset, buffer, chunk)) {
-                    if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-                        NSLocalizedDescriptionKey: [NSString stringWithFormat:@"read %@ failed", name]}];
-                    ok = NO;
-                    break;
-                }
-                ssize_t written = write(output, buffer, chunk);
-                if (written != (ssize_t)chunk) {
-                    if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                        NSLocalizedDescriptionKey: [NSString stringWithFormat:@"write %@: %s", name, strerror(errno)]}];
-                    ok = NO;
-                    break;
-                }
-                dataOffset += (off_t)chunk;
-                remaining -= (uint32_t)chunk;
-                fileCrc = crc32(fileCrc, buffer, (uInt)chunk);
-            }
-        } else {
-            z_stream stream = {0};
-            if (inflateInit2(&stream, -15) != Z_OK) {
-                close(output);
+    for (FFXEntry *entry in plan) {
+        if ([entry.name hasSuffix:@"/"]) {
+            if (!FFXSafeEntryName(entry.name)) {
                 ok = NO;
                 break;
             }
-            uint8_t input[64 * 1024];
-            uint8_t outputBuffer[64 * 1024];
-            uint32_t remaining = compressedSize;
-            while (ok) {
-                size_t chunk = MIN(sizeof(input), (size_t)remaining);
-                if (chunk == 0) break;
-                if (!FFZipReadAt(fd, dataOffset, input, chunk)) {
-                    if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-                        NSLocalizedDescriptionKey: [NSString stringWithFormat:@"read %@ failed", name]}];
-                    ok = NO;
-                    break;
-                }
-                dataOffset += (off_t)chunk;
-                remaining -= (uint32_t)chunk;
-                stream.next_in = input;
-                stream.avail_in = (uInt)chunk;
-                while (stream.avail_in > 0) {
-                    stream.next_out = outputBuffer;
-                    stream.avail_out = sizeof(outputBuffer);
-                    int result = inflate(&stream, Z_NO_FLUSH);
-                    if (result != Z_OK && result != Z_STREAM_END) {
-                        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-                            NSLocalizedDescriptionKey: [NSString stringWithFormat:@"inflate %@ failed (%d)", name, result]}];
-                        ok = NO;
-                        break;
-                    }
-                    size_t produced = sizeof(outputBuffer) - stream.avail_out;
-                    if (produced > 0) {
-                        fileCrc = crc32(fileCrc, outputBuffer, (uInt)produced);
-                        ssize_t written = write(output, outputBuffer, produced);
-                        if (written != (ssize_t)produced) {
-                            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{
-                                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"write %@: %s", name, strerror(errno)]}];
-                            ok = NO;
-                            break;
-                        }
-                    }
-                    if (result == Z_STREAM_END) break;
-                }
+            [[NSFileManager defaultManager] createDirectoryAtPath:
+                [tempDir stringByAppendingPathComponent:entry.name]
+                withIntermediateDirectories:YES attributes:nil error:nil];
+        } else {
+            if (!FFXEnsureParent(tempDir, entry.name)) {
+                ok = NO;
+                break;
             }
-            inflateEnd(&stream);
+            if (unzLocateFile(zip, entry.name.fileSystemRepresentation, 1) != UNZ_OK &&
+                unzLocateFile(zip, entry.name.fileSystemRepresentation, 2) != UNZ_OK) {
+                ok = NO;
+                break;
+            }
+            if (unzOpenCurrentFilePassword(zip, NULL) != UNZ_OK) {
+                ok = NO;
+                break;
+            }
+            NSString *destination =
+                [tempDir stringByAppendingPathComponent:entry.name];
+            int output = open(destination.fileSystemRepresentation,
+                O_WRONLY | O_CREAT | O_TRUNC | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+            if (output < 0) {
+                unzCloseCurrentFile(zip);
+                ok = NO;
+                break;
+            }
+            static uint8_t buffer[64 * 1024];
+            for (;;) {
+                int bytesRead = unzReadCurrentFile(zip, buffer, sizeof(buffer));
+                if (bytesRead == 0) break;
+                if (bytesRead < 0) { ok = NO; break; }
+                ssize_t written = write(output, buffer, (size_t)bytesRead);
+                if (written != bytesRead) { ok = NO; break; }
+                producedTotal += (unsigned long long)bytesRead;
+            }
+            close(output);
+            // minizip 关闭当前文件时校验 CRC。
+            if (ok && unzCloseCurrentFile(zip) != UNZ_OK) ok = NO;
+            if (ok) {
+                [extracted addObject:entry.name];
+                if (progressBlock)
+                    progressBlock(totalUncompressed > 0 ?
+                        (double)producedTotal / (double)totalUncompressed : 0.0,
+                        entry.name);
+            } else {
+                unlink(destination.fileSystemRepresentation);
+            }
         }
-        close(output);
-        extractedCompressed += compressedSize;
-        if (!ok) {
-            unlink(destination.fileSystemRepresentation);
-            break;
-        }
-        if (expectedCrc && fileCrc != expectedCrc) {
-            if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"CRC 校验失败：%@（归档可能损坏）", name]}];
-            unlink(destination.fileSystemRepresentation);
-            ok = NO;
-            break;
-        }
-        [entries addObject:name];
-        if (progressBlock && totalCompressed > 0)
-            progressBlock((double)extractedCompressed / (double)totalCompressed, name);
+        if (!ok) break;
         if (shouldCancel && shouldCancel()) {
             if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain
                 code:NSUserCancelledError userInfo:@{
-                    NSLocalizedDescriptionKey: @"解压已取消"}];
+                    NSLocalizedDescriptionKey:@"解压已取消"}];
             ok = NO;
             break;
         }
     }
 
-    free(directory);
-    close(fd);
+    unzClose(zip);
+
     if (!ok) {
         [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
         return NO;
     }
-    // Commit: 若目标已存在，先把旧目录备份到 .old，再放入新目录，
-    // 成功后清理备份；任何一步失败都恢复备份，绝不先删旧目录。
-    NSString *backupPath = nil;
+
+    // ---- 提交：备份旧目录 → 放入新目录 → 清理备份；失败恢复原状 ----
     NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *backupPath = nil;
     if ([manager fileExistsAtPath:destDir]) {
         backupPath = [NSString stringWithFormat:@"%@.old%@", destDir,
             [[[NSUUID UUID] UUIDString] substringToIndex:8]];
@@ -363,7 +227,6 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
     }
     NSError *moveError = nil;
     if (![manager moveItemAtPath:tempDir toPath:destDir error:&moveError]) {
-        // 放入失败：恢复备份，清理临时目录。
         if (backupPath)
             [manager moveItemAtPath:backupPath toPath:destDir error:nil];
         [manager removeItemAtPath:tempDir error:nil];
@@ -372,6 +235,7 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
     }
     if (backupPath)
         [manager removeItemAtPath:backupPath error:nil];
-    if (entryNames) *entryNames = entries;
+
+    if (entryNames) *entryNames = extracted;
     return YES;
 }

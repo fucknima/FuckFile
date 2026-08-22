@@ -96,7 +96,9 @@ static const NSUInteger kSQLitePageRows = 200;
             style:UIBarButtonItemStylePlain target:self action:@selector(prevPage)];
         _nextItem.enabled = NO;
         _prevItem.enabled = NO;
-        self.navigationItem.rightBarButtonItems = @[schema, _nextItem, _prevItem];
+        UIBarButtonItem *csv = [[UIBarButtonItem alloc] initWithTitle:@"CSV"
+            style:UIBarButtonItemStylePlain target:self action:@selector(exportCSV)];
+        self.navigationItem.rightBarButtonItems = @[schema, csv, _nextItem, _prevItem];
 
         UILabel *status = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 0, 30)];
         status.font = [UIFont systemFontOfSize:11];
@@ -157,6 +159,70 @@ static const NSUInteger kSQLitePageRows = 200;
 }
 
 - (void)nextPage { [self loadOffset:_offset + kSQLitePageRows]; }
+
+// 全表导出 CSV（上限 5 万行，流式写临时文件后分享）。
+- (void)exportCSV
+{
+    UIAlertController *wait = [UIAlertController alertControllerWithTitle:nil
+        message:@"正在导出…" preferredStyle:UIAlertControllerStyleAlert];
+    // 呈现中的 wait alert 会保住 self；后台完成后经 weakSelf 回主线程。
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *quoted = [_objectName stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
+        NSString *sql = [NSString stringWithFormat:@"SELECT * FROM \"%@\"", quoted];
+        NSArray<NSString *> *columns = nil;
+        NSError *error = nil;
+        NSArray *rows = [_service rowsForQuery:sql limit:50000 offset:0
+            outColumns:&columns error:&error];
+        NSString *path = nil;
+        if (rows && columns) {
+            NSMutableString *csv = [NSMutableString string];
+            for (NSString *column in columns)
+                [csv appendFormat:@"%@,", column ?: @""];
+            if (columns.count) [csv deleteCharactersInRange:
+                NSMakeRange(csv.length - 1, 1)];
+            [csv appendString:@"\n"];
+            for (NSDictionary<NSString *, NSString *> *row in rows) {
+                for (NSString *column in columns) {
+                    NSString *value = row[column] ?: @"";
+                    value = [value stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
+                    [csv appendFormat:@"\"%@\",", value];
+                }
+                [csv deleteCharactersInRange:NSMakeRange(csv.length - 1, 1)];
+                [csv appendString:@"\n"];
+            }
+            path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"%@.csv",
+                    _objectName.stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
+            [csv writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf dismissViewControllerAnimated:YES completion:^{
+                UINavigationController *nav = weakSelf.navigationController;
+                if (!nav) return;
+                if (!path) {
+                    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                        message:[NSString stringWithFormat:@"导出失败：%@",
+                            error.localizedDescription ?: @"未知错误"]
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                        style:UIAlertActionStyleDefault handler:nil]];
+                    [nav.topViewController presentViewController:alert animated:YES completion:nil];
+                    return;
+                }
+                UIActivityViewController *activity = [[UIActivityViewController alloc]
+                    initWithActivityItems:@[[NSURL fileURLWithPath:path]]
+                        applicationActivities:nil];
+                activity.popoverPresentationController.sourceView = weakSelf.view;
+                activity.popoverPresentationController.sourceRect =
+                    CGRectMake(weakSelf.view.bounds.size.width / 2,
+                        weakSelf.view.bounds.size.height / 2, 1, 1);
+                [nav.topViewController presentViewController:activity animated:YES completion:nil];
+            }];
+        });
+    });
+    [self presentViewController:wait animated:YES completion:nil];
+}
 - (void)prevPage
 {
     [self loadOffset:_offset > kSQLitePageRows ? _offset - kSQLitePageRows : 0];

@@ -10,15 +10,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) unsigned long long compressedSize;
 @end
 
-// Read-only zip central-directory access for FFArchiveBrowserViewController:
-// list entries, extract a single entry to a file, and report format
-// capability honestly.
+// Read-only zip access for FFArchiveBrowserViewController, built on
+// minizip (vendored under third_party/minizip) for real-world archive
+// compatibility. Safety rules kept from the original implementation:
+// entry-name sanitization, symlink rejection, single-entry size cap.
 //
-// Supported backend: zip-family containers parsed via their EOCD/central
-// directory (store + deflate, CRC-checked, ZIP64/symlink/unsafe names
-// rejected). tar/gz/7z/rar/xz/bz2 are NOT parseable by this build —
-// callers must surface "暂不支持" instead of pretending success; .deb is
-// deliberately excluded everywhere.
+// tar/gz/7z/rar/xz/bz2 are NOT parseable by this build — callers must
+// surface "暂不支持" instead of pretending success. .deb is deliberately
+// excluded everywhere.
 @interface FFArchiveService : NSObject
 
 // Extensions whose content is a real zip container this service can open.
@@ -28,6 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 // parseable here (shown as unsupported).
 + (BOOL)isKnownButUnsupportedExtension:(NSString *)extension;
 
+// Lists every entry (files and directories). Empty archives return an
+// empty array; unreadable/corrupt archives return nil with *error.
 - (nullable NSArray<FFArchiveEntry *> *)listEntries:(NSString *)archivePath
     error:(NSError **)error;
 
@@ -35,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 // its basename. Returns the created file path on success.
 - (nullable NSString *)extractEntry:(NSString *)entryName
                         fromArchive:(NSString *)archivePath
-                         toDirectory:(NSString *)destinationDirectory
+                       toDirectory:(NSString *)destinationDirectory
                               error:(NSError **)error;
 
 @end

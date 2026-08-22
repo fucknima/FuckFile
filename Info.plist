@@ -37,6 +37,10 @@
 	<string>1.1.4</string>
 	<key>CFBundleVersion</key>
 	<string>8</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>applestore</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>
@@ -54,8 +58,10 @@
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- NO：系统会把分享进来的文件拷贝进沙盒 tmp/Inbox（天然可读），
+	     避免冷启动时 open-in-place 临时授权失效导致的"没有权限"错误。 -->
 	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<false/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 </dict>

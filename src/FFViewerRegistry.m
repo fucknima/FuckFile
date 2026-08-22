@@ -25,6 +25,88 @@
 @implementation FFViewerInfo
 @end
 
+#pragma mark - Image
+
+// Apple PhotoScroller 模式（各开源图片浏览器的通用写法）：
+// UIScrollView 捏合缩放 + 双击在 1x/3x 之间切换。
+@interface FFImageZoomView : UIView <UIScrollViewDelegate>
+@property(nonatomic, strong) UIImageView *imageView;
+@property(nonatomic, strong) UIScrollView *scrollViewRef;
+- (instancetype)initWithImage:(UIImage *)image;
+@end
+
+@implementation FFImageZoomView
+
+- (instancetype)initWithImage:(UIImage *)image
+{
+    self = [super init];
+    if (self) {
+        UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:self.bounds];
+        scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+            UIViewAutoresizingFlexibleHeight;
+        scrollView.backgroundColor = UIColor.systemBackgroundColor;
+        scrollView.delegate = self;
+        scrollView.minimumZoomScale = 1.0;
+        scrollView.maximumZoomScale = 8.0;
+        [self addSubview:scrollView];
+
+        _imageView = [[UIImageView alloc] initWithImage:image];
+        _imageView.contentMode = UIViewContentModeScaleAspectFit;
+        _imageView.frame = scrollView.bounds;
+        _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+            UIViewAutoresizingFlexibleHeight;
+        _imageView.userInteractionEnabled = YES;
+        [scrollView addSubview:_imageView];
+
+        UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc]
+            initWithTarget:self action:@selector(doubleTapped:)];
+        doubleTap.numberOfTapsRequired = 2;
+        doubleTap.numberOfTouchesRequired = 1;
+        [_imageView addGestureRecognizer:doubleTap];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    // 首次布局时让图片以 aspect-fit 尺寸充满滚动区。
+    UIScrollView *scrollView = (UIScrollView *)self.subviews.firstObject;
+    if (scrollView && self.imageView.image) {
+        CGSize bounds = scrollView.bounds.size;
+        CGSize image = self.imageView.image.size;
+        if (bounds.width > 0 && bounds.height > 0 && image.width > 0 && image.height > 0) {
+            CGFloat scale = MIN(bounds.width / image.width, bounds.height / image.height);
+            self.imageView.frame = CGRectMake(0, 0,
+                image.width * scale, image.height * scale);
+            scrollView.contentSize = self.imageView.frame.size;
+        }
+    }
+}
+
+- (UIView *)viewForZoomingInScrollView:(__unused UIScrollView *)scrollView
+{
+    return self.imageView;
+}
+
+- (void)doubleTapped:(UITapGestureRecognizer *)gesture
+{
+    UIScrollView *scrollView = (UIScrollView *)gesture.view.superview;
+    if (scrollView.zoomScale > scrollView.minimumZoomScale + 0.01) {
+        [scrollView setZoomScale:scrollView.minimumZoomScale animated:YES];
+        return;
+    }
+    CGPoint center = [gesture locationInView:gesture.view];
+    CGFloat target = MIN(scrollView.maximumZoomScale, 3.0);
+    CGFloat width = scrollView.bounds.size.width / target;
+    CGFloat height = scrollView.bounds.size.height / target;
+    CGRect zoomRect = CGRectMake(center.x - width / 2, center.y - height / 2,
+        width, height);
+    [scrollView zoomToRect:zoomRect animated:YES];
+}
+
+@end
+
 // Retains a file URL for a barButtonItem share action without needing
 // a full view controller subclass.
 @interface FFFileShareTarget : NSObject
@@ -183,14 +265,11 @@ navigationController:(UINavigationController *)nav
     if (!image) return nil; // caller falls back (e.g. Quick Look)
 
     UIViewController *viewer = [UIViewController new];
-    UIImageView *imageView = [[UIImageView alloc] initWithImage:image];
-    imageView.frame = viewer.view.bounds;
-    imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+    FFImageZoomView *zoomView = [[FFImageZoomView alloc] initWithImage:image];
+    zoomView.frame = viewer.view.bounds;
+    zoomView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
         UIViewAutoresizingFlexibleHeight;
-    imageView.contentMode = UIViewContentModeScaleAspectFit;
-    imageView.backgroundColor = UIColor.systemBackgroundColor;
-    imageView.userInteractionEnabled = YES;
-    [viewer.view addSubview:imageView];
+    [viewer.view addSubview:zoomView];
 
     FFFileShareTarget *target = [FFFileShareTarget new];
     target.fileURL = [NSURL fileURLWithPath:path];

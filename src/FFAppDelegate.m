@@ -63,14 +63,10 @@
                 NSStringFromCGRect(navigation.navigationBar.frame));
         });
 
-    // 冷启动经「打开方式」/分享进入：等首帧就绪后导入。
+    // 冷启动经「打开方式」/分享进入：立即导入。系统的沙盒授权在
+    // 启动后很快回收，延迟处理会报"没有权限"。
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
-    if (incoming) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{
-                [self importIncomingFileURL:incoming];
-            });
-    }
+    if (incoming) [self importIncomingFileURL:incoming];
     return YES;
 }
 
@@ -83,8 +79,8 @@
     return [self importIncomingFileURL:url];
 }
 
-// 接收外部传入的文件：拷贝到 Device Storage/Imported/（重名自动加序号），
-// 成功后给出「前往查看」入口。绝不原地打开外部路径。
+// 接收外部传入的文件：拷贝到 ~/Documents/Imported/（与 Device Storage
+// 同级，重名自动加序号），成功后给出「前往查看」入口。绝不原地打开外部路径。
 - (BOOL)importIncomingFileURL:(NSURL *)url
 {
     if (!url || !url.isFileURL) {
@@ -94,8 +90,8 @@
     FFLog(@"import BEGIN url=%@", url.path);
     NSString *documents = NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *importedDirectory = [[documents stringByAppendingPathComponent:
-        @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
+    // 导入位置：与 Device Storage 同级，不进当前浏览目录。
+    NSString *importedDirectory = [documents stringByAppendingPathComponent:@"Imported"];
     [[NSFileManager defaultManager] createDirectoryAtPath:importedDirectory
         withIntermediateDirectories:YES attributes:nil error:nil];
 

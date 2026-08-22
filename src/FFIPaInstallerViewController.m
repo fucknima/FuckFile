@@ -146,20 +146,52 @@
 
 #pragma mark - Install
 
+// 分级探测当前环境的可用安装通道，逐层如实反馈结果，绝不假装成功。
+//  1) TrollStore（applestore:// scheme）：检测到则提供一键跳转安装
+//  2) LSApplicationWorkspace 私有通道：探测 API 是否存在；存在则尝试，
+//     失败给出具体异常/返回值
+//  3) 均不可用 → 明确列出每层探测结果与替代方案
 - (void)installTapped
 {
-    // 真实环境检查：FuckFile 是免越狱容器应用（MHA 身份访问）。容器内进程
-    // 无法访问 installd/MobileInstallation，也没有任何可用的安装后端。
-    // 明确告知原因，绝不假装安装成功。
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法安装"
-        message:[NSString stringWithFormat:
-            @"当前构建为免越狱环境，系统不允许第三方容器内进程调用安装服务（installd），"
-            "因此没有可用的 IPA 安装后端。\n\n"
-            "替代方案：\n• 使用「ZIP 浏览器」查看包内容\n"
-            "• 「分享」导出 IPA 到支持安装的工具\n"
-            "• 解压后直接查看 Payload 内容\n\n%@",
-            self.bundleID ?: @""]
-        preferredStyle:UIAlertControllerStyleAlert];
+    BOOL hasTrollStore = [[UIApplication sharedApplication]
+        canOpenURL:[NSURL URLWithString:@"applestore://"]];
+
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = workspaceClass ?
+        [workspaceClass performSelector:@selector(defaultWorkspace)] : nil;
+    BOOL hasWorkspaceAPI = [workspace respondsToSelector:
+        NSSelectorFromString(@"installApplication:withOptions:")];
+
+    NSMutableString *report = [NSMutableString string];
+    [report appendString:@"环境探测：\n"];
+    [report appendFormat:@"• TrollStore：%@（可一键跳转安装）\n",
+        hasTrollStore ? @"已检测到" : @"未检测到"];
+    if (hasWorkspaceAPI) {
+        [report appendString:@"• 系统安装通道：API 存在，可尝试（新系统大概率拒绝）"];
+    } else {
+        [report appendString:@"• 系统安装通道：不可用（免越狱容器内无法调用 installd）"];
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"安装 IPA"
+        message:report preferredStyle:UIAlertControllerStyleAlert];
+
+    if (hasTrollStore) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"用 TrollStore 安装"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                NSString *encoded = [self.ipaPath stringByAddingPercentEncodingWithAllowedCharacters:
+                    [NSCharacterSet URLQueryAllowedCharacterSet]];
+                NSURL *trollURL = [NSURL URLWithString:
+                    [NSString stringWithFormat:@"applestore://install?url=%@", encoded]];
+                [[UIApplication sharedApplication] openURL:trollURL options:@{} completionHandler:nil];
+                FFLogTag(@"IPA", @"hand-off to TrollStore path=%@", self.ipaPath);
+            }]];
+    }
+    if (hasWorkspaceAPI) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"尝试系统通道"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                [self attemptWorkspaceInstall:workspace];
+            }]];
+    }
     [alert addAction:[UIAlertAction actionWithTitle:@"浏览压缩包"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             UINavigationController *nav = self.navigationController;
@@ -171,7 +203,37 @@
     [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
-    FFLogTag(@"IPA", @"install REJECTED env=jailed path=%@", self.ipaPath);
+}
+
+// 私有通道尝试：包一层 @try，任何异常都转成明确的失败原因展示。
+- (void)attemptWorkspaceInstall:(id)workspace
+{
+    NSURL *fileURL = [NSURL fileURLWithPath:self.ipaPath];
+    BOOL installed = NO;
+    NSString *detail = nil;
+    @try {
+        installed = (BOOL)[workspace
+            performSelector:@selector(installApplication:withOptions:)
+                  withObject:fileURL
+                  withObject:@{}];
+        if (!installed)
+            detail = @"installApplication 返回 NO（系统拒绝了本次安装请求）";
+    } @catch (NSException *exception) {
+        detail = [NSString stringWithFormat:@"%@：%@",
+            exception.name, exception.reason];
+    }
+    FFLogTag(@"IPA", @"workspace install %@ (%@)",
+        installed ? @"OK" : @"FAIL", detail ?: @"");
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:
+        installed ? @"安装成功" : @"系统通道安装失败"
+        message:installed
+            ? [NSString stringWithFormat:@"已提交安装：%@\n\n请到主屏幕确认。", self.bundleID]
+            : [NSString stringWithFormat:@"%@\n\n该通道在免越狱设备上通常被系统拒绝，"
+               "建议使用 TrollStore 或其他工具完成安装。", detail ?: @"未知原因"]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Table

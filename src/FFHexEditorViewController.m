@@ -9,6 +9,8 @@
 #import <errno.h>
 #import <sys/stat.h>
 #import <inttypes.h>
+#import <zlib.h>
+#import <CommonCrypto/CommonDigest.h>
 
 // 16 bytes per row, 64 KiB per page → 4096 rows/page. Constant page size
 // keeps memory bounded regardless of file size.
@@ -69,13 +71,15 @@ static const NSUInteger kPageSize = 64 * 1024;
 
     UIBarButtonItem *jump = [[UIBarButtonItem alloc] initWithTitle:@"跳转"
         style:UIBarButtonItemStylePlain target:self action:@selector(jumpTapped)];
+    UIBarButtonItem *checksum = [[UIBarButtonItem alloc] initWithTitle:@"校验"
+        style:UIBarButtonItemStylePlain target:self action:@selector(checksumTapped)];
     UIBarButtonItem *discard = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self
                              action:@selector(discardPatches)];
     UIBarButtonItem *save = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemSave target:self
                              action:@selector(saveTapped)];
-    self.navigationItem.rightBarButtonItems = @[save, jump, discard];
+    self.navigationItem.rightBarButtonItems = @[save, checksum, jump, discard];
     [self updateBarState];
 
     UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 0, 36)];
@@ -272,6 +276,57 @@ static const NSUInteger kPageSize = 64 * 1024;
 }
 
 #pragma mark - Jump / discard / save
+
+// CRC32 + SHA-256 全文件流式计算（64KB 分块，不整读大文件）。
+- (void)checksumTapped
+{
+    UIAlertController *wait = [UIAlertController alertControllerWithTitle:nil
+        message:@"正在计算校验和…" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:wait animated:YES completion:nil];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        uLong crc = crc32(0L, Z_NULL, 0);
+        CC_SHA256_CTX sha;
+        CC_SHA256_Init(&sha);
+        int fd = open(self.filePath.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+        uint8_t buffer[64 * 1024];
+        ssize_t count;
+        off_t offset = 0;
+        if (fd >= 0) {
+            while ((count = pread(fd, buffer, sizeof(buffer), offset)) > 0) {
+                crc = crc32(crc, buffer, (uInt)count);
+                CC_SHA256_Update(&sha, buffer, (CC_LONG)count);
+                offset += count;
+            }
+            close(fd);
+        }
+        NSMutableString *shaHex = [NSMutableString stringWithCapacity:64];
+        uint8_t digest[CC_SHA256_DIGEST_LENGTH] = {0};
+        CC_SHA256_Final(digest, &sha);
+        for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++)
+            [shaHex appendFormat:@"%02x", digest[i]];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [wait dismissViewControllerAnimated:YES completion:^{
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"校验和"
+                    message:[NSString stringWithFormat:
+                        @"CRC32   %08lX\nSHA-256 %@\n\n大小 %llu 字节",
+                        (unsigned long)crc, shaHex, self.fileSize]
+                    preferredStyle:UIAlertControllerStyleAlert];
+                __weak typeof(self) weakSelf = self;
+                [alert addAction:[UIAlertAction actionWithTitle:@"复制"
+                    style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                        UIPasteboard.generalPasteboard.string =
+                            [NSString stringWithFormat:@"CRC32 %08lX\nSHA-256 %@",
+                                (unsigned long)crc, shaHex];
+                        [weakSelf flash:@"已复制"];
+                    }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                    style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            }];
+        });
+    });
+}
 
 - (void)jumpTapped
 {

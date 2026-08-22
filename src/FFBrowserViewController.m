@@ -64,6 +64,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
 @property(nonatomic) BOOL loading;
 @property(nonatomic) BOOL hasLoaded;
+@property(nonatomic) NSTimeInterval lastAutoReloadTime;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @property(nonatomic, strong) UIBarButtonItem *sortItem;
 @property(nonatomic, strong) UIBarButtonItem *editItem;
@@ -122,6 +123,33 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
+
+    // 任务中心变更：有任务落到当前目录（复制/移动/解压/压缩完成）时
+    // 自动刷新列表，免去手动下拉。
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:FFFileTaskManagerDidChangeNotification object:nil queue:nil
+        usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSArray<FFFileTask *> *tasks = [FFFileTaskManager sharedManager].tasks;
+            BOOL affectsHere = NO;
+            for (FFFileTask *task in tasks) {
+                if (task.destination.length &&
+                    [task.destination isEqualToString:strongSelf.currentPath] &&
+                    task.state != FFFileTaskStateQueued) {
+                    affectsHere = YES;
+                    break;
+                }
+            }
+            if (!affectsHere) return;
+            // 去抖：通知在进度更新时也会触发，1 秒内只刷一次。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+                if (now - strongSelf.lastAutoReloadTime < 1.0) return;
+                strongSelf.lastAutoReloadTime = now;
+                if (strongSelf.hasLoaded) [strongSelf reloadEntries];
+            });
+        }];
 
     // Reload once the background MCM scan has finished.
     __weak typeof(self) weakSelf = self;
@@ -826,7 +854,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - Import from Files app
 
-// 外部导入：系统文件选择器（拷贝模式），选中后复制进当前目录。
+// 外部导入：系统文件选择器（拷贝模式）。固定导入到与 Device Storage
+// 同级的 ~/Documents/Imported/，不写当前浏览目录。
 - (void)importFilesTapped
 {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
@@ -858,7 +887,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 {
     if (urls.count == 0) return;
     NSMutableArray<NSURL *> *picked = [urls mutableCopy];
-    NSString *targetDirectory = self.currentPath;
+    // 固定导入目录：~/Documents/Imported/（与 Device Storage 同级）。
+    NSString *importedDirectory = [[FFPathPolicy documentsRoot]
+        stringByAppendingPathComponent:@"Imported"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:importedDirectory
+        withIntermediateDirectories:YES attributes:nil error:nil];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSUInteger imported = 0;
@@ -866,14 +899,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         for (NSURL *url in picked) {
             [url startAccessingSecurityScopedResource];
             @try {
-                // 与写入操作一致：先经路径安全策略解析父链再落盘。
-                NSString *detail = nil;
-                NSString *finalName = nil;
-                NSString *parent = [FFPathPolicy resolveParentForMutation:targetDirectory
-                    finalName:&finalName errorMessage:&detail];
-                if (!parent) { firstFailure = detail ?: @"路径不可写"; continue; }
                 NSString *destination = [weakSelf importDestinationForName:url.lastPathComponent
-                    inDirectory:parent];
+                    inDirectory:importedDirectory];
                 if (!destination || ![NSFileManager.defaultManager copyItemAtPath:url.path
                         toPath:destination error:nil]) {
                     firstFailure = url.lastPathComponent ?: @"未知文件";
@@ -885,16 +912,23 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (imported > 0)
+            if (imported > 0 && weakSelf.hasLoaded)
                 [weakSelf reloadEntries];
             NSString *message = firstFailure ?
                 [NSString stringWithFormat:@"已导入 %lu 项；失败：%@",
                     (unsigned long)imported, firstFailure] :
-                [NSString stringWithFormat:@"已导入 %lu 项到当前目录。", (unsigned long)imported];
+                [NSString stringWithFormat:@"已导入 %lu 项到 Imported 目录。", (unsigned long)imported];
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
                 message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
+                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                    FFBrowserViewController *browser =
+                        [[FFBrowserViewController alloc] initWithPath:importedDirectory];
+                    browser.title = @"Imported";
+                    [weakSelf.navigationController pushViewController:browser animated:YES];
+                }]];
             [alert addAction:[UIAlertAction actionWithTitle:@"好"
-                style:UIAlertActionStyleDefault handler:nil]];
+                style:UIAlertActionStyleCancel handler:nil]];
             [weakSelf presentViewController:alert animated:YES completion:nil];
         });
     });
@@ -1303,6 +1337,14 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 #pragma mark - Context menu & swipe actions
 
+// 上下文菜单的 action handler 在菜单收起动画期间被回调；此时直接
+// present（尤其带输入框、会拉起键盘的 alert）会与进行中的转场冲突，
+// 在 iOS 27 上直接闪退。统一推迟到下一轮主循环，让菜单先完成收起。
+- (void)performAfterContextMenu:(void (^)(void))block
+{
+    dispatch_async(dispatch_get_main_queue(), block);
+}
+
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
     point:(CGPoint)point
@@ -1315,42 +1357,65 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             UIAction *view = [UIAction actionWithTitle:item.isDirectory ? @"打开" : @"查看"
                 image:[self symbolImage:@"eye" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) {
-                    if (item.isDirectory) {
-                        FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
-                        next.title = item.displayName.length ? item.displayName : item.name;
-                        [weakSelf.navigationController pushViewController:next animated:YES];
-                    } else {
-                        [weakSelf previewEntry:item];
-                    }
+                    [weakSelf performAfterContextMenu:^{
+                        if (!weakSelf) return;
+                        if (item.isDirectory) {
+                            FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                            next.title = item.displayName.length ? item.displayName : item.name;
+                            [weakSelf.navigationController pushViewController:next animated:YES];
+                        } else {
+                            [weakSelf previewEntry:item];
+                        }
+                    }];
                 }];
             UIAction *copy = [UIAction actionWithTitle:@"复制" image:[self symbolImage:@"doc.on.doc" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
+                }];
             UIAction *cut = [UIAction actionWithTitle:@"剪切" image:[self symbolImage:@"scissors" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+                }];
             UIAction *duplicate = [UIAction actionWithTitle:@"创建副本" image:[self symbolImage:@"plus.square.on.square" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf duplicateEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf duplicateEntry:item]; }];
+                }];
             UIAction *favorite = [UIAction actionWithTitle:
                 [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
                 image:[self symbolImage:@"star" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleFavorite:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf toggleFavorite:item]; }];
+                }];
             UIAction *compress = [UIAction actionWithTitle:@"压缩" image:[self symbolImage:@"shippingbox" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf compressEntries:@[item]]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf compressEntries:@[item]]; }];
+                }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf renameEntry:item]; }];
+                }];
             UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf copyPath:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf copyPath:item]; }];
+                }];
             UIAction *share = [UIAction actionWithTitle:@"分享" image:[self symbolImage:@"square.and.arrow.up" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf shareEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf shareEntry:item]; }];
+                }];
             UIAction *properties = [UIAction actionWithTitle:@"属性" image:[self symbolImage:@"info.circle" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf showProperties:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf showProperties:item]; }];
+                }];
             UIAction *delete = [UIAction actionWithTitle:@"删除" image:[self symbolImage:@"trash" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf deleteEntry:item]; }];
+                }];
             delete.attributes = UIMenuElementAttributesDestructive;
             // 用其他查看器打开：列出全部注册查看器（默认关联打勾）。
             UIAction *openWith = [UIAction actionWithTitle:@"用其他查看器打开"
                 image:[self symbolImage:@"square.and.arrow.down.on.square" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) {
-                    [weakSelf openWithPicker:item];
+                    [weakSelf performAfterContextMenu:^{ [weakSelf openWithPicker:item]; }];
                 }];
             NSMutableArray *children = [NSMutableArray arrayWithArray:
                 @[view, copy, cut, duplicate, favorite, compress, rename, copyPath, share, properties, delete]];
@@ -1361,20 +1426,22 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                     [children insertObject:[UIAction actionWithTitle:@"浏览压缩包"
                         image:[self symbolImage:@"shippingbox" tint:nil]
                         identifier:nil handler:^(__unused UIAction *action) {
-                            [weakSelf openWithViewer:item viewerID:@"archive"];
+                            [weakSelf performAfterContextMenu:^{ [weakSelf openWithViewer:item viewerID:@"archive"]; }];
                         }] atIndex:children.count - 2];
                 if ([ext isEqualToString:@"ipa"])
                     [children insertObject:[UIAction actionWithTitle:@"安装"
                         image:[self symbolImage:@"arrow.down.app" tint:nil]
                         identifier:nil handler:^(__unused UIAction *action) {
-                            [weakSelf openWithViewer:item viewerID:@"installer"];
+                            [weakSelf performAfterContextMenu:^{ [weakSelf openWithViewer:item viewerID:@"installer"]; }];
                         }] atIndex:children.count - 2];
                 [children insertObject:openWith atIndex:children.count - 2];
             }
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
-                    identifier:nil handler:^(__unused UIAction *action) { [weakSelf extractEntry:item]; }]
+                    identifier:nil handler:^(__unused UIAction *action) {
+                        [weakSelf performAfterContextMenu:^{ [weakSelf extractEntry:item]; }];
+                    }]
                     atIndex:children.count - 2];
             return [UIMenu menuWithTitle:item.name children:children];
         }];
