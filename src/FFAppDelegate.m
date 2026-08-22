@@ -63,6 +63,16 @@
                 NSStringFromCGRect(navigation.navigationBar.frame));
         });
 
+    // 启动默认直接进入可访问的沙盒根（MCM 虚拟根），首页作为上层入口。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            if (navigation.topViewController != root) return;
+            FFBrowserViewController *browser =
+                [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+            browser.title = @"文件";
+            [navigation pushViewController:browser animated:NO];
+        });
+
     // 冷启动经「打开方式」/分享进入：立即导入。系统的沙盒授权在
     // 启动后很快回收，延迟处理会报"没有权限"。
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];

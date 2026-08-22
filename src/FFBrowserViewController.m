@@ -249,6 +249,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     [super viewWillAppear:animated];
     [self updatePasteState];
+    // 剪贴板是全局的：切到任何文件夹都恢复横幅与菜单状态。
+    if (gClipboardSources.count > 0) [self showPasteBanner];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     if (self.hasLoaded) [self reloadEntries];
     self.navigationController.toolbarHidden = NO;
 }
@@ -284,6 +287,18 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             return YES;
     }
     return NO;
+}
+
+// 源文件正好来自当前目录（剪切模式同目录粘贴的致命场景）。
+- (NSArray<NSString *> *)clipboardSourcesInCurrentDirectory
+{
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    NSString *myDirectory = self.currentPath;
+    for (NSString *source in gClipboardSources) {
+        if ([source.stringByDeletingLastPathComponent isEqualToString:myDirectory])
+            [result addObject:source];
+    }
+    return result;
 }
 
 #pragma mark - Batch mode (multi-select)
@@ -1658,6 +1673,14 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     if (gClipboardSources.count == 0) return;
     if ([self pasteIsInsideClipboardSource]) return;
+    // 同目录粘贴（剪切模式）：移动引擎会把文件搬到自身再“替换”，
+    // 导致源文件消失。直接拦截并提示。
+    NSArray<NSString *> *sameDir = [self clipboardSourcesInCurrentDirectory];
+    if (sameDir.count > 0) {
+        [self flash:[NSString stringWithFormat:
+            @"已在当前目录内，忽略 %lu 项", (unsigned long)sameDir.count]];
+        return;
+    }
     NSArray<NSString *> *sources = gClipboardSources;
     gClipboardSources = nil;
     FFClipboardMode mode = gClipboardMode;
