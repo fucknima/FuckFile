@@ -100,8 +100,8 @@ static NSError *FFSQLiteError(int code, NSString *message)
     if (sqlite3_prepare_v2(_db, "PRAGMA encoding", -1, &statement, NULL) == SQLITE_OK &&
         sqlite3_step(statement) == SQLITE_ROW) {
         const unsigned char *enc = sqlite3_column_text(statement, 0);
-        lines.addObject(enc ? [NSString stringWithUTF8String:(const char *)enc]
-                            : @"未知编码");
+        [lines addObject:enc ? [NSString stringWithUTF8String:(const char *)enc]
+                             : @"未知编码"];
     }
     sqlite3_finalize(statement);
     if (sqlite3_prepare_v2(_db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK &&
@@ -206,8 +206,10 @@ static NSError *FFSQLiteError(int code, NSString *message)
     NSString *safe = [table stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
     NSArray *rows = [self simpleResults:[NSString stringWithFormat:
         @"SELECT COUNT(*) FROM \"%@\"", safe] error:nil];
-    if (!rows || !rows.firstObject[@(0)]) return -1;
-    return rows.firstObject[@(0)].longLongValue;
+    NSDictionary *firstRow = rows.firstObject;
+    if (!firstRow) return -1;
+    NSNumber *count = firstRow[@(0)];
+    return count ? count.longLongValue : -1;
 }
 
 @end
