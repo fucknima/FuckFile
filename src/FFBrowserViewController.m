@@ -1010,7 +1010,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             @"m": @"chevron.left.forwardslash.chevron.right",
             @"mm": @"chevron.left.forwardslash.chevron.right",
             @"swift": @"chevron.left.forwardslash.chevron.right",
-            @"sh": @"terminal", @"command": @"terminal",
+            @"sh": @"doc.plaintext", @"command": @"doc.plaintext",
             @"key": @"key", @"mobileconfig": @"lock.doc", @"cer": @"lock.doc",
             @"p12": @"lock.doc", @"crt": @"lock.doc",
             @"app": @"app.badge", @"dylib": @"shippingbox", @"bundle": @"shippingbox",
