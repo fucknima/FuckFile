@@ -60,13 +60,20 @@ UI 不直接负责具体文件系统操作。
 | text | 文本编辑器 | `FFTextEditorViewController`（复用；脚本仅按文本打开，不执行） |
 | sqlite | SQLite3 编辑器 | `FFSQLiteService` + `FFSQLiteBrowserViewController`（系统 sqlite3 只读：库信息/表/视图/索引/schema/分页浏览/SQL 查询） |
 | installer | IPA 安装器 | `FFIPaInstallerViewController`（解析 Payload/*.app Info.plist 与图标；安装受运行环境限制并如实反馈） |
-| archive | ZIP 浏览器 | `FFArchiveBrowserViewController`（包内目录树/单文件预览/选中提取/全部解压）；TAR/GZ/7z/RAR/XZ/BZ2 无后端时明确提示暂不支持 |
-| hex | 十六进制编辑器 | `FFHexEditorViewController`（open/pread 分页 64KB，OFFSET/HEX/ASCII，内存 patch，保存经 FFPathPolicy 校验写回，失败回滚） |
+| archive | ZIP 浏览器 | `FFArchiveBrowserViewController` + minizip 后端（包内目录树/单文件预览/选中提取/全部解压）；TAR/GZ/7z/RAR/XZ/BZ2 无后端时明确提示暂不支持 |
+| hex | 十六进制编辑器 | `FFHexEditorViewController`（open/pread 分页 64KB，OFFSET/HEX/ASCII，偏移跳转，字节修改与保存/取消，CRC32/SHA-256 校验和） |
 | media | 媒体播放器 | Registry 内联 AVPlayerViewController |
-| pdf | PDF 阅读器 | `FFPdfPreviewViewController`（复用） |
+| pdf | PDF 阅读器 | `FFPdfPreviewViewController`（复用；图片浏览器为 UIScrollView 缩放 + 双击，PhotoScroller 模式） |
 
 明确排除：终端（无任何脚本执行能力）、DEB 专用逻辑（`.deb` 不注册关联、
 不进 ZIP 浏览器、不交安装器）。
+
+## 第三方组件
+
+- minizip（third_party/minizip，zlib License）：ZIP 列表/提取/全量解压的解析后端
+  （ADR-011）；条目数/体积上限、文件名消毒、符号链接拒绝在库之上实现。
+- SQLite 编辑器支持 CSV 导出；IPA 安装器含 TrollStore 检测（applestore://）
+  与 LSApplicationWorkspace 私有通道探测。
 
 ## Core Models
 

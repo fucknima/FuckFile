@@ -223,3 +223,36 @@ V0.4（压缩与编辑）完成后，跳过 V0.5（网络文件：SMB/WebDAV/SFT
 - SQLite 编辑器第一版只读（浏览+查询），记录编辑待后续带事务实现。
 - Hex 编辑器按行编辑字节（每行 16 字节），保存前全部驻留内存 patch，
   写回失败时用缓存原值回滚，保证不留半修改状态。
+
+## ADR-011
+
+日期：2026-08-22
+
+决定：
+
+格式解析类代码一律优先采用经过实战检验的开源实现，禁止手写解析器。
+本次将 ZIP 解析（列表 + 单条目提取 + 全量解压）切换到 vendor 进仓库的
+minizip（third_party/minizip，zlib License，来源 madler/zlib contrib），
+删除全部手写 EOCD/CDE/本地头扫描代码。Makefile 直接编译其 .c 文件。
+
+原因：
+
+- 手写 EOCD/CDE 解析器在真实世界归档上暴露兼容性问题：用户实测
+  Actions artifact zip 显示"无法解析包内结构"。这类边界（数据描述符、
+  非标准 extra 字段、ZIP64、编码变体）minizip 已处理了二十余年。
+- zlib 已是现有依赖，minizip 是纯 C、零新依赖，theos 构建链无改动成本。
+- 此前未采用现成库的理由（担心交叉编译验证拖慢交付）不成立——
+  实际引入只花了两个 commit；而手写解析器的缺陷修复成本远高于此。
+- 安全规则保留在 minizip 之上：条目数上限、单条目体积上限、文件名消毒、
+  符号链接与加密条目拒绝、CRC 校验（unzCloseCurrentFile）、临时目录 +
+  rename 原子提交。
+
+同类决策：
+
+- 图片浏览器缩放采用 PhotoScroller 模式（UIScrollView + viewForZooming）
+- Hex 编辑器补 GOTO/CRC32/SHA-256 校验和（开源十六进制编辑器的通用能力集）
+- SQLite 保持系统 sqlite3；CSV 导出为通用能力补充
+- 文本编辑器语法高亮暂缓：ObjC/theos 下无轻量成熟方案，正则高亮收益低
+  且有性能风险，待有合适组件再评估
+
+后续新增任何格式支持（7z/RAR/TAR 等）必须同样先找成熟开源后端。
