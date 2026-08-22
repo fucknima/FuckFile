@@ -108,9 +108,10 @@ static NSString * const kShareFolder = @"SharedInbox";
 
 - (NSString *)preferredTypeIdentifier:(NSItemProvider *)provider
 {
-    if (provider.hasItemConformingToTypeIdentifier:UTTypeData.identifier)
+    // 优先按 UTTypeData 加载（还原为文件）；找不到再退回第一个注册类型。
+    if ([provider hasItemConformingToTypeIdentifier:UTTypeData.identifier])
         return UTTypeData.identifier;
-    if (provider.hasItemConformingToTypeIdentifier:UTTypeFileURL.identifier)
+    if ([provider hasItemConformingToTypeIdentifier:UTTypeFileURL.identifier])
         return UTTypeFileURL.identifier;
     if (provider.registeredTypeIdentifiers.count > 0)
         return provider.registeredTypeIdentifiers.firstObject;
