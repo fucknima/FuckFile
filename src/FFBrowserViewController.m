@@ -2150,7 +2150,15 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         if (completion) completion(NO);
         return;
     }
+    // 符号链接：跟随目标判断类型（App Data 深层目录本身可以是链接）。
     BOOL isDirectory = S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode);
+    if (S_ISLNK(status.st_mode)) {
+        struct stat target = {0};
+        if (stat(path.fileSystemRepresentation, &target) == 0 &&
+            S_ISDIR(target.st_mode)) {
+            isDirectory = YES;
+        }
+    }
     if (isDirectory) {
         FFBrowserViewController *browser =
             [[FFBrowserViewController alloc] initWithPath:path];
