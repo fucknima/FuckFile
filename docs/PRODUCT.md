@@ -204,6 +204,29 @@ file 3.txt
 
 ## 8. 文件预览
 
+### 查看器体系
+
+所有预览统一走：文件 → Preview Router → 文件关联 → Viewer Registry → 对应 Viewer。
+
+内置查看器：
+
+- 图片浏览器（png/jpg/jpeg/gif/heic/webp/bmp/tif/tiff/ico/car）
+- 快速查看（系统 Quick Look，无专用查看器文件的兜底）
+- Web Viewer（html/htm 本地页面；url/webloc 网页快捷方式）
+- 属性表编辑器（plist，XML/二进制）
+- 文本编辑器（txt/log/md/json/xml/源码等；脚本仅按文本打开，不执行）
+- SQLite3 编辑器（sqlite/sqlite3/sqlitedb/db：库信息、表、视图、索引、
+  schema、分页浏览、SQL 查询）
+- IPA 安装器（解析应用信息与图标；安装能力取决于运行环境并如实反馈）
+- ZIP 浏览器（zip/ipa 包内目录浏览、单文件预览、选中提取、全部解压；
+  tar/gz/7z/rar/xz/bz2 当前构建明确提示暂不支持）
+- 十六进制编辑器（分页 OFFSET/HEX/ASCII，支持字节修改、保存、取消）
+- 媒体播放器（mp3/wav/m4a/aac/aif/aiff/aifc/caf/m4b/m4p/m4r/flac/
+  mov/mp4/m4v/3gp/avi/mkv）
+- PDF 阅读器
+
+明确排除：终端、脚本执行、DEB 专用功能。
+
 ### 图片
 
 - 缩放
@@ -418,6 +441,19 @@ file 3.txt
 - 删除
 
 ## 19. 设置
+
+### 文件查看
+
+- 支持的文件查看器（全部 Viewer 的名称、图标、能力说明；提供「恢复默认关联」）
+- 文件关联（扩展名 → 查看器映射列表，点入选择查看器立即生效；
+  支持新增自定义扩展名、删除覆盖/自定义项、恢复默认）
+
+关联规则：
+
+- 内置默认关联随 App 内置；用户修改只保存覆盖项
+- 升级新增默认格式不覆盖用户已有选择
+- 最长后缀优先匹配（backup.tar.gz 先试 .tar.gz 再试 .gz）
+- 大小写不敏感、前导点规范化
 
 ### 显示
 

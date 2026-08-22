@@ -12,6 +12,8 @@
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
 #import "FFPreviewRouter.h"
+#import "FFFileAssociationService.h"
+#import "FFViewerRegistry.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
 
@@ -881,7 +883,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                       @"rtf", @"doc", @"docx", @"xls", @"xlsx", @"ppt", @"pptx",
                       @"pages", @"numbers", @"key"] containsObject:ext];
         case FFFilterModeArchives:
-            return [@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
+            // .deb 不属于压缩包：无解析后端，不参与归档逻辑。
+            return [@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
         case FFFilterModeCode:
             return [@[@"c", @"h", @"m", @"mm", @"swift", @"sh", @"py", @"js", @"ts",
                       @"html", @"css", @"java", @"kt", @"go", @"rs", @"rb", @"php"] containsObject:ext];
@@ -996,7 +999,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             @"mp4": @"film", @"mov": @"film", @"m4v": @"film", @"avi": @"film", @"mkv": @"film",
             @"mp3": @"music.note", @"m4a": @"music.note", @"wav": @"music.note",
             @"aac": @"music.note", @"caf": @"music.note", @"flac": @"music.note",
-            @"zip": @"archivebox", @"ipa": @"archivebox", @"deb": @"archivebox",
+            @"zip": @"archivebox", @"ipa": @"archivebox",
             @"tar": @"archivebox", @"gz": @"archivebox", @"7z": @"archivebox",
             @"rar": @"archivebox", @"xz": @"archivebox",
             @"db": @"internaldrive", @"sqlite": @"internaldrive", @"sqlite3": @"internaldrive",
@@ -1033,7 +1036,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         return [UIColor systemOrangeColor];
     if ([@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext])
         return [UIColor systemPinkColor];
-    if ([@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
+    if ([@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
         return [UIColor systemBrownColor];
     if ([@[@"plist", @"db", @"sqlite", @"sqlite3"] containsObject:ext])
         return [UIColor systemPurpleColor];
@@ -1245,8 +1248,31 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             UIAction *delete = [UIAction actionWithTitle:@"删除" image:[self symbolImage:@"trash" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
             delete.attributes = UIMenuElementAttributesDestructive;
+            // 用其他查看器打开：列出全部注册查看器（默认关联打勾）。
+            UIAction *openWith = [UIAction actionWithTitle:@"用其他查看器打开"
+                image:[self symbolImage:@"square.and.arrow.down.on.square" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf openWithPicker:item];
+                }];
             NSMutableArray *children = [NSMutableArray arrayWithArray:
                 @[view, copy, cut, duplicate, favorite, compress, rename, copyPath, share, properties, delete]];
+            if (!item.isDirectory) {
+                NSString *ext = item.name.pathExtension.lowercaseString;
+                // 按文件能力追加：压缩包浏览 / IPA 安装 / 用其他查看器打开。
+                if ([self isArchiveEntry:item])
+                    [children insertObject:[UIAction actionWithTitle:@"浏览压缩包"
+                        image:[self symbolImage:@"shippingbox" tint:nil]
+                        identifier:nil handler:^(__unused UIAction *action) {
+                            [weakSelf openWithViewer:item viewerID:@"archive"];
+                        }] atIndex:children.count - 2];
+                if ([ext isEqualToString:@"ipa"])
+                    [children insertObject:[UIAction actionWithTitle:@"安装"
+                        image:[self symbolImage:@"arrow.down.app" tint:nil]
+                        identifier:nil handler:^(__unused UIAction *action) {
+                            [weakSelf openWithViewer:item viewerID:@"installer"];
+                        }] atIndex:children.count - 2];
+                [children insertObject:openWith atIndex:children.count - 2];
+            }
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
@@ -1316,9 +1342,29 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         handler:^(__unused UIAlertAction *action) { [weakSelf renameEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
-    if ([self isArchiveEntry:item])
-        [sheet addAction:[UIAlertAction actionWithTitle:@"解压" style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) { [weakSelf extractEntry:item]; }]];
+    if (!item.isDirectory) {
+        NSString *ext = item.name.pathExtension.lowercaseString;
+        // 按文件能力追加：压缩包浏览 / IPA 安装 / 用其他查看器打开。
+        if ([self isArchiveEntry:item]) {
+            [sheet addAction:[UIAlertAction actionWithTitle:@"浏览压缩包"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    [weakSelf openWithViewer:item viewerID:@"archive"];
+                }]];
+            [sheet addAction:[UIAlertAction actionWithTitle:@"解压"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { [weakSelf extractEntry:item]; }]];
+        }
+        if ([ext isEqualToString:@"ipa"])
+            [sheet addAction:[UIAlertAction actionWithTitle:@"安装"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    [weakSelf openWithViewer:item viewerID:@"installer"];
+                }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"用其他查看器打开"
+            style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf openWithPicker:item]; }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"分享" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf shareEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"属性" style:UIAlertActionStyleDefault
@@ -1720,8 +1766,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     static NSSet<NSString *> *extensions;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // 真实 zip 容器家族。.deb 明确排除：无解析后端，不再当作 ZIP/归档。
         extensions = [NSSet setWithArray:@[
-            @"zip", @"ipa", @"deb", @"xcarchive", @"appex", @"app",
+            @"zip", @"ipa", @"xcarchive", @"appex", @"app",
             @"bundle", @"framework", @"war", @"jar", @"crx", @"xpi",
             @"docx", @"xlsx", @"pptx", @"pages", @"numbers", @"key",
             @"epub", @"apk",
@@ -1866,6 +1913,40 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 }
 
 #pragma mark - Preview
+
+// 显式指定查看器打开（长按菜单：浏览压缩包 / 安装）。
+- (void)openWithViewer:(FFEntry *)item viewerID:(NSString *)viewerID
+{
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+    [FFPreviewRouter openItem:item viewerID:viewerID navigationController:nav];
+}
+
+// 用其他查看器打开：列出全部注册查看器，当前默认关联打勾。
+- (void)openWithPicker:(FFEntry *)item
+{
+    NSString *extension = item.name.pathExtension.lowercaseString;
+    FFFileAssociationService *service = [FFFileAssociationService sharedService];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
+        message:@"选择查看器" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (FFViewerInfo *viewer in [[FFViewerRegistry sharedRegistry] allViewers]) {
+        BOOL isDefault =
+            [viewer.viewerID isEqualToString:[service effectiveViewerIDForExtension:extension]];
+        [sheet addAction:[UIAlertAction actionWithTitle:
+            isDefault ? [NSString stringWithFormat:@"✓ %@（默认关联）", viewer.displayName]
+                      : viewer.displayName
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                [self openWithViewer:item viewerID:viewer.viewerID];
+            }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width / 2,
+            self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
 
 // Opens a path from search/favorites/recents: directories push a
 // browser, files open the preview directly. Uses the caller's

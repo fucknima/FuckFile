@@ -1,5 +1,7 @@
 #import "FFSettingsViewController.h"
 #import "FFLogViewController.h"
+#import "FFSupportedViewersViewController.h"
+#import "FFFileAssociationsViewController.h"
 #import "MCMManager.h"
 #import "FFThumbnailService.h"
 #import "FFLogger.h"
@@ -36,14 +38,15 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
 {
-    return 2;
+    return 3;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
         case 0: return 3; // 显示隐藏文件 / 列表与网格 / 关于
-        case 1: return 3; // 运行日志 / 清理缓存 / 重新扫描
+        case 1: return 2; // 文件查看：支持的查看器 / 文件关联
+        case 2: return 3; // 运行日志 / 清理缓存 / 重新扫描
         default: return 0;
     }
 }
@@ -52,7 +55,8 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
 {
     switch (section) {
         case 0: return @"显示";
-        case 1: return @"高级 / 调试";
+        case 1: return @"文件查看";
+        case 2: return @"高级 / 调试";
         default: return nil;
     }
 }
@@ -92,6 +96,18 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
             cell.imageView.image = [UIImage systemImageNamed:@"info.circle"];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
+    } else if (indexPath.section == 1) {
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"支持的文件查看器";
+            cell.detailTextLabel.text = @"图片/文本/plist/SQLite/Hex/Web 等";
+            cell.imageView.image = [UIImage systemImageNamed:@"square.grid.3x1.square"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            cell.textLabel.text = @"文件关联";
+            cell.detailTextLabel.text = @"扩展名 → 查看器映射，立即生效";
+            cell.imageView.image = [UIImage systemImageNamed:@"arrow.triangle.branch"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
     } else {
         if (indexPath.row == 0) {
             cell.textLabel.text = @"运行日志";
@@ -119,11 +135,18 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
     if (indexPath.section == 0) {
         if (indexPath.row == 2) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"关于"
-                message:@"FuckFile — iOS 容器文件管理器\n基于 MobileHouseArrest 身份访问技术" 
+                message:@"FuckFile — iOS 容器文件管理器\n基于 MobileHouseArrest 身份访问技术"
                 preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
             [self presentViewController:alert animated:YES completion:nil];
         }
+        return;
+    }
+    if (indexPath.section == 1) {
+        UIViewController *page = indexPath.row == 0 ?
+            (UIViewController *)[FFSupportedViewersViewController new] :
+            (UIViewController *)[FFFileAssociationsViewController new];
+        [self.navigationController pushViewController:page animated:YES];
         return;
     }
     switch (indexPath.row) {

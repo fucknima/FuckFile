@@ -22,6 +22,16 @@
 > - 任务中心：速度/ETA/失败原因/左滑重试
 > - 文本编辑器未保存提示、大文件分段预览、plist 深层安全完成
 > - 待办：列表/网格切换（设置页占位）、Dynamic Type/iPad 细化
+>
+> **文件查看体系（2026-08-22）**：
+> - 新增 Viewer Registry + File Association + Preview Router 三层架构（ADR-010）
+> - 打开链路收敛：文件 → FFPreviewRouter → FFFileAssociationService →
+>   FFViewerRegistry → Viewer；Browser 不再堆扩展名 if/else
+> - 新增 QuickLook/Web/Hex/SQLite3/ZIP 包内浏览器/IPA 安装器六个查看器，
+>   图片与媒体改为 Registry 内联实现，plist/text/pdf 复用既有模块
+> - 设置新增「文件查看」：支持的文件查看器 + 文件关联（覆盖/自定义/
+>   删除/恢复默认，立即生效）
+> - .deb 全部专用逻辑清除；无终端、无脚本执行
 
 ## P0 架构初始化
 
@@ -108,7 +118,7 @@
 
 ## P1 Preview
 
-- [~] PreviewRouter（previewEntry 内联路由，未抽象）
+- [x] PreviewRouter（关联→Registry→fallback，Browser/Search/Favorites/Recents 共用）
 - [x] 图片
 - [x] 视频
 - [x] 音频
@@ -116,6 +126,27 @@
 - [x] PDF（PDFKit：连续滚动、缩略图侧栏、分享、失败反馈）
 - [x] JSON（文本编辑）
 - [x] plist（结构化编辑器）
+- [x] Quick Look Viewer（系统 QLPreviewController，fallback 链一环）
+- [x] Web Viewer（WKWebView；本地 HTML read-access 限定所在目录；.url/.webloc 解析）
+- [x] Hex 编辑器（pread 分页 64KB、OFFSET/HEX/ASCII、偏移跳转、内存 patch、保存经路径安全策略、失败回滚、取消修改）
+- [x] SQLite3 编辑器（只读：库信息/表/视图/索引/schema/分页浏览/SQL 查询/busy·locked·malformed 错误反馈）
+
+## P1 文件关联（2026-08-22 完成）
+
+- [x] FFViewerRegistry（viewer ID/名称/图标/可用状态/open 分发唯一来源）
+- [x] FFFileAssociationService（内置默认表在代码 + NSUserDefaults override）
+- [x] 最长后缀优先匹配（backup.tar.gz → .tar.gz → .gz）、大小写不敏感、前导点规范化
+- [x] 用户覆盖 / 自定义扩展名 / 删除覆盖项 / 恢复默认
+- [x] 升级新增默认格式不覆盖用户选择
+- [x] 修改立即生效（实时读取，无需重启）
+- [x] 设置页「文件查看」section：支持的文件查看器 / 文件关联两个管理页
+- [x] 长按菜单「用其他查看器打开」「浏览压缩包」「安装」（按能力显示）
+- [x] 默认关联全量落地（text/plist/sqlite/image/media/web/hex/ipa/archive/pdf）
+- [x] .deb 清理：不注册关联、不进 ZIP 浏览器、不交安装器，删除既有当 ZIP 的判断
+- [x] 不支持格式诚实提示（tar/gz/7z/rar/xz/bz2「当前构建暂不支持」）
+- [ ] SQLite 记录编辑（BEGIN/COMMIT/ROLLBACK 事务）
+- [ ] Archive 统一 Backend 抽象（为 7z/RAR/XZ/BZ2/TAR 后端接入预留）
+- [ ] IPA 安装后端（需越狱环境 installd/opainstaller；当前如实提示不可用原因）
 
 ## P1 缩略图
 
@@ -159,6 +190,10 @@
 - [x] 解压进度（字节比例 + 条目名，接入任务中心）
 - [x] 压缩进度（字节比例 + 条目名，接入任务中心）
 - [x] 压缩异常处理（失败清理半成品、取消、错误上报）
+- [x] ZIP 包内浏览器（FFArchiveService 中央目录列表 + FFArchiveBrowserViewController：
+      目录树浏览、文件属性、单文件预览复用 PreviewRouter、单条目提取、
+      选中项提取、全部解压接入任务中心；ipa 同样支持）
+- [ ] 7z/RAR/XZ/BZ2/TAR 解析后端（当前明确提示暂不支持）
 
 ## P3 Network
 
