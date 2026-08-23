@@ -5,7 +5,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>导入到 FuckFile</string>
+    <string>FuckFile</string>
     <key>CFBundleExecutable</key>
     <string>FuckFileShare</string>
     <key>CFBundleIdentifier</key>
