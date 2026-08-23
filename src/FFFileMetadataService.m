@@ -7,6 +7,19 @@
 #import <sys/xattr.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+NSString *FFAbbreviatedDisplayPath(NSString *path)
+{
+    if (!path.length) return path ?: @"";
+    NSArray<NSString *> *components = path.pathComponents;
+    NSMutableArray<NSString *> *visible = [NSMutableArray array];
+    for (NSString *component in components)
+        if (component.length && ![component isEqualToString:@"/"])
+            [visible addObject:component];
+    NSUInteger start = visible.count > 3 ? visible.count - 3 : 0;
+    NSRange range = NSMakeRange(start, visible.count - start);
+    return [[visible subarrayWithRange:range] componentsJoinedByString:@" › "];
+}
+
 @implementation FFFileMetadataService
 
 + (NSArray<NSString *> *)extendedAttributeLinesForPath:(NSString *)path

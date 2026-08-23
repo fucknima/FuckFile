@@ -59,35 +59,45 @@
     FFFileTask *task = self.tasks[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = task.displayName;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    NSMutableString *detail = [NSMutableString stringWithFormat:@"%@ · %@",
-        task.kindText, task.stateText];
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    config.textProperties.adjustsFontForContentSizeCategory = YES;
+    config.textProperties.numberOfLines = 1;
+
+    // 层级：标题=任务名；副标题第一行=当前文件/结果摘要，
+    // 第二行=进度明细。不再拼一条超长 secondary 字符串。
+    NSMutableString *detail = [NSMutableString string];
     if (task.state == FFFileTaskStateRunning) {
-        [detail appendFormat:@" · %@", task.detailName ?: @""];
-        if (task.totalBytes > 0)
-            [detail appendFormat:@" · %@ / %@",
-                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
-        if (task.averageBytesPerSecond > 0) {
-            [detail appendFormat:@" · %@/s",
-                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
-            if (task.estimatedRemainingSeconds > 0) {
-                NSTimeInterval seconds = task.estimatedRemainingSeconds;
-                if (seconds < 60)
-                    [detail appendFormat:@" · 剩余 %d 秒", (int)seconds];
-                else
-                    [detail appendFormat:@" · 剩余 %d 分", (int)(seconds / 60)];
-            }
-        }
-    } else if (task.state == FFFileTaskStateCompleted || task.state == FFFileTaskStateFailed) {
-        [detail appendFormat:@" · 成功 %lu 失败 %lu 跳过 %lu",
+        [detail appendString:(task.detailName.length ? task.detailName : @"…")];
+    } else if (task.state == FFFileTaskStateCompleted) {
+        [detail appendFormat:@"已完成 · 成功 %lu 失败 %lu 跳过 %lu",
             (unsigned long)task.succeededCount, (unsigned long)task.failedCount,
             (unsigned long)task.skippedCount];
-        if (task.state == FFFileTaskStateFailed && task.error)
-            [detail appendFormat:@"\n%@", task.error.localizedDescription];
+    } else if (task.state == FFFileTaskStateFailed) {
+        [detail appendString:task.error.localizedDescription ?: @"失败"];
+    } else {
+        [detail appendString:task.stateText];
     }
-    config.secondaryText = detail;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 0;
+
+    NSMutableString *metrics = [NSMutableString stringWithFormat:@"%@", task.kindText];
+    if (task.state == FFFileTaskStateRunning) {
+        if (task.totalBytes > 0)
+            [metrics appendFormat:@" · %@ / %@",
+                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
+        if (task.averageBytesPerSecond > 0) {
+            [metrics appendFormat:@" · %@/s",
+                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
+            NSTimeInterval seconds = task.estimatedRemainingSeconds;
+            if (seconds > 0)
+                [metrics appendFormat:seconds < 60 ? @" · 剩余 %d 秒" : @" · 剩余 %d 分",
+                    seconds < 60 ? (int)seconds : (int)(seconds / 60)];
+        }
+    }
+    config.secondaryText = metrics.length ?
+        [NSString stringWithFormat:@"%@\n%@", detail, metrics] : detail;
+    config.secondaryTextProperties.font =
+        [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
+    config.secondaryTextProperties.numberOfLines = 2;
     cell.contentConfiguration = config;
 
     BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;

@@ -28,6 +28,12 @@
     self.statusLabel.text = @"正在导入到 FuckFile…";
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
+    // 轻量视觉统一（ADR-013）：Dynamic Type + 次级色；导入逻辑不变。
+    self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.statusLabel.adjustsFontForContentSizeCategory = YES;
+    self.statusLabel.textColor = UIColor.secondaryLabelColor;
+    self.statusLabel.isAccessibilityElement = YES;
+    self.statusLabel.accessibilityLabel = @"正在导入到 FuckFile";
     [self.view addSubview:self.statusLabel];
 
     [NSLayoutConstraint activateConstraints:@[

@@ -1425,7 +1425,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     // 自适应列数（ADR-013）：按可用宽度与最小项宽计算，不判断设备型号。
     CGFloat available = collectionView.bounds.size.width - 24 - 16;
     if (available < 120) return CGSizeMake(44, 72);
-    CGFloat spacing = layout.minimumInteritemSpacing;
+    CGFloat spacing = collectionViewLayout.minimumInteritemSpacing;
     NSInteger columns = (NSInteger)floor((available + spacing) / (96.0 + spacing));
     columns = MAX(2, MIN(columns, 8));
     CGFloat width = floor((available - (columns - 1) * spacing) / columns);

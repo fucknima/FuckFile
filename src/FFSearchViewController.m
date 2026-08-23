@@ -4,9 +4,10 @@
 #import "FFLogger.h"
 #import "MCMManager.h"
 #import "FFAppNames.h"
+#import "FFFileMetadataService.h"
 
-@interface FFSearchViewController () <UISearchBarDelegate>
-@property(nonatomic, strong) UISearchBar *searchBar;
+@interface FFSearchViewController () <UISearchResultsUpdating, UISearchBarDelegate>
+@property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, strong) NSArray<NSString *> *history;
 @property(nonatomic, strong) UIView *searchBackdrop;
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -33,12 +34,18 @@
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
 
-    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)];
-    self.searchBar.placeholder = @"搜索文件名（Device Storage 全局）";
-    self.searchBar.delegate = self;
-    self.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    self.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
-    self.tableView.tableHeaderView = self.searchBar;
+    // 与 Browser 一致的导航栏搜索（ADR-013），不再用 tableHeader 搜索框。
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    // 提交/历史重搜仍走 UISearchBarDelegate。
+    self.searchController.searchBar.delegate = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"搜索文件名（Device Storage 全局）";
+    self.searchController.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.searchController.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
 
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
@@ -69,12 +76,18 @@
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    [self.searchBar becomeFirstResponder];
+    [self.searchController.searchBar becomeFirstResponder];
 }
 
 #pragma mark - Search
 
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText
+// UISearchResultsUpdating：防抖逻辑与取消语义保持不变。
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    [self searchBarTextChanged:searchController.searchBar.text];
+}
+
+- (void)searchBarTextChanged:(NSString *)searchText
 {
     [NSObject cancelPreviousPerformRequestsWithTarget:self
         selector:@selector(beginSearch:) object:searchText];
@@ -102,9 +115,7 @@
         self.history = [[FFSearchService sharedService] history];
     }
     [self beginSearch:searchBar.text];
-}
-
-- (void)updateSearchBackground
+}- (void)updateSearchBackground
 {
     if (self.searching) {
         [self.spinner startAnimating];
@@ -186,11 +197,14 @@
     FFFoundItem *item = self.results[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = FFAppDisplayName(item.name);
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    config.secondaryText = item.path;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
-        weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 2;
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    config.textProperties.adjustsFontForContentSizeCategory = YES;
+    // 默认只显示最后 2~3 层（ADR-013），完整真实路径只在文件信息/复制路径。
+    config.secondaryText = FFAbbreviatedDisplayPath(item.path);
+    config.secondaryTextProperties.font =
+        [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
+    config.secondaryTextProperties.numberOfLines = 1;
     config.image = [UIImage systemImageNamed:item.isDirectory ? @"folder" : @"doc"];
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -203,17 +217,18 @@
     BOOL showingHistory = !self.searching && self.results.count == 0;
     if (showingHistory) {
         NSString *query = self.history[indexPath.row];
-        self.searchBar.text = query;
+        self.searchController.searchBar.text = query;
         [[FFSearchService sharedService] addHistory:query];
         self.history = [[FFSearchService sharedService] history];
         [self beginSearch:query];
         return;
     }
     FFFoundItem *item = self.results[indexPath.row];
-    // 点击结果先弹窗确认：打开 / 跳转所在目录。
+    // 点击结果先弹窗确认：打开 / 跳转所在目录（语义保持不变）。
     __weak typeof(self) weakSelf = self;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
-        message:item.path preferredStyle:UIAlertControllerStyleActionSheet];
+        message:FFAbbreviatedDisplayPath(item.path)
+        preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"打开"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         [weakSelf openFoundItem:item];

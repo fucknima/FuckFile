@@ -2,6 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// 展示用路径缩略：只显示最后 2~3 层（"AppData › 微信 › Documents"），
+// 绝不展示完整 /private/var/... 链路；完整路径只在文件信息页/复制路径出现。
+FOUNDATION_EXPORT NSString *FFAbbreviatedDisplayPath(NSString *path);
+
 // 属性页专用元数据读取：xattr、递归统计、哈希、MIME。
 // 这些都是慢操作，只允许在后台队列调用，禁止进入目录扫描主路径。
 @interface FFFileMetadataService : NSObject

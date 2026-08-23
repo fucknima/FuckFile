@@ -119,7 +119,7 @@
 {
     switch (section) {
         case 0:
-            return self.entry.isDirectory ? 5 : 5; // 类型/大小/扩展名/MIME/SHA-256(或项目数)
+            return 5; // 类型/大小/扩展名/MIME/项目数(目录)或SHA-256(文件)
         case 1:
             return self.entry.linkTarget.length ? 2 : 1;
         case 2: return 2;

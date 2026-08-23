@@ -2,6 +2,7 @@
 #import "FFBookmarksService.h"
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
+#import "FFFileMetadataService.h"
 
 @interface FFBookmarksViewController ()
 @property(nonatomic) FFBookmarksMode mode;
@@ -71,11 +72,14 @@
     FFBookmark *bookmark = self.items[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = bookmark.name.length ? bookmark.name : bookmark.path.lastPathComponent;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    config.secondaryText = bookmark.path;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
-        weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 2;
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    config.textProperties.adjustsFontForContentSizeCategory = YES;
+    // 缩略显示，完整路径在文件信息/复制路径。
+    config.secondaryText = FFAbbreviatedDisplayPath(bookmark.path);
+    config.secondaryTextProperties.font =
+        [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
+    config.secondaryTextProperties.numberOfLines = 1;
     config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder" : @"doc"];
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;

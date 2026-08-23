@@ -90,8 +90,13 @@ static NSString *FFBreadcrumbTitle(NSArray<NSString *> *names, NSUInteger i)
         [chips addObject:button];
     }
 
-    for (UIView *view in _stack.arrangedSubviews)
+    // 先拷贝再移除：枚举中修改 arrangedSubviews 会崩溃；
+    // removeArrangedSubview 不脱离父视图，需手动 removeFromSuperview。
+    NSArray<UIView *> *existing = [_stack.arrangedSubviews copy];
+    for (UIView *view in existing) {
         [_stack removeArrangedSubview:view];
+        [view removeFromSuperview];
+    }
     for (UIView *chip in chips)
         [_stack addArrangedSubview:chip];
 
