@@ -45,7 +45,18 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
     navigation.navigationBar.translucent = NO;
-    navigation.navigationBar.prefersLargeTitles = YES;
+    navigation.navigationBar.prefersLargeTitles = NO;
+
+    // FuckFile uses one compact navigation hierarchy everywhere. Keeping the
+    // title inside the top bar gives the browser more vertical room and avoids
+    // pages switching between large-title and inline-title layouts.
+    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+    [appearance configureWithOpaqueBackground];
+    appearance.backgroundColor = UIColor.systemBackgroundColor;
+    appearance.shadowColor = UIColor.separatorColor;
+    navigation.navigationBar.standardAppearance = appearance;
+    navigation.navigationBar.scrollEdgeAppearance = appearance;
+    navigation.navigationBar.compactAppearance = appearance;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.backgroundColor = UIColor.systemBackgroundColor;
