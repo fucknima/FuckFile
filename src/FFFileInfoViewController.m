@@ -155,7 +155,6 @@
 
     NSString *title = @"";
     NSString *value = @"";
-    BOOL selectable = NO;
 
     switch (indexPath.section) {
         case 0: {
@@ -188,7 +187,6 @@
                     } else {
                         title = @"SHA-256";
                         value = self.sha256Text ?: @"点按计算";
-                        selectable = YES;
                         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
                     }
                     break;
@@ -199,14 +197,11 @@
             if (indexPath.row == 0) {
                 title = @"完整路径";
                 value = self.entry.path;
-                selectable = YES;
-                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             } else {
                 title = @"链接目标";
                 value = self.entry.linkTarget;
-                selectable = YES;
-                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             break;
         }
         case 2: {
