@@ -38,11 +38,25 @@ static void FFSendVoid(id object, NSString *selectorName)
         ((void (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
+static void FFSendVoidBool(id object, NSString *selectorName, BOOL value)
+{
+    SEL selector = NSSelectorFromString(selectorName);
+    if (object && [object respondsToSelector:selector])
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(object, selector, value);
+}
+
+static id FFSendId(id object, NSString *selectorName)
+{
+    SEL selector = NSSelectorFromString(selectorName);
+    if (object && [object respondsToSelector:selector])
+        return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+    return nil;
+}
+
 #pragma mark - Home root tab
 
 @interface FFHomeViewController (FFRootNavigation)
 - (void)ffnav_homeViewDidAppear:(BOOL)animated;
-- (void)ffnav_originalHomeViewDidAppear:(BOOL)animated;
 @end
 
 @implementation FFHomeViewController (FFRootNavigation)
@@ -59,9 +73,8 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 - (void)ffnav_homeViewDidAppear:(BOOL)animated
 {
-    [self ffnav_originalHomeViewDidAppear:animated];
+    FFSendVoidBool(self, @"ffnav_originalHomeViewDidAppear:", animated);
 
-    // Remove the earlier full-width prototype tab bar if this branch created it.
     @try {
         UIView *legacy = [self valueForKey:@"bottomTabBar"];
         if (legacy && legacy.tag != FFRootTabBarViewTag) {
@@ -82,7 +95,6 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 @interface FFSettingsViewController (FFRootNavigation)
 - (void)ffnav_settingsViewDidAppear:(BOOL)animated;
-- (void)ffnav_originalSettingsViewDidAppear:(BOOL)animated;
 @end
 
 @implementation FFSettingsViewController (FFRootNavigation)
@@ -99,7 +111,7 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 - (void)ffnav_settingsViewDidAppear:(BOOL)animated
 {
-    [self ffnav_originalSettingsViewDidAppear:animated];
+    FFSendVoidBool(self, @"ffnav_originalSettingsViewDidAppear:", animated);
     self.navigationItem.hidesBackButton = YES;
     self.navigationItem.leftBarButtonItem = nil;
 
@@ -115,9 +127,7 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 @interface FFBrowserViewController (FFNavigationPresentation)
 - (void)ffnav_browserViewDidLayoutSubviews;
-- (void)ffnav_originalBrowserViewDidLayoutSubviews;
 - (UIMenu *)ffnav_moreMenu;
-- (UIMenu *)ffnav_originalMoreMenu;
 - (void)ffnav_removeLegacyActionBar;
 - (void)ffnav_updateContextBars;
 - (void)ffnav_installSelectionBar;
@@ -149,15 +159,13 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 - (void)ffnav_browserViewDidLayoutSubviews
 {
-    [self ffnav_originalBrowserViewDidLayoutSubviews];
+    FFSendVoid(self, @"ffnav_originalBrowserViewDidLayoutSubviews");
     [self ffnav_removeLegacyActionBar];
     [self ffnav_updateContextBars];
 }
 
 - (void)ffnav_removeLegacyActionBar
 {
-    // FFBrowserPresentation's first UI pass created one permanent bottom view
-    // with a direct UIStackView child. Remove only that obsolete view.
     for (UIView *candidate in [self.view.subviews copy]) {
         if (candidate.tag == FFRootTabBarViewTag || candidate.tag == FFSelectionActionBarTag)
             continue;
@@ -285,7 +293,7 @@ static void FFSendVoid(id object, NSString *selectorName)
 
 - (UIMenu *)ffnav_moreMenu
 {
-    UIMenu *base = [self ffnav_originalMoreMenu];
+    UIMenu *base = FFSendId(self, @"ffnav_originalMoreMenu");
     if (!base) base = [UIMenu menuWithTitle:@"更多" children:@[]];
 
     UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹"
