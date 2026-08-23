@@ -75,6 +75,21 @@
 > - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
 >   进包并写入 CFBundleIcons
 >
+> **UI/UX 系统级重构（2026-08-23，ADR-013）**：
+> - Navigation：全 App Inline 标题（prefersLargeTitles=NO），正文大标题移除，
+>   首页/目录/设置等标题回到顶部导航栏
+> - Browser：新增 FFPathBreadcrumbView 路径导航（单行、横向滚动、当前加粗、
+>   上级可点）；列表信息降噪（文件夹/文件/符号链接一行式 + 相对时间）；
+>   图标色彩降噪；Dynamic Type 第一批落地
+> - 属性页：FFFileInfoViewController 替代 fullDetail Alert；xattr/递归统计/
+>   SHA-256/MIME 移出扫描主路径，由 FFFileMetadataService 按需后台加载
+> - Grid：自适应列数（2~8 列，保留 floor/极窄兜底/懒创建销毁）；「默认视图」
+>   设置语义 + 浏览器「显示方式」运行时切换
+> - 更多菜单/＋菜单/批量工具栏重组；搜索页统一 UISearchController；结果路径
+>   缩略显示；任务中心排版分层；设置重分组（默认视图/文件夹优先/存储与缓存）
+> - Share Extension 仅状态标签视觉统一，导入逻辑零改动
+> - 待办：真机回归矩阵（见下）、10k 文件性能实测、极端 Dynamic Type 字号验证
+>
 > **外部分享架构重做（2026-08-23，ADR-012）**：
 > - 真机 A/B 已确认“文件类型”不是主变量：微信 PDF 可经 openURL 导入，
 >   Files PDF 与 LCSign IPA/ZIP 只唤起主 App且没有 Import 回调。

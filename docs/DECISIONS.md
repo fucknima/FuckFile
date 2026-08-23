@@ -312,3 +312,59 @@ LCSign 1.2-8 的实际 IPA 结构作为已验证参考，而不是继续假设�
 - CI 可以证明编译、Mach-O entry point、嵌入结构和嵌套签名正确；只有真机
   能最终证明具体 iOS/重签器组合下 Share Extension 被系统加载以及 class-4
   bridge 的运行时授权。未做真机验证前不得把该项写成“已完全验证”。
+
+## ADR-013
+
+日期：2026-08-23
+
+决定：
+
+UI 体系统一为「Inline 导航 + 紧凑浏览器信息架构」，在不改动外部分享/
+导入架构与既有 Runtime 修复的前提下完成：
+
+1. 主 Navigation Controller `prefersLargeTitles=NO`，所有普通页面标题由
+   系统放在顶部导航栏；移除首页 `largeTitleDisplayMode=Always`。禁止任何
+   页面用自绘视图模拟导航栏。
+2. 新增 `FFPathBreadcrumbView`：导航栏下方单行路径导航（约 32pt，横向
+   滚动，当前目录加粗），MCM 根之下从 Device Storage 起显示，其余只显示
+   最后 3 层；根目录收起。点击上级复用导航栈中的既有 Browser，否则按
+   正常导航模型 push；不重新实现目录读取。
+3. 列表信息降噪：文件夹显示「文件夹 · 相对时间」，文件显示
+   「大小 · 时间」，符号链接不再在列表展示完整 link target（完整目标进
+   文件信息页）。图标色降噪：保留文件夹蓝/链接青，仅压缩包/数据库/证书
+   用语义色。
+4. 扫描主路径瘦身：`decorateEntries` 不再执行 listxattr/getxattr，不再
+   构建 fullDetail。慢数据（xattr、递归大小统计、SHA-256、MIME）统一由
+   `FFFileMetadataService` 在属性页进入后后台加载。
+5. 属性从 Alert 升级为 `FFFileInfoViewController`（inset grouped：基本
+   信息/位置/时间/文件系统，路径与链接目标可复制）。
+6. Grid 自适应列数：按可用宽度 + 最小项宽计算（2~8 列），保留 floor 与
+   极窄宽度 fallback；网格仍为懒创建/退出销毁。设置页「网格视图」开关
+   改为「默认视图」（仅决定新打开目录的初始模式），运行中页面用浏览器
+   「更多 → 显示方式」局部切换，互不覆盖。
+7. 更多菜单重组：多选/粘贴/导入 ‖ 新建 ‖ 排序方式 ‖ 显示方式 ‖ 刷新；
+   「＋」菜单只剩新建两项；刷新归 pull-to-refresh 与更多菜单。批量工具
+   栏去掉与导航栏重复的全选按钮，未选中时禁用操作按钮。
+8. 全局搜索页改用 navigationItem UISearchController（与 Browser 一致）；
+   搜索/收藏/最近的结果路径默认缩略显示最后 2~3 层。点击结果的
+   打开/跳转确认语义不变。
+
+原因：
+
+- Large title 让「FuckFile」「设备存储」以巨字占据正文区域，不符合高级
+  文件管理器的信息密度要求。
+- 目录扫描中的 xattr syscall 与字符串拼装在大目录（1 万条目）下是纯浪费，
+  且绝大多数用户从不打开属性页——按需加载收益明确。
+- 固定 3 列 Grid 在 iPad/横屏下过松或过挤；列数应由容器几何推导而非
+  设备判断。
+- 「设置里的全局网格开关」和「当前目录快速切换」是两个需求；合并成全局
+  开关会导致运行时切换必须回设置页，体验差且互相覆盖。
+
+保护约束（本次重构的硬边界）：
+
+- 不触碰 Share Extension 的 processInputItems/store/wake/class-4 fallback；
+  仅状态标签字体 Dynamic Type 化。
+- 保留 iOS 27 flowlayout 断言修复（懒创建、floor、极窄兜底）、context
+  menu 延迟 present、setEditing 手动同步 tableView、同目录剪切粘贴拦截、
+  FFPreviewRouter 统一打开链路。
+- Imported 唯一路径与幂等导航不变；首页不加第二 Imported 入口。

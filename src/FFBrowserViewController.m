@@ -347,6 +347,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         if (!self.batchToolbarItems)
             self.batchToolbarItems = [self buildBatchToolbarItems];
         self.toolbarItems = self.batchToolbarItems;
+        // 工具栏就位后再同步一次：进入多选且无选中时按钮应禁用。
+        [self updateBatchActionsEnabled];
     } else {
         self.navigationItem.leftBarButtonItem = nil;
         self.navigationItem.rightBarButtonItems = @[self.moreItem];
