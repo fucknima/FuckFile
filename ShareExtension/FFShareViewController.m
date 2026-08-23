@@ -15,6 +15,23 @@ static NSString * const kShareFolder = @"SharedInbox";
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    // 诊断：扩展进程启动即写标记，用于真机判断扩展是否进入运行。
+    @try {
+        NSURL *markerDir = [[NSFileManager defaultManager]
+            containerURLForSecurityApplicationGroupIdentifier:kGroupID];
+        if (markerDir) {
+            NSURL *marker = [markerDir URLByAppendingPathComponent:@"ext-marker.txt"];
+            [[[NSString stringWithFormat:@"viewDidLoad %@\n",
+                [NSDate date]] writeToURL:marker atomically:YES
+                encoding:NSUTF8StringEncoding error:nil];
+            NSLog(@"[FFShare] marker written: %@", marker.path);
+        } else {
+            NSLog(@"[FFShare] group container is NIL");
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[FFShare] exception: %@ %@", e.name, e.reason);
+    }
+
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
     // 简短界面：状态标签 + 完成按钮（分享扩展允许自定义 UI）。
