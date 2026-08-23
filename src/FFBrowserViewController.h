@@ -26,8 +26,13 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FFBrowserViewController : UIViewController
 
 @property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, copy, readonly) NSString *currentPath;
 
 - (instancetype)initWithPath:(NSString *)path;
+
+// Explicit refresh hook used when an already-open browser is reused instead
+// of pushing another controller for the same directory.
+- (void)reloadEntries;
 
 // Opens an item: directories push a browser, files open the preview.
 // nav is the caller's navigation controller (a fresh browser instance
