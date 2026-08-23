@@ -30,11 +30,13 @@ NSInteger const FFRootTabBarViewTag = 98420;
 
     FFRootTabBar *bar = [[FFRootTabBar alloc] initWithOwner:viewController selected:selected];
     [viewController.view addSubview:bar];
+    NSLayoutConstraint *preferredWidth = [bar.widthAnchor constraintEqualToConstant:300];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [bar.centerXAnchor constraintEqualToAnchor:viewController.view.centerXAnchor],
         [bar.bottomAnchor constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.bottomAnchor constant:-10],
-        [bar.widthAnchor constraintLessThanOrEqualToAnchor:viewController.view.widthAnchor constant:-40],
-        [bar.widthAnchor constraintEqualToConstant:300],
+        [bar.widthAnchor constraintLessThanOrEqualToAnchor:viewController.view.widthAnchor constant:-32],
+        preferredWidth,
         [bar.heightAnchor constraintEqualToConstant:70],
     ]];
     return bar;
