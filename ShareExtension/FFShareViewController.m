@@ -166,7 +166,7 @@ static NSString *FFShareSafeName(NSString *name)
         return NO;
     }
     NSDictionary *metadata = @{
-        @"name": FFShareSafeName(name),
+        @"name": FFShareSafeName(name.length ? name : @"imported"),
         @"type": typeIdentifier ?: @"public.data",
         @"created": NSDate.date,
         @"size": @(data.length),
@@ -200,7 +200,10 @@ static NSString *FFShareSafeName(NSString *name)
           completion:(void (^)(BOOL ok))completion
 {
     dispatch_group_enter(group);
-    NSString *suggestedName = provider.suggestedName ?: @"imported";
+    // Keep nil here. For file representations the provider URL's own basename
+    // is a better fallback than replacing an unknown original name with
+    // "imported" and losing .pdf/.ipa/.zip.
+    NSString *suggestedName = provider.suggestedName;
     NSString *representationType = [self fileRepresentationTypeForProvider:provider];
 
     void (^record)(BOOL) = ^(BOOL ok) {
@@ -210,7 +213,7 @@ static NSString *FFShareSafeName(NSString *name)
 
     if (representationType.length) {
         NSLog(@"[FuckFileShare] loadFileRepresentation type=%@ name=%@",
-            representationType, suggestedName);
+            representationType, suggestedName ?: @"(provider URL fallback)");
         [provider loadFileRepresentationForTypeIdentifier:representationType
             completionHandler:^(NSURL *url, NSError *loadError) {
                 NSError *storeError = nil;
