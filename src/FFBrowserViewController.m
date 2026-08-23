@@ -90,6 +90,11 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
+// 页面顶部独立搜索条（iOS 26 上 navigationItem.searchController 被渲染
+// 到屏幕底部，改为自建顶栏搜索 + 滚动隐藏，平时不下拉不占位）。
+@property(nonatomic, strong) UIView *searchBarContainer;
+@property(nonatomic, strong) NSLayoutConstraint *searchBarHeightConstraint;
+@property(nonatomic) BOOL searchBarCollapsed;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
@@ -142,16 +147,31 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
+    // 顶级搜索条：挂在页面顶部（breadcrumb 下方），列表/网格共用；
+    // 内容滚动后自动收起，回到顶部展开，绝不贴屏幕底部。
+    self.searchBarContainer = [[UIView alloc] init];
+    self.searchBarContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    self.searchBarContainer.clipsToBounds = YES;
+    [self.view addSubview:self.searchBarContainer];
+
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
+    self.searchBarHeightConstraint =
+        [self.searchBarContainer.heightAnchor constraintEqualToConstant:44];
+    self.searchBarCollapsed = NO;
     [NSLayoutConstraint activateConstraints:@[
         [self.breadcrumbView.topAnchor constraintEqualToAnchor:
             self.view.safeAreaLayoutGuide.topAnchor],
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
-        [self.tableView.topAnchor constraintEqualToAnchor:
+        [self.searchBarContainer.topAnchor constraintEqualToAnchor:
             self.breadcrumbView.bottomAnchor],
+        [self.searchBarContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.searchBarContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        self.searchBarHeightConstraint,
+        [self.tableView.topAnchor constraintEqualToAnchor:
+            self.searchBarContainer.bottomAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.tableView.bottomAnchor constraintEqualToAnchor:
@@ -246,9 +266,19 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"在当前文件夹搜索";
-    self.navigationItem.searchController = self.searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = YES;
-    self.definesPresentationContext = YES;
+    self.searchController.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.searchController.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    // 不再挂 navigationItem.searchController（iOS 26 位置异常），
+    // 用自建顶部条；随时显示搜索条在顶部。
+    UISearchBar *searchBar = self.searchController.searchBar;
+    searchBar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.searchBarContainer addSubview:searchBar];
+    [NSLayoutConstraint activateConstraints:@[
+        [searchBar.topAnchor constraintEqualToAnchor:self.searchBarContainer.topAnchor],
+        [searchBar.leadingAnchor constraintEqualToAnchor:self.searchBarContainer.leadingAnchor],
+        [searchBar.trailingAnchor constraintEqualToAnchor:self.searchBarContainer.trailingAnchor],
+        [searchBar.bottomAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor],
+    ]];
 
     self.moreItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"ellipsis.circle" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
@@ -345,6 +375,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             style:UIBarButtonItemStylePlain target:self action:@selector(batchSelectAll)];
         self.navigationItem.rightBarButtonItems = @[selectAll];
         [self updateSelectionTitle];
+        // 粘贴横幅退出选择模式再恢复，避免与底部批量工具栏叠在一起。
+        [self hidePasteBanner];
         self.batchToolbarItems = [self buildBatchToolbarItems];
         self.toolbarItems = self.batchToolbarItems;
         self.navigationController.toolbarHidden = NO;
@@ -355,12 +387,13 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         self.navigationItem.rightBarButtonItems = @[self.plusItem, self.moreItem];
         if (_batchNormalTitle.length) self.navigationItem.title = _batchNormalTitle;
         self.navigationController.toolbarHidden = YES;
+        if (gClipboardSources.count > 0) [self showPasteBanner];
     }
     [self updatePasteState];
     [self applyLayoutModeAnimated:NO];
 }
 
-// ＋（导航栏）的唯一职责：创建。
+// ＋（导航栏）的唯一职责：往当前目录添加内容（创建 + 导入）。
 - (UIMenu *)createMenu
 {
     UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹"
@@ -369,7 +402,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *newFile = [UIAction actionWithTitle:@"新建文件"
         image:[self symbolImage:@"doc.badge.plus" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
-    return [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile]];
+    UIAction *import = [UIAction actionWithTitle:@"导入文件…"
+        image:[self symbolImage:@"square.and.arrow.down" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
+    return [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, import]];
 }
 
 - (void)cancelBatchMode
@@ -379,8 +415,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (NSArray<UIBarButtonItem *> *)buildBatchToolbarItems
 {
-    // 只放“对选中内容做什么”：复制 / 移动 / 分享 / 更多 / 删除。
-    // 全选在导航栏、压缩收进「更多」；图标按钮避免窄屏截断。
+    // 只放“对选中内容做什么”：复制 / 移动 / 分享 / 压缩 / 删除——全部
+    // 直接可见，无二级折叠。全选在导航栏、删除单独红色。
     UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"doc.on.doc" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
     copy.accessibilityLabel = @"复制";
@@ -390,18 +426,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"square.and.arrow.up" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
     share.accessibilityLabel = @"分享";
-    UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"ellipsis" tint:nil]
-        style:UIBarButtonItemStylePlain target:nil action:nil];
-    UIAction *zip = [UIAction actionWithTitle:@"压缩"
-        image:[self symbolImage:@"shippingbox" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self batchCompress]; }];
-    more.menu = [UIMenu menuWithTitle:@"更多" children:@[zip]];
-    more.accessibilityLabel = @"更多操作";
+    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"shippingbox" tint:nil]
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
+    zip.accessibilityLabel = @"压缩";
     UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"trash" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
     trash.tintColor = [UIColor systemRedColor];
     trash.accessibilityLabel = @"删除";
-    return @[copy, cut, share, more, trash];
+    return @[copy, cut, share, zip, trash];
 }
 
 // 无选中时禁用批量操作按钮。
@@ -490,18 +522,57 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             if (![weakSelf validNewName:name]) return;
             if (![name.pathExtension.lowercaseString isEqualToString:@"zip"])
                 name = [name stringByAppendingPathExtension:@"zip"];
-            NSString *destination = [weakSelf.currentPath stringByAppendingPathComponent:name];
-            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
-            for (FFEntry *item in items) [paths addObject:item.path];
-            FFFileTask *task = [FFFileTask new];
-            task.kind = FFFileTaskKindCompress;
-            task.displayName = [NSString stringWithFormat:@"压缩 %@", name];
-            task.sources = paths;
-            task.destination = destination;
-            [[FFFileTaskManager sharedManager] enqueueTask:task];
-            [weakSelf flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+            [weakSelf compressWithName:name items:items];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// 压缩前重名检测（防止静默覆盖已有压缩包），冲突交互与重命名一致。
+- (void)compressWithName:(NSString *)name items:(NSArray<FFEntry *> *)items
+{
+    NSString *destination = [self.currentPath stringByAppendingPathComponent:name];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:destination]) {
+        [self enqueueCompressWithName:name items:items];
+        return;
+    }
+    // 已存在：替换 / 保留两者（自动加序号）/ 取消。
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"压缩包已存在"
+        message:[NSString stringWithFormat:@"「%@」已存在于当前目录，是否替换？", name]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"替换" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [weakSelf enqueueCompressWithName:name items:items];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"保留两者"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *available = [weakSelf uniqueDestinationForName:name];
+            if (!available) {
+                [weakSelf flash:@"无法生成不冲突的名称"];
+                return;
+            }
+            [weakSelf enqueueCompressWithName:available.lastPathComponent items:items];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height - 60, 1, 1);
+    [self presentOnTop:sheet];
+}
+
+- (void)enqueueCompressWithName:(NSString *)name items:(NSArray<FFEntry *> *)items
+{
+    NSString *destination = [self.currentPath stringByAppendingPathComponent:name];
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
+    for (FFEntry *item in items) [paths addObject:item.path];
+    FFFileTask *task = [FFFileTask new];
+    task.kind = FFFileTaskKindCompress;
+    task.displayName = [NSString stringWithFormat:@"压缩 %@", name];
+    task.sources = paths;
+    task.destination = destination;
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
 }
 
 - (void)batchShare
@@ -872,6 +943,25 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - Search
 
+// 顶部搜索条滚动收起/展开（iOS 设置风格）：本页列表与网格共用。
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    if (scrollView != self.tableView && scrollView != self.collectionView) return;
+    [self updateSearchBarCollapse:scrollView.contentOffset.y > 12.0];
+}
+
+- (void)updateSearchBarCollapse:(BOOL)collapsed
+{
+    // 正在输入时不收起；多选模式下保持可见。
+    collapsed = collapsed && !self.searchController.isActive;
+    if (collapsed == self.searchBarCollapsed) return;
+    self.searchBarCollapsed = collapsed;
+    self.searchBarHeightConstraint.constant = collapsed ? 0 : 44;
+    [UIView animateWithDuration:0.2 delay:0
+        options:UIViewAnimationOptionCurveEaseOut
+        animations:^{ [self.view layoutIfNeeded]; } completion:nil];
+}
+
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
 {
     self.searchText = searchController.searchBar.text;
@@ -881,9 +971,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - More menu
 
-// 更多菜单（ADR-013/014）：低频页面级操作。
-// 多选 / 粘贴 / 导入 ‖ 排序 ‖ 筛选 ‖ 显示方式 ‖ 刷新 / 复制路径 / 文件夹信息。
-// 创建只在 ＋；设置类持久化偏好在设置页，绝不在此重复。
+// 更多菜单：动作全部一级直接可见；排序/筛选/显示方式归并为一个
+// 「视图」二级菜单（选项组）。导入在 ＋；创建不在本菜单。
 - (UIMenu *)moreMenu
 {
     UIAction *select = [UIAction actionWithTitle:@"选择" image:[self symbolImage:@"checkmark.circle" tint:nil]
@@ -891,9 +980,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
-    UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
-
     UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
     UIAction *copyCurrentPath = [UIAction actionWithTitle:@"复制当前路径"
@@ -906,12 +992,15 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         image:[self symbolImage:@"info.circle" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self showCurrentFolderInfo]; }];
 
+    // 视图：排序/筛选/显示方式（只此一个二级，其余全部一级）。
+    UIMenu *viewMenu = [UIMenu menuWithTitle:@"视图" children:@[
+        [self sortMenu],
+        [self filterMenu],
+        [self displayModeMenu],
+    ]];
+
     return [UIMenu menuWithTitle:@"更多" children:@[
-        [UIMenu menuWithTitle:@"" children:@[select, paste, import]],
-        [UIMenu menuWithTitle:@"排序方式" children:@[[self sortMenu]]],
-        [UIMenu menuWithTitle:@"筛选" children:[self filterMenu].children],
-        [UIMenu menuWithTitle:@"显示方式" children:@[[self displayModeMenu]]],
-        [UIMenu menuWithTitle:@"" children:@[refresh, copyCurrentPath, folderInfo]],
+        select, paste, refresh, copyCurrentPath, folderInfo, viewMenu,
     ]];
 }
 
@@ -1217,28 +1306,60 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         map = @{
-            @"plist": @"list.bullet.rectangle",
+            // 媒体
             @"png": @"photo", @"jpg": @"photo", @"jpeg": @"photo", @"gif": @"photo",
             @"heic": @"photo", @"webp": @"photo", @"tiff": @"photo", @"bmp": @"photo",
+            @"ico": @"photo", @"svg": @"photo", @"car": @"photo",
             @"mp4": @"film", @"mov": @"film", @"m4v": @"film", @"avi": @"film", @"mkv": @"film",
             @"mp3": @"music.note", @"m4a": @"music.note", @"wav": @"music.note",
             @"aac": @"music.note", @"caf": @"music.note", @"flac": @"music.note",
-            @"zip": @"archivebox", @"ipa": @"archivebox",
-            @"tar": @"archivebox", @"gz": @"archivebox", @"7z": @"archivebox",
-            @"rar": @"archivebox", @"xz": @"archivebox",
-            @"db": @"internaldrive", @"sqlite": @"internaldrive", @"sqlite3": @"internaldrive",
-            @"txt": @"doc.plaintext", @"log": @"doc.plaintext", @"md": @"doc.plaintext",
+            // 文档
+            @"txt": @"doc.text", @"log": @"doc.text", @"rtf": @"doc.text",
+            @"doc": @"doc.text", @"docx": @"doc.text", @"pages": @"doc.text",
+            @"ppt": @"doc.text", @"pptx": @"doc.text",
+            @"pdf": @"doc.richtext",
+            @"md": @"text.alignleft",
+            @"csv": @"tablecells", @"xls": @"tablecells", @"xlsx": @"tablecells",
+            @"numbers": @"tablecells",
+            // 配置与代码
+            @"plist": @"list.bullet.rectangle",
             @"json": @"curlybraces", @"xml": @"curlybraces", @"html": @"curlybraces",
+            @"yaml": @"curlybraces", @"yml": @"curlybraces", @"toml": @"curlybraces",
             @"c": @"chevron.left.forwardslash.chevron.right",
             @"h": @"chevron.left.forwardslash.chevron.right",
             @"m": @"chevron.left.forwardslash.chevron.right",
             @"mm": @"chevron.left.forwardslash.chevron.right",
             @"swift": @"chevron.left.forwardslash.chevron.right",
-            @"sh": @"doc.plaintext", @"command": @"doc.plaintext",
+            @"py": @"chevron.left.forwardslash.chevron.right",
+            @"js": @"chevron.left.forwardslash.chevron.right",
+            @"ts": @"chevron.left.forwardslash.chevron.right",
+            @"java": @"chevron.left.forwardslash.chevron.right",
+            @"kt": @"chevron.left.forwardslash.chevron.right",
+            @"go": @"chevron.left.forwardslash.chevron.right",
+            @"rs": @"chevron.left.forwardslash.chevron.right",
+            @"rb": @"chevron.left.forwardslash.chevron.right",
+            @"php": @"chevron.left.forwardslash.chevron.right",
+            @"sh": @"chevron.left.forwardslash.chevron.right",
+            @"command": @"chevron.left.forwardslash.chevron.right",
+            // 压缩包 / 容器
+            @"zip": @"archivebox", @"tar": @"archivebox", @"gz": @"archivebox",
+            @"7z": @"archivebox", @"rar": @"archivebox", @"xz": @"archivebox",
+            @"war": @"archivebox", @"jar": @"archivebox", @"apk": @"archivebox",
+            @"epub": @"archivebox", @"xcarchive": @"archivebox",
+            @"ipa": @"arrow.down.app",
+            // 数据库
+            @"db": @"cylinder.split.1x2", @"sqlite": @"cylinder.split.1x2",
+            @"sqlite3": @"cylinder.split.1x2",
+            // 证书 / 密钥
             @"key": @"key", @"mobileconfig": @"lock.doc", @"cer": @"lock.doc",
             @"p12": @"lock.doc", @"crt": @"lock.doc",
-            @"app": @"app.badge", @"dylib": @"shippingbox", @"bundle": @"shippingbox",
-            @"framework": @"shippingbox", @"tendies": @"photo.on.rectangle.angled",
+            // 系统 / 二进制
+            @"app": @"app.badge", @"appex": @"app.badge",
+            @"dylib": @"shippingbox", @"bundle": @"shippingbox",
+            @"framework": @"shippingbox",
+            // 字体
+            @"ttf": @"textformat", @"otf": @"textformat", @"woff": @"textformat",
+            @"woff2": @"textformat",
         };
     });
     NSString *symbol = map[ext];
@@ -1251,17 +1372,54 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (UIColor *)tintForEntry:(FFEntry *)item
 {
-    // 色彩降噪（ADR-013）：图标只是导航辅助。保留 文件夹蓝 / 链接青，
-    // 仅压缩包、数据库、证书使用有限语义色，其余一律灰系。
+    // 有限语义色分层（每类统一）：形状 + 色系双维度区分，不做彩虹渐变。
     if (item.isDirectory) return [UIColor systemBlueColor];
     if (item.isSymlink) return [UIColor systemTealColor];
     NSString *ext = item.name.pathExtension.lowercaseString;
-    if ([@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
-        return [UIColor systemBrownColor];
-    if ([@[@"plist", @"db", @"sqlite", @"sqlite3"] containsObject:ext])
-        return [UIColor systemPurpleColor];
-    if ([@[@"key", @"mobileconfig", @"cer", @"p12", @"crt"] containsObject:ext])
-        return [UIColor systemYellowColor];
+    static NSDictionary<NSString *, NSString *> *category;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // NSD colorName（hex）→ UIColor 映射由下方着色：仅分类高亮，
+        // 这里列清楚每类的语义色。类别集合集中定义一次。
+        category = @{
+            // 文档（蓝）
+            @"txt": @"doc", @"log": @"doc", @"rtf": @"doc", @"doc": @"doc",
+            @"docx": @"doc", @"pages": @"doc", @"ppt": @"doc", @"pptx": @"doc",
+            @"key": @"doc", @"pdf": @"doc", @"md": @"doc", @"csv": @"doc",
+            @"xls": @"doc", @"xlsx": @"doc", @"numbers": @"doc",
+            // 数据/代码/配置（紫）
+            @"plist": @"code", @"json": @"code", @"xml": @"code", @"html": @"code",
+            @"yaml": @"code", @"yml": @"code", @"toml": @"code",
+            @"c": @"code", @"h": @"code", @"m": @"code", @"mm": @"code",
+            @"swift": @"code", @"py": @"code", @"js": @"code", @"ts": @"code",
+            @"java": @"code", @"kt": @"code", @"go": @"code", @"rs": @"code",
+            @"rb": @"code", @"php": @"code", @"sh": @"code", @"command": @"code",
+            // 压缩包（棕）
+            @"zip": @"archive", @"ipa": @"archive", @"tar": @"archive", @"gz": @"archive",
+            @"7z": @"archive", @"rar": @"archive", @"xz": @"archive",
+            @"war": @"archive", @"jar": @"archive", @"apk": @"archive",
+            @"epub": @"archive", @"xcarchive": @"archive",
+            // 数据库（橙）
+            @"db": @"db", @"sqlite": @"db", @"sqlite3": @"db",
+            // 证书（黄）
+            @"key": @"cert", @"mobileconfig": @"cert", @"cer": @"cert",
+            @"p12": @"cert", @"crt": @"cert",
+            // 媒体（绿）
+            @"png": @"media", @"jpg": @"media", @"jpeg": @"media", @"gif": @"media",
+            @"heic": @"media", @"webp": @"media", @"tiff": @"media", @"bmp": @"media",
+            @"ico": @"media", @"svg": @"media", @"car": @"media",
+            @"mp4": @"media", @"mov": @"media", @"m4v": @"media", @"avi": @"media",
+            @"mkv": @"media", @"mp3": @"media", @"m4a": @"media", @"wav": @"media",
+            @"aac": @"media", @"caf": @"media", @"flac": @"media",
+        };
+    });
+    NSString *kind = category[ext] ?: @"other";
+    if ([kind isEqualToString:@"doc"]) return [UIColor systemBlueColor];
+    if ([kind isEqualToString:@"code"]) return [UIColor systemPurpleColor];
+    if ([kind isEqualToString:@"archive"]) return [UIColor systemBrownColor];
+    if ([kind isEqualToString:@"db"]) return [UIColor systemOrangeColor];
+    if ([kind isEqualToString:@"cert"]) return [UIColor systemYellowColor];
+    if ([kind isEqualToString:@"media"]) return [UIColor systemGreenColor];
     return [UIColor systemGrayColor];
 }
 
@@ -1417,9 +1575,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     self.gridRefreshControl = gridRefresh;
     [self.collectionView addSubview:gridRefresh];
     [NSLayoutConstraint activateConstraints:@[
-        // 顶部与列表一致：跟随 breadcrumb（收起时等于安全区顶部）。
+        // 顶部与列表一致：跟随搜索条（与 breadcrumb 一起在列表/网格上方）。
         [self.collectionView.topAnchor constraintEqualToAnchor:
-            self.breadcrumbView.bottomAnchor],
+            self.searchBarContainer.bottomAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
@@ -1645,6 +1803,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (UIMenu *)contextMenuForEntry:(FFEntry *)item
 {
+    // 分区全部 displayInline：直接平铺显示，绝不折叠成箭头子菜单。
+    // 分组只用于视觉分段；iPad 上系统自动双列。
     NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
     for (NSArray<FFMenuDescriptor *> *section in
         [self contextMenuSectionsForEntry:item]) {
@@ -1658,7 +1818,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             if (d.destructive) action.attributes = UIMenuElementAttributesDestructive;
             [actions addObject:action];
         }
-        [children addObject:[UIMenu menuWithTitle:@"" children:actions]];
+        [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+            options:UIMenuOptionsDisplayInline children:actions]];
     }
     return [UIMenu menuWithTitle:item.name children:children];
 }
@@ -1837,11 +1998,17 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 - (void)pasteAction:(id)sender
 {
     if (gClipboardSources.count == 0) return;
-    if ([self pasteIsInsideClipboardSource]) return;
+    // 拦截分支同样收起横幅并提示原因，不残留"粘贴/取消"悬浮条。
+    if ([self pasteIsInsideClipboardSource]) {
+        [self hidePasteBanner];
+        [self flash:@"不能粘贴到自身或其子目录"];
+        return;
+    }
     // 同目录粘贴（剪切模式）：移动引擎会把文件搬到自身再“替换”，
     // 导致源文件消失。直接拦截并提示。
     NSArray<NSString *> *sameDir = [self clipboardSourcesInCurrentDirectory];
     if (sameDir.count > 0) {
+        [self hidePasteBanner];
         [self flash:[NSString stringWithFormat:
             @"已在当前目录内，忽略 %lu 项", (unsigned long)sameDir.count]];
         return;
