@@ -4,6 +4,7 @@
 #import "FFSettingsViewController.h"
 #import "MCMManager.h"
 
+#import <math.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -241,11 +242,13 @@ static id FFSendId(id object, NSString *selectorName)
     stack.distribution = UIStackViewDistributionFillEqually;
     [bar addSubview:stack];
 
+    NSLayoutConstraint *preferredWidth = [bar.widthAnchor constraintEqualToConstant:330];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [bar.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [bar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8],
-        [bar.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor constant:-32],
-        [bar.widthAnchor constraintEqualToConstant:330],
+        [bar.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor constant:-24],
+        preferredWidth,
         [bar.heightAnchor constraintEqualToConstant:58],
         [stack.topAnchor constraintEqualToAnchor:bar.topAnchor constant:3],
         [stack.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:6],
