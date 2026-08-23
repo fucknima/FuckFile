@@ -190,6 +190,17 @@ static NSString *FFShareSafeName(NSString *name)
 {
     for (NSString *identifier in provider.registeredTypeIdentifiers) {
         UTType *type = [UTType typeWithIdentifier:identifier];
+        if (!type) continue;
+
+        // A file URL is a representation of the file location, not the file
+        // payload itself. public.file-url conforms to public.data, so without
+        // this guard an extensionless file can be imported as a tiny plist-like
+        // serialized URL representation instead of its real bytes.
+        if ([type conformsToType:UTTypeURL]) {
+            NSLog(@"[FuckFileShare] skip URL representation type=%@", identifier);
+            continue;
+        }
+
         if ([type conformsToType:UTTypeData] ||
             [type conformsToType:UTTypeContent])
             return identifier;
@@ -231,15 +242,19 @@ static NSString *FFShareSafeName(NSString *name)
 
     NSString *fileURLType = UTTypeFileURL.identifier;
     if ([provider hasItemConformingToTypeIdentifier:fileURLType]) {
+        NSLog(@"[FuckFileShare] loadItem file-url name=%@",
+            suggestedName ?: @"(actual URL basename)");
         [provider loadItemForTypeIdentifier:fileURLType options:nil
             completionHandler:^(id item, NSError *loadError) {
                 NSURL *url = [item isKindOfClass:NSURL.class] ? item : nil;
+                NSString *actualName = url.lastPathComponent.length
+                    ? url.lastPathComponent : suggestedName;
                 NSError *storeError = nil;
-                BOOL ok = url && !loadError && [self storeSourceURL:url
-                    name:suggestedName typeIdentifier:fileURLType error:&storeError];
+                BOOL ok = url && url.isFileURL && !loadError && [self storeSourceURL:url
+                    name:actualName typeIdentifier:fileURLType error:&storeError];
                 if (!ok)
-                    NSLog(@"[FuckFileShare] file-url FAIL load=%@ store=%@",
-                        loadError, storeError);
+                    NSLog(@"[FuckFileShare] file-url FAIL load=%@ store=%@ item=%@",
+                        loadError, storeError, item);
                 record(ok);
             }];
         return;
@@ -256,7 +271,10 @@ static NSString *FFShareSafeName(NSString *name)
             NSError *storeError = nil;
             BOOL ok = NO;
             if ([item isKindOfClass:NSURL.class]) {
-                ok = [self storeSourceURL:item name:suggestedName
+                NSURL *url = item;
+                NSString *actualName = url.lastPathComponent.length
+                    ? url.lastPathComponent : suggestedName;
+                ok = url.isFileURL && [self storeSourceURL:url name:actualName
                     typeIdentifier:fallbackType error:&storeError];
             } else if ([item isKindOfClass:NSData.class]) {
                 ok = [self storeData:item name:suggestedName
