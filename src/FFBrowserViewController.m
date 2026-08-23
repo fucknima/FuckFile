@@ -1385,7 +1385,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             // 文档（蓝）
             @"txt": @"doc", @"log": @"doc", @"rtf": @"doc", @"doc": @"doc",
             @"docx": @"doc", @"pages": @"doc", @"ppt": @"doc", @"pptx": @"doc",
-            @"key": @"doc", @"pdf": @"doc", @"md": @"doc", @"csv": @"doc",
+            @"pdf": @"doc", @"md": @"doc", @"csv": @"doc",
             @"xls": @"doc", @"xlsx": @"doc", @"numbers": @"doc",
             // 数据/代码/配置（紫）
             @"plist": @"code", @"json": @"code", @"xml": @"code", @"html": @"code",
