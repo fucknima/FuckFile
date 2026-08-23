@@ -29,9 +29,19 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
     [super viewDidLoad];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 60;
+    self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     self.showHiddenFiles = [defaults boolForKey:kFFSettingsShowHiddenFiles];
     self.gridMode = [defaults boolForKey:kFFSettingsGridMode];
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
 }
 
 #pragma mark - Table view
@@ -66,70 +76,86 @@ static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
     if (!cell)
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Cell"];
-    cell.imageView.tintColor = [UIColor systemBlueColor];
+
+    cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+
+    NSString *title = nil;
+    NSString *subtitle = nil;
+    NSString *symbol = nil;
+    UISwitch *toggle = nil;
 
     if (indexPath.section == 0) {
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"显示隐藏文件";
-            UISwitch *toggle = [UISwitch new];
+            title = @"显示隐藏文件";
+            subtitle = @"显示以 . 开头的文件与文件夹";
+            symbol = @"eye";
+            toggle = [UISwitch new];
             toggle.on = self.showHiddenFiles;
             [toggle addTarget:self action:@selector(hiddenFilesChanged:)
              forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle;
-            cell.imageView.image = [UIImage systemImageNamed:@"eye"];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"网格视图";
-            cell.detailTextLabel.text = @"网格模式浏览文件（3 列）";
-            cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2"];
-            UISwitch *toggle = [UISwitch new];
+            title = @"网格视图";
+            subtitle = @"在文件浏览器中使用网格布局";
+            symbol = @"square.grid.2x2";
+            toggle = [UISwitch new];
             toggle.on = self.gridMode;
             [toggle addTarget:self action:@selector(gridModeChanged:)
              forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
-            cell.textLabel.text = @"关于";
-            cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"FuckFile %@（构建 %@）· iOS %@",
+            title = @"关于";
+            subtitle = [NSString stringWithFormat:@"FuckFile %@（构建 %@）· iOS %@",
                 NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?",
                 NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"?",
                 UIDevice.currentDevice.systemVersion];
-            cell.imageView.image = [UIImage systemImageNamed:@"info.circle"];
+            symbol = @"info.circle";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
     } else if (indexPath.section == 1) {
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"支持的文件查看器";
-            cell.detailTextLabel.text = @"图片/文本/plist/SQLite/Hex/Web 等";
-            cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2"];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            title = @"支持的文件查看器";
+            subtitle = @"图片、文本、plist、SQLite、Hex、Web 等";
+            symbol = @"rectangle.stack";
         } else {
-            cell.textLabel.text = @"文件关联";
-            cell.detailTextLabel.text = @"扩展名 → 查看器映射，立即生效";
-            cell.imageView.image = [UIImage systemImageNamed:@"arrow.triangle.branch"];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            title = @"文件关联";
+            subtitle = @"扩展名 → 查看器映射，修改后立即生效";
+            symbol = @"arrow.triangle.branch";
         }
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"运行日志";
-            cell.detailTextLabel.text = @"查看、分享、导出诊断信息";
-            cell.imageView.image = [UIImage systemImageNamed:@"doc.text"];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            title = @"运行日志";
+            subtitle = @"查看、分享、导出诊断信息";
+            symbol = @"doc.text";
         } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"清理缓存";
-            cell.detailTextLabel.text = @"删除缩略图缓存";
-            cell.imageView.image = [UIImage systemImageNamed:@"trash"];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            title = @"清理缓存";
+            subtitle = @"删除缩略图缓存";
+            symbol = @"trash";
         } else {
-            cell.textLabel.text = @"重新扫描";
-            cell.detailTextLabel.text = @"重新扫描 App 数据";
-            cell.imageView.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            title = @"重新扫描";
+            subtitle = @"重新扫描 App 数据";
+            symbol = @"arrow.clockwise";
         }
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
+
+    UIListContentConfiguration *config = [cell defaultContentConfiguration];
+    config.text = title;
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    config.secondaryText = subtitle;
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    config.secondaryTextProperties.numberOfLines = 2;
+    config.image = [UIImage systemImageNamed:symbol];
+    config.imageProperties.tintColor = UIColor.systemBlueColor;
+    config.imageProperties.maximumSize = CGSizeMake(26, 26);
+    cell.contentConfiguration = config;
+    if (toggle) cell.accessoryView = toggle;
     return cell;
 }
 
