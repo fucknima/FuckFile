@@ -34,7 +34,6 @@
     [super viewDidLoad];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self
         action:@selector(reloadStatus)];
@@ -71,7 +70,6 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
     [self reloadStatus];
 }
 
@@ -113,9 +111,9 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"文件";
+        case 0: return @"位置";
         case 1: return @"快捷访问";
-        case 2: return nil;
+        case 2: return @"设置";
         default: return nil;
     }
 }
@@ -133,13 +131,13 @@
 
     switch (indexPath.section) {
         case 0: {
-            // 主入口：App 数据
-            cell.textLabel.text = @"App 数据";
-            cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
+            // 主入口：MCM 虚拟根（Device Storage）。名称与实际行为一致。
+            cell.textLabel.text = @"设备存储";
+            cell.imageView.image = [UIImage systemImageNamed:@"internaldrive"];
             if (self.scanInProgress) {
                 NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
                 cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"正在扫描 %lu/%lu … 已发现 %lu 个 App",
+                    @"正在扫描 %lu/%lu · 已发现 %lu 个 App",
                     (unsigned long)done, (unsigned long)self.scanTotal,
                     (unsigned long)self.scanLinked];
             } else {
