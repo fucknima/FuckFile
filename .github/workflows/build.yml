@@ -17,19 +17,17 @@ jobs:
         run: |
           sudo mkdir -p /opt/theos
           sudo chown "$(whoami)" /opt/theos
-          # Pinned to a specific commit so tooling never drifts.
           git clone --recursive https://github.com/theos/theos.git /opt/theos
           cd /opt/theos
           git checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
           git submodule update --init --recursive
-          # Pin ldid to a fixed release instead of brewing the latest.
           curl -fL -o /tmp/ldid \
             https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_macosx_arm64
           chmod +x /tmp/ldid
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
-      - name: Build
+      - name: Build app and share extension
         run: |
           export THEOS=/opt/theos
           make clean
@@ -37,50 +35,82 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
+          set -euo pipefail
           echo "Branch: ${GITHUB_REF_NAME}"
+
           APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
-          if [ -z "$APP" ]; then
-            echo "FuckFile.app not found under .theos/obj"
-            find .theos -maxdepth 4 -type d | head -20
-            exit 1
+          EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "ERROR: FuckFile.app not found"; exit 1
           fi
-          # Theos 'make' (compile only) does not place Info.plist in the
-          # .app bundle; inject the repo one and pin the critical fields.
+          if [ -z "$EXT_BUILD" ] || [ ! -d "$EXT_BUILD" ]; then
+            echo "ERROR: FuckFileShare.appex not found"; find .theos/obj -maxdepth 4 -type d; exit 1
+          fi
+          if [ ! -x "$EXT_BUILD/FuckFileShare" ]; then
+            echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
+          fi
+
+          # Theos compile output is normalized explicitly so the IPA never
+          # depends on staging side effects.
           cp Info.plist "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Info.plist" 2>/dev/null || true
+          cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist"
           plutil -lint "$APP/Info.plist"
-          # Compile a real launch storyboard: without one, sideloaded apps
-          # fall back to legacy compatibility mode and get black bars on
-          # modern iPhones (only the middle third of the screen renders).
+          plutil -lint "$EXT_BUILD/Info.plist"
+
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
-          ls -la "$APP/Base.lproj"
-          # Compile the app icon asset catalog (light + dark appearance).
-          # actool writes Assets.car into the bundle; the Info.plist keys
-          # (CFBundleIcons/AppIcon) are already in the repo plist.
+
           xcrun actool Assets.xcassets \
             --compile "$APP" \
             --platform iphoneos \
             --minimum-deployment-target 15.0 \
             --app-icon AppIcon \
             --output-format human-readable-text \
-            --output-partial-info-plist "$APP/icon-partial-info.plist" \
-            && ls -la "$APP/Assets.car" || exit 1
-          # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
-          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
-          plutil -lint "$APP/Info.plist"
-          # Strip any certificate-based signature down to ad-hoc so the
-          # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
-          # Fail loudly: a broken signature produces an unusable artifact.
+            --output-partial-info-plist "$APP/icon-partial-info.plist"
+          test -f "$APP/Assets.car"
+          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
+
+          rm -rf "$APP/PlugIns/FuckFileShare.appex"
+          mkdir -p "$APP/PlugIns"
+          ditto "$EXT_BUILD" "$APP/PlugIns/FuckFileShare.appex"
+          EXT="$APP/PlugIns/FuckFileShare.appex"
+
+          echo "== LCSign-parity plist verification =="
+          plutil -p "$APP/Info.plist"
+          plutil -p "$EXT/Info.plist"
+
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :UISupportsDocumentBrowser' "$APP/Info.plist")" = "true" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "false" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSHandlerRank' "$APP/Info.plist")" = "Default" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = "com.apple.share-services" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")" = "FFShareViewController" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionActivationRule:NSExtensionActivationSupportsFileWithMaxCount' "$EXT/Info.plist")" = "25" ] || exit 1
+
+          echo "== Share extension Mach-O =="
+          file "$EXT/FuckFileShare"
+          otool -l "$EXT/FuckFileShare" | grep -A3 LC_MAIN
+
+          # Nested code must be signed first; the containing app is signed last
+          # so its CodeResources records the final appex signature.
+          codesign --force -s - "$EXT"
           codesign --force -s - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "== Embedded signatures/entitlements (diagnostic) =="
+          codesign -d --entitlements :- "$APP" 2>/dev/null || true
+          codesign -d --entitlements :- "$EXT" 2>/dev/null || true
+
           rm -rf Payload FuckFile.ipa
           mkdir -p Payload
-          cp -R "$APP" Payload/
+          ditto "$APP" Payload/FuckFile.app
           zip -qry FuckFile.ipa Payload
+
+          test -f FuckFile.ipa
+          unzip -l FuckFile.ipa | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
           echo "IPA: $(pwd)/FuckFile.ipa ($(du -h FuckFile.ipa | cut -f1))"
-          unzip -l FuckFile.ipa
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
