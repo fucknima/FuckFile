@@ -26,7 +26,9 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 58;
+    self.tableView.estimatedRowHeight = 60;
+    self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     if (self.mode == FFBookmarksModeRecent)
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
             initWithTitle:@"清空" style:UIBarButtonItemStylePlain
@@ -36,6 +38,7 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
     [self reloadItems];
 }
 
@@ -65,18 +68,20 @@
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Cell"];
     }
     FFBookmark *bookmark = self.items[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = bookmark.name.length ? bookmark.name : bookmark.path.lastPathComponent;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.secondaryText = bookmark.path;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
-        weight:UIFontWeightRegular];
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     config.secondaryTextProperties.numberOfLines = 2;
-    config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder" : @"doc"];
+    config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder.fill" : @"doc"];
+    config.imageProperties.tintColor = bookmark.isDirectory ? UIColor.systemBlueColor : UIColor.secondaryLabelColor;
+    config.imageProperties.maximumSize = CGSizeMake(32, 32);
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
