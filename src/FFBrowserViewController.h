@@ -10,7 +10,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL isSymlink;
 @property(nonatomic, copy) NSString *linkTarget;
 @property(nonatomic, copy) NSString *detail;
-@property(nonatomic, copy) NSString *fullDetail;
 @property(nonatomic) unsigned long long size;
 @property(nonatomic, strong) NSDate *modificationDate;
 @property(nonatomic, strong) NSDate *creationDate;

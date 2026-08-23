@@ -37,6 +37,8 @@ static id FFDeepMutableCopy(id object)
         _filePath = path;
         _keyPath = @[];
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

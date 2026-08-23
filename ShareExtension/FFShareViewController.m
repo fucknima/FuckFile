@@ -26,6 +26,7 @@
     self.statusLabel = [UILabel new];
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.statusLabel.text = @"正在导入到 FuckFile…";
+    self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
     [self.view addSubview:self.statusLabel];
@@ -190,6 +191,17 @@ static NSString *FFShareSafeName(NSString *name)
 {
     for (NSString *identifier in provider.registeredTypeIdentifiers) {
         UTType *type = [UTType typeWithIdentifier:identifier];
+        if (!type) continue;
+
+        // A file URL is a representation of the file location, not the file
+        // payload itself. public.file-url conforms to public.data, so without
+        // this guard an extensionless file can be imported as a tiny plist-like
+        // serialized URL representation instead of its real bytes.
+        if ([type conformsToType:UTTypeURL]) {
+            NSLog(@"[FuckFileShare] skip URL representation type=%@", identifier);
+            continue;
+        }
+
         if ([type conformsToType:UTTypeData] ||
             [type conformsToType:UTTypeContent])
             return identifier;
@@ -231,15 +243,19 @@ static NSString *FFShareSafeName(NSString *name)
 
     NSString *fileURLType = UTTypeFileURL.identifier;
     if ([provider hasItemConformingToTypeIdentifier:fileURLType]) {
+        NSLog(@"[FuckFileShare] loadItem file-url name=%@",
+            suggestedName ?: @"(actual URL basename)");
         [provider loadItemForTypeIdentifier:fileURLType options:nil
             completionHandler:^(id item, NSError *loadError) {
                 NSURL *url = [item isKindOfClass:NSURL.class] ? item : nil;
+                NSString *actualName = url.lastPathComponent.length
+                    ? url.lastPathComponent : suggestedName;
                 NSError *storeError = nil;
-                BOOL ok = url && !loadError && [self storeSourceURL:url
-                    name:suggestedName typeIdentifier:fileURLType error:&storeError];
+                BOOL ok = url && url.isFileURL && !loadError && [self storeSourceURL:url
+                    name:actualName typeIdentifier:fileURLType error:&storeError];
                 if (!ok)
-                    NSLog(@"[FuckFileShare] file-url FAIL load=%@ store=%@",
-                        loadError, storeError);
+                    NSLog(@"[FuckFileShare] file-url FAIL load=%@ store=%@ item=%@",
+                        loadError, storeError, item);
                 record(ok);
             }];
         return;
@@ -256,7 +272,10 @@ static NSString *FFShareSafeName(NSString *name)
             NSError *storeError = nil;
             BOOL ok = NO;
             if ([item isKindOfClass:NSURL.class]) {
-                ok = [self storeSourceURL:item name:suggestedName
+                NSURL *url = item;
+                NSString *actualName = url.lastPathComponent.length
+                    ? url.lastPathComponent : suggestedName;
+                ok = url.isFileURL && [self storeSourceURL:url name:actualName
                     typeIdentifier:fallbackType error:&storeError];
             } else if ([item isKindOfClass:NSData.class]) {
                 ok = [self storeData:item name:suggestedName
@@ -420,9 +439,11 @@ static void FFEnsureLaunchServicesLoaded(void)
 - (void)finishWithImportedCount:(NSInteger)count
 {
     [self.spinner stopAnimating];
-    self.statusLabel.text = count > 0
+    BOOL success = count > 0;
+    self.statusLabel.text = success
         ? [NSString stringWithFormat:@"已接收 %ld 个文件，正在打开 FuckFile…", (long)count]
         : @"没有收到可导入的文件";
+    self.statusLabel.textColor = success ? [UIColor labelColor] : [UIColor secondaryLabelColor];
 
     NSURL *wakeURL = [NSURL URLWithString:
         [NSString stringWithFormat:@"%@://shared-inbox", FFShareWakeScheme]];

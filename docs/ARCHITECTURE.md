@@ -22,6 +22,10 @@ UI 不直接负责具体文件系统操作。
 | Viewer 注册表 | `FFViewerRegistry`（viewer ID/显示名/图标/可用状态/open 分发的唯一来源） |
 | 文件关联 | `FFFileAssociationService`（内置默认表在代码中 + NSUserDefaults 用户覆盖，最长后缀优先匹配） |
 | 文件系统访问底座 | `MCMManager`（MHA 身份容器访问）+ `FFLSDiscovery`（LaunchServices 扫描） |
+| 路径/时间展示 | `FFPathDisplay`（语义短路径、今天/昨天相对时间；列表/搜索/收藏共用） |
+| 动态字体 | `FFTypography.FFPreferredFont(style, weight)`（UIFontMetrics 缩放） |
+| 路径面包屑 | `FFPathBreadcrumbView`（单行可点上级路径；push 正常浏览器实例） |
+| 文件信息 | `FFFileInfoViewController` + `FFFileMetadataService`（xattr/MIME/权限/目录项数/大小，进入页面后后台加载；不在目录扫描阶段读取） |
 
 ## 外部文件导入
 
@@ -96,6 +100,15 @@ provider 回调存活期间立即持久化          │
 - 修改立即生效：查找始终读实时状态，无需重启。
 - Browser 不再维护扩展名 if/else 预览逻辑，只负责浏览、选择与调用 Router；
   长按菜单的「安装 / 浏览压缩包 / 用其他查看器打开」通过 Router 显式指定 viewer ID。
+
+## UI 布局约定（ADR-013）
+
+- 导航栏全局 inline（`prefersLargeTitles=NO`）；普通页面
+  `UINavigationItemLargeTitleDisplayModeNever`，媒体/PDF 等沉浸页跟随。
+- 浏览器层级：NavigationBar（Back/当前文件夹名/More）→ 面包屑（36pt，
+  root 收缩为 0）→ 文件列表/网格；底部 Toolbar 仅筛选与「+」。
+- 目录扫描主路径只做 lstat；xattr/MIME/递归统计等一律属性页内后台加载。
+- 列表/网格切换在「更多 → 显示方式」运行时完成并持久化为设置默认值。
 
 ## Viewers
 

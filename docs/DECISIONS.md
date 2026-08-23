@@ -312,3 +312,75 @@ LCSign 1.2-8 的实际 IPA 结构作为已验证参考，而不是继续假设�
 - CI 可以证明编译、Mach-O entry point、嵌入结构和嵌套签名正确；只有真机
   能最终证明具体 iOS/重签器组合下 Share Extension 被系统加载以及 class-4
   bridge 的运行时授权。未做真机验证前不得把该项写成“已完全验证”。
+
+## ADR-013
+
+日期：2026-08-23
+
+决定：
+
+导航与浏览器信息架构收敛为「Inline 导航 + 紧凑文件信息层级」：
+
+1. 导航栏全局 `prefersLargeTitles = NO`（AppDelegate 与首页
+   `viewWillAppear` 同时移除 YES），所有普通页面显式
+   `UINavigationItemLargeTitleDisplayModeNever`。根因：旧实现
+   `navigationBar.prefersLargeTitles=YES` + 首页
+   `largeTitleDisplayModeAlways` 使标题以巨型文案占据正文区。标题回到
+   系统顶部导航栏。
+2. 浏览器新增 FFPathBreadcrumbView（导航栏下方单行、横向滚动、36pt、
+   上级目录可点、点击 push 对应路径的正常浏览器、root 时高度收缩为 0），
+   「设备存储 › AppData › 微信 › Documents」级语义路径，禁止把
+   /private/var/... 原始前缀展示给用户。
+3. 列表条目 metadata 精简：文件夹「文件夹 · 今天 17:30」、文件
+   「3.6 KB · 今天 17:29」、符号链接「符号链接 · 今天 17:29」
+   （完整 link target 只出现在文件信息页）；颜色降噪：仅文件夹
+   systemBlue / 符号链接 systemTeal / 归档·数据库·证书语义色，其余灰色。
+4. Metadata 懒加载：目录扫描只做 lstat（name/type/size/uid/gid/日期），
+   listxattr/getxattr 移出扫描主路径，改由 FFFileMetadataService 在
+   FFFileInfoViewController 打开后后台读取。属性从 Alert 升级为
+   InsetGrouped 属性页（FFFileInfoViewController）。
+5. Grid 自适应列（按可用宽度 + 最小项宽计算列数，不判断机型；保留
+   floor / 极窄 44×72 兜底 / 懒创建与离开即销毁，iOS 27 flowlayout
+   断言修复不回归）。列表/网格运行时切换放浏览器「更多 → 显示方式」，
+   设置页「默认视图」只控制新打开目录的默认值（持久化同一个
+   FFSettingsGridMode key，切换时全局同步——与旧开关行为一致，理由：
+   用户对「当前视图」的预期通常是全局的，Files 也是如此）。
+6. 更多菜单重排：选择 / 粘贴（有剪贴板内容才启用）/ 导入文件… /
+   新建文件夹 / 新建文件 / 排序方式 / 显示方式 / 刷新；
+   「+」只保留新建文件夹与新建文件（刷新不属于新建，改用
+   pull-to-refresh 与「更多 → 刷新」）。
+7. 搜索页 tableHeaderView UISearchBar 统一为 UISearchController
+   （与浏览器一致）；搜索结果/收藏/最近访问的路径副标题改为语义短路径
+   （「AppData › 微信 › Documents」或最后 2~3 层），完整真实路径只在
+   文件信息页与复制路径出现；结果点击仍为「打开 / 跳转所在目录 /
+   取消」Action Sheet（需求 28 保护项），iPad popover 已配置。
+8. 首页信息架构修正：主入口改名「设备存储」（进入 MCMVirtualRoot，
+   语义与行为一致），subtitle「N 个 App · 最近扫描 HH:mm」/扫描中
+   「正在扫描 X/Y · 已发现 Z 个 App」；不新增 Imported 独立入口，
+   分享导入复用 AppDelegate showImportedDirectory 幂等导航。
+9. 设置页重新分组：显示（默认视图 / 显示隐藏文件 / 文件夹优先）、
+   文件查看、存储与缓存（缩略图缓存尺寸 + 清理）、高级与调试、
+   关于（Version/Build/iOS）；删除「网格模式浏览文件（3 列）」文案。
+   文件夹优先为新增显示偏好（FFFoldersFirst，默认 YES，同级原行为）。
+10. Dynamic Type 落地：列表/网格/空态/横幅/Search/Bookmarks/Tasks/
+    属性页统一 FFPreferredFont(style, weight)（UIFontMetrics 缩放），
+    metadata 行不再 monospaced 小字。
+
+原因：
+
+- 大标题直接挤占文件内容空间，与「文件内容优先」产品原则冲突；信息
+  层级（路径 → 文件 → 元数据）要求导航栏只承担 Back / 标题 / More。
+- decorateEntries 在 1000/10000 文件目录会对每个条目执行
+  listxattr+getxattr（每个 xattr 再 getxattr 一次），高频 syscall 拖慢
+  首屏与滚动；属性信息只有打开属性页时才需要。
+- 完整链路 target（MCM 链接长路径）在列表属于噪声，放属性页仍可复制。
+
+限制：
+
+- 宽屏/iPad 适配只对新组件保证（breadcrumb/popover 已配置 sourceView），
+  UISplitViewController 暂不改动。
+- Dynamic Type 极端字号（AX5+）未真机验收，Cell 高度自适应但网格名
+  仍单行。
+- Share Extension 只做轻量视觉统一（Dynamic Type / 次级色 / 失败态），
+  processInputItems/bridge/wake 逻辑零改动（外部分享矩阵真机未测）。
+

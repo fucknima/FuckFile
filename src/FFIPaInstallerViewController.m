@@ -26,6 +26,8 @@
     if (self) {
         _ipaPath = [path copy];
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

@@ -2,13 +2,18 @@
 
 #import "FFViewerRegistry.h"
 #import "FFFileAssociationService.h"
+#import "FFTypography.h"
 
 @implementation FFSupportedViewersViewController
 
 - (instancetype)init
 {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) self.title = @"支持的文件查看器";
+    if (self) {
+        self.title = @"支持的文件查看器";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 
@@ -67,10 +72,10 @@
 
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = viewer.displayName;
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
     config.secondaryText = viewer.summary;
     config.secondaryTextProperties.numberOfLines = 0;
-    config.secondaryTextProperties.font =
-        [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleFootnote, UIFontWeightRegular);
     config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     UIImage *icon = [UIImage systemImageNamed:viewer.iconName];
     config.image = icon ?: [UIImage systemImageNamed:@"doc.text"];

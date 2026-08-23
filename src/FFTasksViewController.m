@@ -1,6 +1,7 @@
 #import "FFTasksViewController.h"
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
+#import "FFTypography.h"
 
 #import <objc/runtime.h>
 
@@ -13,7 +14,11 @@
 - (instancetype)init
 {
     self = [super initWithStyle:UITableViewStylePlain];
-    if (self) self.title = @"任务中心";
+    if (self) {
+        self.title = @"任务中心";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 
@@ -23,7 +28,7 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 72;
+    self.tableView.estimatedRowHeight = 88;
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter]
@@ -59,35 +64,46 @@
     FFFileTask *task = self.tasks[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = task.displayName;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    NSMutableString *detail = [NSMutableString stringWithFormat:@"%@ · %@",
-        task.kindText, task.stateText];
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
+    config.textProperties.numberOfLines = 2;
+    // 两行信息层级：主行 = 状态/文件/总量；副行 = 速度/ETA 或完成结果。
+    NSMutableString *detail = [NSMutableString string];
     if (task.state == FFFileTaskStateRunning) {
-        [detail appendFormat:@" · %@", task.detailName ?: @""];
-        if (task.totalBytes > 0)
-            [detail appendFormat:@" · %@ / %@",
-                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
+        if (task.detailName.length)
+            [detail appendString:task.detailName];
+        NSString *progressText = task.totalBytes > 0
+            ? [NSString stringWithFormat:@"%@ / %@",
+                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]]
+            : @"进行中";
+        if (detail.length) [detail appendString:@"\n"];
+        [detail appendString:progressText];
         if (task.averageBytesPerSecond > 0) {
-            [detail appendFormat:@" · %@/s",
-                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
+            [detail appendFormat:@"  ·  %@/s", [self formatSize:(unsigned long long)
+                task.averageBytesPerSecond]];
             if (task.estimatedRemainingSeconds > 0) {
                 NSTimeInterval seconds = task.estimatedRemainingSeconds;
-                if (seconds < 60)
-                    [detail appendFormat:@" · 剩余 %d 秒", (int)seconds];
-                else
-                    [detail appendFormat:@" · 剩余 %d 分", (int)(seconds / 60)];
+                [detail appendFormat:@"  ·  剩余 %d 秒", (int)seconds];
             }
         }
-    } else if (task.state == FFFileTaskStateCompleted || task.state == FFFileTaskStateFailed) {
-        [detail appendFormat:@" · 成功 %lu 失败 %lu 跳过 %lu",
-            (unsigned long)task.succeededCount, (unsigned long)task.failedCount,
-            (unsigned long)task.skippedCount];
-        if (task.state == FFFileTaskStateFailed && task.error)
-            [detail appendFormat:@"\n%@", task.error.localizedDescription];
+    } else if (task.state == FFFileTaskStateCompleted) {
+        [detail appendString:@"已完成"];
+        if (task.totalBytes > 0)
+            [detail appendFormat:@"  ·  %@", [self formatSize:task.completedBytes]];
+        [detail appendFormat:@"  ·  %lu 项", (unsigned long)MAX(task.succeededCount, 1u)];
+        if (task.failedCount > 0)
+            [detail appendFormat:@"  ·  失败 %lu", (unsigned long)task.failedCount];
+    } else if (task.state == FFFileTaskStateFailed) {
+        [detail appendString:@"失败"];
+        if (task.error.localizedDescription.length)
+            [detail appendFormat:@"  ·  %@", task.error.localizedDescription];
+    } else if (task.state == FFFileTaskStateCancelled) {
+        [detail appendString:@"已取消"];
+    } else {
+        [detail appendString:@"等待中"];
     }
     config.secondaryText = detail;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 0;
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleSubheadline, UIFontWeightRegular);
+    config.secondaryTextProperties.numberOfLines = 2;
     cell.contentConfiguration = config;
 
     BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;

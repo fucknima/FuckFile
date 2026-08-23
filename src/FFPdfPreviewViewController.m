@@ -20,6 +20,8 @@
     if (self) {
         _filePath = path;
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

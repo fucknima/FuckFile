@@ -56,6 +56,8 @@ static const NSUInteger kPageSize = 64 * 1024;
         _patches = [NSMutableDictionary dictionary];
         _originals = [NSMutableDictionary dictionary];
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

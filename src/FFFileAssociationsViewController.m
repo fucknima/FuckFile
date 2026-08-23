@@ -2,6 +2,7 @@
 
 #import "FFFileAssociationService.h"
 #import "FFViewerRegistry.h"
+#import "FFTypography.h"
 
 @interface FFFileAssociationsViewController ()
 @property(nonatomic, strong) NSArray<NSString *> *extensions;
@@ -12,7 +13,11 @@
 - (instancetype)init
 {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) self.title = @"文件关联";
+    if (self) {
+        self.title = @"文件关联";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 
@@ -133,8 +138,7 @@
 
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = [NSString stringWithFormat:@".%@", extension];
-    config.textProperties.font =
-        [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightMedium];
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
 
     if (viewer) {
         config.secondaryText = viewer.displayName;

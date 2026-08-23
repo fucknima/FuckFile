@@ -23,6 +23,24 @@
 > - 文本编辑器未保存提示、大文件分段预览、plist 深层安全完成
 > - 待办：列表/网格切换（设置页占位）、Dynamic Type/iPad 细化
 >
+> **UI/UX 系统级重构（2026-08-23，ADR-013）**：
+> - 导航 inline 化：全局 prefersLargeTitles=NO + 全部普通页面
+>   largeTitleDisplayModeNever，标题进入系统顶栏
+> - FFPathBreadcrumbView：单行面包屑路径导航（上级可点、横向滚动、
+>   root 收缩隐藏、/private/var 前缀不展示）
+> - 列表条目精简 + 类型色降噪（文件夹蓝/链接青/其余灰 + 归档数据库证书语义色）
+> - Metadata 懒加载：listxattr/getxattr 移出目录扫描（FFFileMetadataService）；
+>   属性页 FFFileInfoViewController（InsetGrouped，基本/位置/时间/文件系统，
+>   xattr 后台加载），替代原来的大段 Alert
+> - Grid 自适应列数（不写死 3 列，宽度推算 + floor + 极窄兜底，懒创建/
+>   离开销毁维持，iOS 27 flowlayout 断言修复不回归）；「更多 → 显示方式」
+>   运行时切换 + 设置「默认视图」
+> - Dynamic Type 落地（FFPreferredFont，列表/网格/搜索/收藏/任务/属性页）
+> - 搜索页统一 UISearchController；搜索/收藏/最近结果路径改语义短路径
+> - 任务中心两行信息层级；设置页重新分组（默认视图/文件夹优先/
+>   存储与缓存尺寸/关于）
+> - 分享入口与 iOS 回归矩阵见下；真机 Share Extension 仍待验收
+>
 > **文件查看体系（2026-08-22）**：
 > - 新增 Viewer Registry + File Association + Preview Router 三层架构（ADR-010）
 > - 打开链路收敛：文件 → FFPreviewRouter → FFFileAssociationService →

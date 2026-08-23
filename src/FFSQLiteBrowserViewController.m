@@ -74,6 +74,8 @@ static const NSUInteger kSQLitePageRows = 200;
         _rows = [NSMutableArray array];
         _totalRows = -1;
         self.title = name;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

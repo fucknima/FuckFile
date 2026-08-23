@@ -2,6 +2,8 @@
 #import "FFBookmarksService.h"
 #import "FFBrowserViewController.h"
 #import "MCMManager.h"
+#import "FFPathDisplay.h"
+#import "FFTypography.h"
 
 @interface FFBookmarksViewController ()
 @property(nonatomic) FFBookmarksMode mode;
@@ -16,6 +18,8 @@
     if (self) {
         _mode = mode;
         self.title = mode == FFBookmarksModeFavorites ? @"收藏" : @"最近访问";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }
@@ -71,11 +75,11 @@
     FFBookmark *bookmark = self.items[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = bookmark.name.length ? bookmark.name : bookmark.path.lastPathComponent;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    config.secondaryText = bookmark.path;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
-        weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 2;
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
+    config.textProperties.numberOfLines = 2;
+    config.secondaryText = FFDisplayPathForPath(bookmark.path);
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleSubheadline, UIFontWeightRegular);
+    config.secondaryTextProperties.numberOfLines = 1;
     config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder" : @"doc"];
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
