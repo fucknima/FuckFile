@@ -1,10 +1,30 @@
 #import "FFAppDelegate.h"
 #import "FFHomeViewController.h"
 #import "FFBrowserViewController.h"
+#import "FFImportService.h"
+#import "FFSharedInboxService.h"
+#import "FFShareBridge.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
+static const NSTimeInterval kFFImportDedupTTL = 5.0;
+
+@interface FFAppDelegate ()
+@property(nonatomic, strong) NSMutableSet<NSString *> *inFlightImports;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *recentImports;
+@end
+
 @implementation FFAppDelegate
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        _inFlightImports = [NSMutableSet set];
+        _recentImports = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
@@ -20,25 +40,6 @@
     FFLog(@"required MCM identity=com.apple.mobile.MobileHouseArrest match=%d",
         [NSBundle.mainBundle.bundleIdentifier
             isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
-    FFLog(@"screen bounds=%@ native=%@ scale=%.2f",
-        NSStringFromCGRect(UIScreen.mainScreen.bounds),
-        NSStringFromCGRect(UIScreen.mainScreen.nativeBounds),
-        UIScreen.mainScreen.scale);
-
-    // Build the MCM virtual root on a background queue so the UI stays
-    // responsive while leases are activated and links are created.
-    // MHA is the only channel: the MCM start builds the virtual root
-    // with class-2/7/10/12/13 direct lookups plus the full LaunchServices
-    // store confirmation on a background queue.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"MCM start begin");
-        [[MCMManager sharedManager] start];
-        FFLog(@"MCM start done");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"FFProbeFinished" object:nil];
-        });
-    });
 
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
@@ -47,147 +48,256 @@
     navigation.navigationBar.prefersLargeTitles = YES;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.backgroundColor = [UIColor systemBackgroundColor];
+    self.window.backgroundColor = UIColor.systemBackgroundColor;
     self.window.rootViewController = navigation;
-    navigation.view.backgroundColor = [UIColor systemBackgroundColor];
+    navigation.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
-    FFLog(@"window frame=%@", NSStringFromCGRect(self.window.frame));
-    FFLog(@"window root frame=%@", NSStringFromCGRect(navigation.view.frame));
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-            FFLog(@"layout window=%@ screen=%@ root=%@ safe=%@ nav=%@",
-                NSStringFromCGRect(self.window.frame),
-                NSStringFromCGRect(UIScreen.mainScreen.bounds),
-                NSStringFromCGRect(navigation.view.frame),
-                NSStringFromUIEdgeInsets(navigation.view.safeAreaInsets),
-                NSStringFromCGRect(navigation.navigationBar.frame));
-        });
 
-    // 冷启动经「打开方式」/分享进入：立即导入。系统的沙盒授权在
-    // 启动后很快回收，延迟处理会报"没有权限"。
+    // MCM is needed for the class-4 Extension Data bridge when a re-signer
+    // strips/denies App Group entitlements. Start it in parallel, then drain
+    // the shared inbox again once leases are available.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        FFLog(@"MCM start begin");
+        [[MCMManager sharedManager] start];
+        FFLog(@"MCM start done");
+        [self processSharedInboxShowingResult:NO];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"FFProbeFinished" object:nil];
+        });
+    });
+
+    // Drain an App Group inbox immediately if one exists. The class-4 bridge
+    // will be retried after MCM start above.
+    [self processSharedInboxShowingResult:NO];
+
+    // With LSSupportsOpeningDocumentsInPlace=NO (LCSign parity), document-open
+    // deliveries are normally copied into our Inbox and are stable local URLs.
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
-    if (incoming) [self importIncomingFileURL:incoming];
+    if (incoming) {
+        FFLogTag(@"Import", @"launchOptions file=%@", incoming.path);
+        [self importIncomingFileURL:incoming];
+    }
     return YES;
 }
 
-#pragma mark - Incoming files（"打开方式" / AirDrop / 分享）
+- (void)applicationDidBecomeActive:(UIApplication *)application
+{
+    [self processSharedInboxShowingResult:NO];
+}
 
-// 经典 AppDelegate 生命周期（无 Scene），系统直接回调本方法。
+#pragma mark - Incoming URLs
+
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url
         options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
+    if ([[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]]) {
+        FFLogTag(@"ShareInbox", @"wake URL received=%@", url.absoluteString);
+        [self processSharedInboxShowingResult:YES];
+        return YES;
+    }
+
+    if (!url.isFileURL) {
+        FFLogTag(@"Import", @"reject non-file URL=%@", url.absoluteString);
+        return NO;
+    }
+
+    BOOL openInPlace = [options[UIApplicationOpenURLOptionsOpenInPlaceKey] boolValue];
+    NSString *sourceApp = options[UIApplicationOpenURLOptionsSourceApplicationKey];
+    FFLogTag(@"Import", @"openURL file=%@ openInPlace=%d sourceApp=%@",
+        url.path, openInPlace, sourceApp ?: @"?");
     return [self importIncomingFileURL:url];
 }
 
-// 接收外部传入的文件：拷贝到 ~/Documents/Device Storage/Imported/
-// （与 AppData 同级目录，重名自动加序号），成功后给出「前往查看」入口。
-// 绝不原地打开外部路径。
+#pragma mark - File import
+
+- (void)pruneRecentImports
+{
+    NSDate *now = NSDate.date;
+    NSMutableArray<NSString *> *expired = [NSMutableArray array];
+    for (NSString *key in self.recentImports) {
+        if ([now timeIntervalSinceDate:self.recentImports[key]] >= kFFImportDedupTTL)
+            [expired addObject:key];
+    }
+    [self.recentImports removeObjectsForKeys:expired];
+}
+
 - (BOOL)importIncomingFileURL:(NSURL *)url
 {
-    if (!url || !url.isFileURL) {
-        FFLog(@"import REJECT non-file URL: %@", url);
-        return NO;
+    if (!url || !url.isFileURL) return NO;
+    NSString *key = url.absoluteString ?: url.path;
+
+    @synchronized (self.inFlightImports) {
+        [self pruneRecentImports];
+        if ([self.inFlightImports containsObject:key]) {
+            FFLogTag(@"Import", @"skip in-flight=%@", key);
+            return YES;
+        }
+        NSDate *recent = self.recentImports[key];
+        if (recent && [NSDate.date timeIntervalSinceDate:recent] < kFFImportDedupTTL) {
+            FFLogTag(@"Import", @"skip recent success=%@", key);
+            return YES;
+        }
+        [self.inFlightImports addObject:key];
     }
-    // iOS 27 冷启动时同一 URL 会经 launchOptions 和 openURL: 各投递一次；
-    // 第二次时 Inbox 源文件已被消费 → “no such file”。按路径去重。
-    static NSMutableSet<NSString *> *handled;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        handled = [NSMutableSet set];
-    });
-    NSString *key = url.path;
-    BOOL isNew = YES;
-    @synchronized (handled) {
-        isNew = ![handled containsObject:key];
-        if (isNew) [handled addObject:key];
-    }
-    if (!isNew) {
-        FFLog(@"import SKIP already handled: %@", key);
-        return YES;
-    }
-    FFLog(@"import BEGIN url=%@", url.path);
+
     NSString *documents = NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // 导入位置：Device Storage/Imported（与 AppData 同级，浏览器内可见）。
     NSString *importedDirectory = [[documents stringByAppendingPathComponent:
         @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:importedDirectory
-        withIntermediateDirectories:YES attributes:nil error:nil];
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        [url startAccessingSecurityScopedResource];
-        NSString *name = url.lastPathComponent ?: @"imported";
-        NSString *destination = [self importDestinationForName:name inDirectory:importedDirectory];
-        NSError *error = nil;
-        BOOL ok = NO;
-        // 授权/Inbox 落盘可能有竞态：失败后退避重试，每次换新目标名。
-        NSTimeInterval delays[] = {0, 0.5, 1.5, 3.0};
-        for (NSUInteger attempt = 0; attempt < 4 && !ok; attempt++) {
-            if (delays[attempt] > 0) [NSThread sleepForTimeInterval:delays[attempt]];
-            error = nil;
-            ok = [[NSFileManager defaultManager]
-                copyItemAtPath:url.path toPath:destination error:&error];
-            FFLog(@"import attempt %lu %@ (%@)", attempt + 1,
-                ok ? @"OK" : @"FAIL", error.localizedDescription ?: @"");
-            if (!ok && attempt < 3)
-                destination = [self importDestinationForName:name
-                                                 inDirectory:importedDirectory] ?: destination;
+    NSError *mkdirError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:importedDirectory
+        withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+        @synchronized (self.inFlightImports) {
+            [self.inFlightImports removeObject:key];
         }
-        [url stopAccessingSecurityScopedResource];
-        FFLog(@"import %@ -> %@ (%@)", ok ? @"OK" : @"FAIL", destination,
-            error.localizedDescription ?: @"");
-        NSString *finalDestination = destination;
+        [self presentImportFailure:mkdirError];
+        return NO;
+    }
 
+    FFLogTag(@"Import", @"BEGIN source=%@", url.path);
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        FFImportResult *result = [FFImportService importURL:url
+            displayName:nil toDirectory:importedDirectory];
         dispatch_async(dispatch_get_main_queue(), ^{
-            UINavigationController *navigation =
-                (UINavigationController *)self.window.rootViewController;
-            if (!navigation) return;
-            UIViewController *top =
-                navigation.topViewController ?: navigation;
-
-            if (!ok) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-                    message:[NSString stringWithFormat:@"导入失败：%@",
-                        error.localizedDescription ?: @"无法读取来源文件"]
-                    preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"好"
-                    style:UIAlertActionStyleCancel handler:nil]];
-                [top presentViewController:alert animated:YES completion:nil];
-                return;
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            @synchronized (strongSelf.inFlightImports) {
+                [strongSelf.inFlightImports removeObject:key];
+                if (result.success) strongSelf.recentImports[key] = NSDate.date;
             }
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-                message:[NSString stringWithFormat:@"已导入：\n%@",
-                    finalDestination.lastPathComponent]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
-                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                    FFBrowserViewController *browser =
-                        [[FFBrowserViewController alloc] initWithPath:importedDirectory];
-                    browser.title = @"Imported";
-                    [navigation pushViewController:browser animated:YES];
-                }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好"
-                style:UIAlertActionStyleCancel handler:nil]];
-            if ([top isKindOfClass:UIAlertController.class]) return; // 已有弹窗时丢弃提示
-            [top presentViewController:alert animated:YES completion:nil];
+            if (result.success)
+                [strongSelf presentImportSuccess:result.destinationPath];
+            else
+                [strongSelf presentImportFailure:result.error];
         });
     });
     return YES;
 }
 
-- (NSString *)importDestinationForName:(NSString *)name inDirectory:(NSString *)directory
+#pragma mark - Shared extension inbox
+
+- (void)processSharedInboxShowingResult:(BOOL)showResult
 {
-    NSString *candidate = [directory stringByAppendingPathComponent:name];
-    if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
-    NSString *base = name.stringByDeletingPathExtension;
-    NSString *ext = name.pathExtension.length ?
-        [@"." stringByAppendingString:name.pathExtension] : @"";
-    for (NSInteger index = 2; index < 1000; index++) {
-        candidate = [directory stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"%@ (%ld)%@", base, (long)index, ext]];
-        if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported,
+        NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
+        if (imported == 0 && errors.count == 0) return;
+        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu",
+            (unsigned long)imported, (unsigned long)errors.count);
+        if (!showResult && imported == 0) return;
+
+        UINavigationController *navigation =
+            (UINavigationController *)self.window.rootViewController;
+        UIViewController *top = navigation.topViewController ?: navigation;
+        if (!top || [top isKindOfClass:UIAlertController.class]) return;
+
+        NSString *message = nil;
+        if (imported > 0 && errors.count == 0) {
+            message = [NSString stringWithFormat:@"已导入 %lu 个共享文件。",
+                (unsigned long)imported];
+        } else if (imported > 0) {
+            message = [NSString stringWithFormat:@"已导入 %lu 个文件，%lu 个失败：%@",
+                (unsigned long)imported, (unsigned long)errors.count,
+                errors.firstObject.localizedDescription ?: @"未知错误"];
+        } else {
+            message = [NSString stringWithFormat:@"共享文件导入失败：%@",
+                errors.firstObject.localizedDescription ?: @"未知错误"];
+        }
+
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
+            message:message preferredStyle:UIAlertControllerStyleAlert];
+        if (destinations.count) {
+            [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
+                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                    NSString *directory = destinations.firstObject.stringByDeletingLastPathComponent;
+                    [self showImportedDirectory:directory navigationController:navigation];
+                }]];
+        }
+        [alert addAction:[UIAlertAction actionWithTitle:@"好"
+            style:UIAlertActionStyleCancel handler:nil]];
+        [top presentViewController:alert animated:YES completion:nil];
+    }];
+}
+
+#pragma mark - Imported-folder navigation
+
+- (void)showImportedDirectory:(NSString *)directory
+         navigationController:(UINavigationController *)navigation
+{
+    if (!directory.length || !navigation) return;
+    NSString *target = directory.stringByStandardizingPath;
+    FFBrowserViewController *existing = nil;
+
+    // Idempotent navigation: an Imported browser is a destination, not a new
+    // screen instance per import. Reuse the existing controller if it is
+    // already anywhere in the stack, otherwise push exactly one.
+    for (UIViewController *controller in navigation.viewControllers) {
+        if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
+        FFBrowserViewController *browser = (FFBrowserViewController *)controller;
+        NSString *path = browser.currentPath.stringByStandardizingPath;
+        if ([path isEqualToString:target]) {
+            existing = browser;
+            break;
+        }
     }
-    return nil;
+
+    if (existing) {
+        FFLogTag(@"ImportUI", @"reuse Imported browser path=%@", target);
+        [existing reloadEntries];
+        if (navigation.topViewController != existing)
+            [navigation popToViewController:existing animated:YES];
+        return;
+    }
+
+    FFLogTag(@"ImportUI", @"push Imported browser path=%@", target);
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
+        initWithPath:target];
+    browser.title = @"Imported";
+    [navigation pushViewController:browser animated:YES];
+}
+
+#pragma mark - Import result UI
+
+- (UIViewController *)topViewController
+{
+    UINavigationController *navigation =
+        (UINavigationController *)self.window.rootViewController;
+    return navigation.topViewController ?: navigation;
+}
+
+- (void)presentImportFailure:(NSError *)error
+{
+    UIViewController *top = [self topViewController];
+    if (!top || [top isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
+        message:[NSString stringWithFormat:@"导入失败：%@",
+            error.localizedDescription ?: @"无法读取来源文件"]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentImportSuccess:(NSString *)destination
+{
+    if (!destination.length) return;
+    UINavigationController *navigation =
+        (UINavigationController *)self.window.rootViewController;
+    UIViewController *top = navigation.topViewController ?: navigation;
+    if (!top || [top isKindOfClass:UIAlertController.class]) return;
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
+        message:[NSString stringWithFormat:@"已导入：\n%@", destination.lastPathComponent]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self showImportedDirectory:destination.stringByDeletingLastPathComponent
+                   navigationController:navigation];
+        }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:alert animated:YES completion:nil];
 }
 
 @end

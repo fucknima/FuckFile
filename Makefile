@@ -6,6 +6,7 @@ ARCHS = arm64 arm64e
 include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME = FuckFile
+APPEX_NAME = FuckFileShare
 
 FuckFile_FILES = \
 	src/main.m \
@@ -18,6 +19,9 @@ FuckFile_FILES = \
 	src/FFCopyEngine.m \
 	src/FFPathPolicy.m \
 	src/FFFileOperationService.m \
+	src/FFImportService.m \
+	src/FFSharedInboxService.m \
+	src/MCMManager+ExtensionData.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
@@ -60,8 +64,17 @@ FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
 FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit
 FuckFile_LIBRARIES = z sqlite3
-
 FuckFile_INFOPLIST = Info.plist
+
+# LCSign-style share-sheet receiver. The extension persists the provider
+# representation while its callback is alive; it never hands a temporary
+# provider path to the main app.
+FuckFileShare_FILES = ShareExtension/FFShareViewController.m
+FuckFileShare_CFLAGS = -I$(PWD)/src -fobjc-arc -Wno-deprecated-declarations
+FuckFileShare_OBJCFLAGS = $(FuckFileShare_CFLAGS)
+FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
+FuckFileShare_INFOPLIST = ShareExtension/Info.plist
+FuckFileShare_INSTALL_PATH = /Applications/FuckFile.app/PlugIns
 
 # The MCM identity bypass requires the host bundle identifier to be exactly
 # this system identity. Do not change it: MobileContainerManager then trusts
@@ -69,7 +82,11 @@ FuckFile_INFOPLIST = Info.plist
 FuckFile_INSTALL_PATH = /Applications
 
 include $(THEOS_MAKE_PATH)/application.mk
+include $(THEOS_MAKE_PATH)/appex.mk
 
 after-stage::
-	@codesign --force -s - --preserve-metadata=identifier,entitlements $(THEOS_STAGING_DIR)/Applications/FuckFile.app 2>/dev/null || true
-	@echo "== ad-hoc re-signed .app at $(THEOS_STAGING_DIR)/Applications/FuckFile.app"
+	@APP="$(THEOS_STAGING_DIR)/Applications/FuckFile.app"; \
+	EXT="$$APP/PlugIns/FuckFileShare.appex"; \
+	if [ -d "$$EXT" ]; then codesign --force -s - "$$EXT"; fi; \
+	codesign --force -s - "$$APP"
+	@echo "== ad-hoc re-signed FuckFile.app + nested share extension"

@@ -74,6 +74,26 @@
 >   授权竞态下也能落盘
 > - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
 >   进包并写入 CFBundleIcons
+>
+> **外部分享架构重做（2026-08-23，ADR-012）**：
+> - 真机 A/B 已确认“文件类型”不是主变量：微信 PDF 可经 openURL 导入，
+>   Files PDF 与 LCSign IPA/ZIP 只唤起主 App且没有 Import 回调。
+> - 逆向核对 LCSign-1.2-8.ipa：其主 App 使用
+>   UIFileSharingEnabled=YES + UISupportsDocumentBrowser=YES +
+>   LSSupportsOpeningDocumentsInPlace=NO，并内嵌标准 LCShareExtension.appex。
+> - 新增 FuckFileShare.appex：share-services + FileWithMaxCount=25，
+>   NSItemProvider 的文件 representation 在 completion 内立即持久化，禁止
+>   把临时 URL 留给主 App。
+> - 新增 FFSharedInboxService + FFImportService：共享条目先以
+>   .partial-UUID 写 payload/metadata，完成后 rename；主 App staging + 原子
+>   commit 到 Device Storage/Imported，同名自动加序号。
+> - 重签兼容不再押注 App Group：若 App Group 可用则使用；否则 Extension
+>   写自身 Documents，主 App 通过 MobileHouseArrest MCM class-4 Extension
+>   Data 访问 PluginKitPlugin 数据容器并消费共享收件箱。
+> - GitHub Actions 已要求真实构建/嵌入 FuckFileShare.appex、验证 LC_MAIN、
+>   nested extension 先签/main app 后签，并 codesign --verify --deep --strict。
+> - [ ] 最终真机验收：Files PDF、LCSign IPA、LCSign ZIP 各测一次；微信 PDF
+>   作为 openURL 回归。CI 通过不等于真机 Share Extension 已验证。
 
 ## P0 架构初始化
 
@@ -82,6 +102,9 @@
 - [~] 建立 LocalStorageProvider（功能等价于 Local 直连，无正式 Protocol 层）
 - [~] 建立统一 FileError（统一使用 NSError，无自定义错误枚举）
 - [~] 建立 FileOperationService（FFCopyEngine 覆盖复制；rename/delete 仍散落在 View 层）
+- [x] 建立 FFImportService（staging、原子提交、security scope/coordinator 外部读取）
+- [x] 建立 Share Extension + FFSharedInboxService（Share Sheet 与 Document Open 双入口）
+- [x] 建立 signer-independent class-4 Extension Data fallback（App Group 不作为唯一依赖）
 - [x] 建立 Logger（FFLogger：时间戳、模块 tag、文件持久化、线程安全）
 - [x] 建立基本项目目录结构（src/ 平铺 + 模块文件）
 
@@ -126,6 +149,7 @@
 - [x] 复制
 - [x] 移动（剪切+粘贴）
 - [x] Duplicate（创建副本）
+- [~] 外部分享导入：代码/CI 已完成，等待一次最终真机验收矩阵
 
 ## P0 多选
 
@@ -195,7 +219,7 @@
 - [x] ThumbnailService（串行生成队列 + 请求合并）
 - [x] 图片缩略图（CGImageSource 降采样）
 - [x] 视频缩略图（AVAssetImageGenerator）
-- [x] PDF缩略图（PDFKit 首页渲染）
+- [x] PDF缩略图（PDFKit：首页渲染）
 - [x] Memory Cache（NSCache，600 项 / 48MB）
 - [x] Disk Cache（Caches/Thumbnails，SHA1 key）
 - [x] Cache Cleanup（日志页「清缓存」+ clearCaches API）
