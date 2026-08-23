@@ -1,5 +1,6 @@
 #import "FFBrowserViewController.h"
 
+#import <math.h>
 #import <objc/runtime.h>
 
 // Presentation-only adapter for the legacy browser controller.
@@ -49,6 +50,11 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
 }
 
 @interface FFBrowserViewController (FFBrowserPresentation)
+// Private presentation selectors implemented by FFBrowserViewController.
+- (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item;
+- (UIMenu *)moreMenu;
+
+// Swizzle targets.
 - (void)ffui_viewDidLoad;
 - (void)ffui_viewWillAppear:(BOOL)animated;
 - (void)ffui_configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item;
@@ -108,7 +114,7 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
     [self ffui_configureCell:cell withItem:item];
 
     id<UIContentConfiguration> current = cell.contentConfiguration;
-    if (![current isKindOfClass:UIListContentConfiguration.class]) return;
+    if (![(id)current isKindOfClass:UIListContentConfiguration.class]) return;
     UIListContentConfiguration *config = (UIListContentConfiguration *)current;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.textProperties.numberOfLines = 1;
@@ -161,7 +167,7 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
 
     id<UIContentView> contentView = (id<UIContentView>)content;
     id<UIContentConfiguration> current = contentView.configuration;
-    if (![current isKindOfClass:UIListContentConfiguration.class]) return cell;
+    if (![(id)current isKindOfClass:UIListContentConfiguration.class]) return cell;
     UIListContentConfiguration *config = (UIListContentConfiguration *)current;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     config.textProperties.numberOfLines = 1;
