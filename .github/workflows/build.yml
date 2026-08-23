@@ -57,6 +57,20 @@ jobs:
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
           ls -la "$APP/Base.lproj"
+          # Compile the app icon asset catalog (light + dark appearance).
+          # actool writes Assets.car into the bundle; the Info.plist keys
+          # (CFBundleIcons/AppIcon) are already in the repo plist.
+          xcrun actool Assets.xcassets \
+            --compile "$APP" \
+            --platform iphoneos \
+            --minimum-deployment-target 15.0 \
+            --app-icon AppIcon \
+            --output-format human-readable-text \
+            --output-partial-info-plist "$APP/icon-partial-info.plist" \
+            && ls -la "$APP/Assets.car" || exit 1
+          # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
+          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
+          plutil -lint "$APP/Info.plist"
           # Strip any certificate-based signature down to ad-hoc so the
           # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
           # Fail loudly: a broken signature produces an unusable artifact.

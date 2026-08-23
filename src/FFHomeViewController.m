@@ -5,6 +5,7 @@
 #import "FFSearchViewController.h"
 #import "FFBookmarksViewController.h"
 #import "FFSettingsViewController.h"
+#import "FFPathPolicy.h"
 #import "MCMManager.h"
 #import "FFFileTaskManager.h"
 #import "FFLogger.h"
@@ -77,7 +78,7 @@
 - (void)reloadStatus
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"];
+        NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"AppData"];
         NSFileManager *manager = NSFileManager.defaultManager;
         NSUInteger count = [[manager contentsOfDirectoryAtPath:appData error:nil] count];
         NSUInteger active = 0;
@@ -136,9 +137,10 @@
             cell.textLabel.text = @"App 数据";
             cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
             if (self.scanInProgress) {
+                NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
                 cell.detailTextLabel.text = [NSString stringWithFormat:
                     @"正在扫描 %lu/%lu … 已发现 %lu 个 App",
-                    (unsigned long)self.scanTotal, (unsigned long)self.scanTotal,
+                    (unsigned long)done, (unsigned long)self.scanTotal,
                     (unsigned long)self.scanLinked];
             } else {
                 NSMutableString *subtitle = [NSMutableString stringWithFormat:
@@ -190,8 +192,8 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            next = [[FFBrowserViewController alloc] initWithPath:
-                [MCMVirtualRoot() stringByAppendingPathComponent:@"App Data"]];
+            // 进入虚拟根：显示 AppData 文件夹、MobileGestalt 链接与日志文件。
+            next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             break;
         case 1:
             if (indexPath.row == 0) next = [FFSearchViewController new];

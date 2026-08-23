@@ -1,5 +1,6 @@
 #import "FFPlistEditorViewController.h"
 #import "FFLogger.h"
+#import "FFPathPolicy.h"
 
 // 深度可变复制：嵌套字典/数组全部转为可变版本。
 // 浅层 mutableCopy 会让深层结构保持不可变，编辑时赋值会崩溃。
@@ -346,10 +347,17 @@ static NSString *FFPlistValueSummary(id value)
 
 - (void)setValue:(id)value atKeyPathComponent:(id)component
 {
-    if ([self.scope isKindOfClass:NSDictionary.class])
+    if ([self.scope isKindOfClass:NSDictionary.class] &&
+        [component isKindOfClass:NSString.class]) {
         self.scope[component] = value;
-    else if ([self.scope isKindOfClass:NSArray.class])
-        [self.scope replaceObjectAtIndex:[component unsignedIntegerValue] withObject:value];
+    } else if ([self.scope isKindOfClass:NSArray.class] &&
+               [component isKindOfClass:NSNumber.class]) {
+        NSUInteger index = [component unsignedIntegerValue];
+        if (index < [self.scope count])
+            [self.scope replaceObjectAtIndex:index withObject:value];
+        else
+            [self flash:@"下标越界，无法修改"];
+    }
     FFLogTag(@"PlistEditor", @"edited %@ at %@ -> %@", component, self.keyPath,
         FFPlistValueSummary(value));
     [self reloadScope];
@@ -413,7 +421,20 @@ static NSString *FFPlistValueSummary(id value)
         [self flash:[NSString stringWithFormat:@"序列化失败：%@", error.localizedDescription]];
         return;
     }
-    if ([data writeToFile:self.filePath options:NSDataWritingAtomic error:&error]) {
+    // 写入前统一路径校验；写入目标使用校验通过的父目录路径。
+    NSString *detail = nil;
+    NSString *finalName = nil;
+    NSString *parent = [FFPathPolicy resolveParentForMutation:self.filePath
+        finalName:&finalName errorMessage:&detail];
+    if (!parent) {
+        FFLogTag(@"PlistEditor", @"save REJECT path=%@ reason=%@",
+            self.filePath, detail ?: @"路径不合法");
+        [self flash:[NSString stringWithFormat:@"无法保存：%@",
+            detail ?: @"路径不合法"]];
+        return;
+    }
+    NSString *target = [parent stringByAppendingPathComponent:finalName];
+    if ([data writeToFile:target options:NSDataWritingAtomic error:&error]) {
         [self flash:@"已保存"];
         FFLogTag(@"PlistEditor", @"saved %@ (%lu bytes)", self.filePath,
             (unsigned long)data.length);

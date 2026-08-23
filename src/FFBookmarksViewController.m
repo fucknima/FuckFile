@@ -96,10 +96,8 @@
         navigationController:self.navigationController completion:^(BOOL available) {
         if (!available) {
             [weakSelf presentUnavailable:bookmark];
-            return;
         }
-        if (!bookmark.isDirectory)
-            [weakSelf.navigationController popToViewController:weakSelf animated:YES];
+        // 文件/目录打开后停留在内容页，不再自动弹回列表。
     }];
 }
 

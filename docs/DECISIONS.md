@@ -177,3 +177,82 @@ V0.4（压缩与编辑）完成后，跳过 V0.5（网络文件：SMB/WebDAV/SFT
 
 日志位置维持 Documents/Device Storage（产品要求与 App Data 同目录），
 以脱敏 + 轮转控制敏感信息与体积，不再单独迁移目录。
+
+## ADR-010
+
+日期：2026-08-22
+
+决定：
+
+文件查看体系采用「Viewer Registry + File Association + Preview Router」
+三层架构，并一次性接入全部查看器：
+
+1. `FFViewerRegistry` 统一管理 viewer ID / 显示名 / 图标 / 可用状态 /
+   open 分发；任何页面不得绕过 Registry 推入查看器。
+2. `FFFileAssociationService` 内置默认关联表写在代码中，用户修改只存
+   NSUserDefaults override；支持自定义扩展名、删除覆盖、恢复默认；
+   匹配为最长后缀优先 + 大小写不敏感 + 前导点规范化。
+3. `FFPreviewRouter` 收敛为：用户覆盖 → 内置默认 → 可用性检查与打开 →
+   内容检测 fallback（plist 嗅探 → 文本嗅探 → Quick Look → Hex）。
+   Browser/Search/Favorites/Recents 共用该 Router。
+4. 新增 Viewer：QuickLook（系统 QLPreviewController）、Web（WKWebView，
+   本地 HTML read-access 根限定在文件所在目录，解析 .url/.webloc）、
+   SQLite3（系统 sqlite3 只读浏览与查询）、Hex（pread 分页 64KB +
+   内存 patch + FFPathPolicy 校验写回 + 失败回滚）、ZIP 包内浏览器
+   （中央目录解析、单条目提取、选中提取、全部解压复用任务中心）、
+   IPA 安装器（解析应用信息；安装按真实环境如实反馈）。
+5. `.deb` 完全排除：不注册专用关联、不进 ZIP 浏览器、不交安装器，
+   并清理了既有代码把 .deb 当 ZIP/归档的判断。不实现终端，脚本类
+   扩展名仅按文本打开。
+
+原因：
+
+- 避免扩展名判断散落在 Browser 各处（此前 previewEntry 内联路由已
+  开始重新堆积 images/videos/pdf 的 if/else）。
+- 支持用户自定义关联且立即生效；升级新增默认格式不覆盖用户选择。
+- Viewer 可扩展：新格式只需注册一个 ID 与实现，Router/UI 不改。
+- Search/Favorites/Recents/Browser 四个入口天然共享同一打开链路与
+  fallback，不再各自维护预览逻辑。
+- 不支持的格式（TAR/GZ/7z/RAR/XZ/BZ2 无解析后端）明确显示「暂不支持/
+  部分支持」，禁止拿 ZIP 解析器硬解或伪装成功。
+
+限制记录：
+
+- IPA 安装在免越狱容器环境无 installd 后端，安装按钮如实说明原因，
+  提供 ZIP 浏览/分享/解压替代路径。
+- SQLite 编辑器第一版只读（浏览+查询），记录编辑待后续带事务实现。
+- Hex 编辑器按行编辑字节（每行 16 字节），保存前全部驻留内存 patch，
+  写回失败时用缓存原值回滚，保证不留半修改状态。
+
+## ADR-011
+
+日期：2026-08-22
+
+决定：
+
+格式解析类代码一律优先采用经过实战检验的开源实现，禁止手写解析器。
+本次将 ZIP 解析（列表 + 单条目提取 + 全量解压）切换到 vendor 进仓库的
+minizip（third_party/minizip，zlib License，来源 madler/zlib contrib），
+删除全部手写 EOCD/CDE/本地头扫描代码。Makefile 直接编译其 .c 文件。
+
+原因：
+
+- 手写 EOCD/CDE 解析器在真实世界归档上暴露兼容性问题：用户实测
+  Actions artifact zip 显示"无法解析包内结构"。这类边界（数据描述符、
+  非标准 extra 字段、ZIP64、编码变体）minizip 已处理了二十余年。
+- zlib 已是现有依赖，minizip 是纯 C、零新依赖，theos 构建链无改动成本。
+- 此前未采用现成库的理由（担心交叉编译验证拖慢交付）不成立——
+  实际引入只花了两个 commit；而手写解析器的缺陷修复成本远高于此。
+- 安全规则保留在 minizip 之上：条目数上限、单条目体积上限、文件名消毒、
+  符号链接与加密条目拒绝、CRC 校验（unzCloseCurrentFile）、临时目录 +
+  rename 原子提交。
+
+同类决策：
+
+- 图片浏览器缩放采用 PhotoScroller 模式（UIScrollView + viewForZooming）
+- Hex 编辑器补 GOTO/CRC32/SHA-256 校验和（开源十六进制编辑器的通用能力集）
+- SQLite 保持系统 sqlite3；CSV 导出为通用能力补充
+- 文本编辑器语法高亮暂缓：ObjC/theos 下无轻量成熟方案，正则高亮收益低
+  且有性能风险，待有合适组件再评估
+
+后续新增任何格式支持（7z/RAR/TAR 等）必须同样先找成熟开源后端。

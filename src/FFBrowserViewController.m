@@ -11,6 +11,10 @@
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
+#import "FFPreviewRouter.h"
+#import "FFFileAssociationService.h"
+#import "FFViewerRegistry.h"
+#import "FFPathPolicy.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
 
@@ -49,35 +53,19 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
     FFFilterModeCode,
 };
 
-@interface FFEntry : NSObject
-@property(nonatomic, copy) NSString *name;
-@property(nonatomic, copy) NSString *displayName;
-@property(nonatomic, copy) NSString *path;
-@property(nonatomic) BOOL isDirectory;
-@property(nonatomic) BOOL isSymlink;
-@property(nonatomic, copy) NSString *linkTarget;
-@property(nonatomic, copy) NSString *detail;
-@property(nonatomic, copy) NSString *fullDetail;
-@property(nonatomic) unsigned long long size;
-@property(nonatomic, strong) NSDate *modificationDate;
-@property(nonatomic, strong) NSDate *creationDate;
-@property(nonatomic) mode_t mode;
-@property(nonatomic) uid_t uid;
-@property(nonatomic) gid_t gid;
-@property(nonatomic, strong) UIImage *thumbnail;
-@end
-
 @implementation FFEntry
 @end
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-@interface FFBrowserViewController () <UISearchResultsUpdating, UIDocumentInteractionControllerDelegate>
+@interface FFBrowserViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
 @property(nonatomic) BOOL loading;
 @property(nonatomic) BOOL hasLoaded;
+@property(nonatomic) NSTimeInterval lastAutoReloadTime;
+@property(nonatomic, strong) UIRefreshControl *refreshControl;
 @property(nonatomic, strong) UIBarButtonItem *pasteItem;
 @property(nonatomic, strong) UIBarButtonItem *sortItem;
 @property(nonatomic, strong) UIBarButtonItem *editItem;
@@ -91,7 +79,8 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic, copy) NSString *batchNormalTitle;
-@property(nonatomic, weak) UINavigationController *previewNavigation;
+@property(nonatomic, strong) UICollectionView *collectionView;
+@property(nonatomic) BOOL gridMode;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
@@ -105,7 +94,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (instancetype)initWithPath:(NSString *)path
 {
-    self = [super initWithStyle:UITableViewStylePlain];
+    self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _currentPath = [path copy];
         _showHiddenFiles = [NSUserDefaults.standardUserDefaults
@@ -119,18 +108,65 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    // 自建 tableView（基类已从 UITableViewController 改为 UIViewController）。
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds
+        style:UITableViewStylePlain];
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
+    [self.view addSubview:self.tableView];
+    [self.tableView reloadData];
+    // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
+    // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
+    // flowlayout 断言闪退的源头 —— 不创建就彻底消除这一类崩溃。
+    self.gridMode = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"FFSettingsGridMode"];
+    if (self.gridMode) [self setupCollectionView];
+    [self applyLayoutModeAnimated:NO];
 
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(reloadEntries)
                   forControlEvents:UIControlEventValueChanged];
+    // 普通 UIViewController 需要手动挂载 refreshControl（iOS 10+ 官方方式）。
+    [self.tableView addSubview:self.refreshControl];
+
+    // 任务中心变更：有任务落到当前目录（复制/移动/解压/压缩完成）时
+    // 自动刷新列表，免去手动下拉。
+    __weak typeof(self) weakSelf = self;
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:FFFileTaskManagerDidChangeNotification object:nil queue:nil
+        usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSArray<FFFileTask *> *tasks = [FFFileTaskManager sharedManager].tasks;
+            BOOL affectsHere = NO;
+            for (FFFileTask *task in tasks) {
+                if (task.destination.length == 0 ||
+                    task.state == FFFileTaskStateQueued) continue;
+                // 粘贴：目标文件夹就是当前目录；压缩/解压：目标文件/
+                // 目录的父级是当前目录。两种情况都刷新。
+                if ([task.destination isEqualToString:strongSelf.currentPath] ||
+                    [task.destination.stringByDeletingLastPathComponent
+                        isEqualToString:strongSelf.currentPath]) {
+                    affectsHere = YES;
+                    break;
+                }
+            }
+            if (!affectsHere) return;
+            // 去抖：通知在进度更新时也会触发，1 秒内只刷一次。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+                if (now - strongSelf.lastAutoReloadTime < 1.0) return;
+                strongSelf.lastAutoReloadTime = now;
+                if (strongSelf.hasLoaded) [strongSelf reloadEntries];
+            });
+        }];
 
     // Reload once the background MCM scan has finished.
-    __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
@@ -148,6 +184,22 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             if (!strongSelf) return;
             if (![strongSelf.currentPath hasPrefix:MCMVirtualRoot()]) return;
             dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf reloadEntries];
+            });
+        }];
+
+    // 设置页修改（显示隐藏文件/网格视图等）后，已打开的浏览器页面即时生效。
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"FFSettingsChangedNotification"
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.showHiddenFiles = [NSUserDefaults.standardUserDefaults
+                    boolForKey:@"FFSettingsShowHiddenFiles"];
+                strongSelf.gridMode = [NSUserDefaults.standardUserDefaults
+                    boolForKey:@"FFSettingsGridMode"];
+                if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
+                [strongSelf applyLayoutModeAnimated:NO];
                 [strongSelf reloadEntries];
             });
         }];
@@ -200,6 +252,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     [super viewWillAppear:animated];
     [self updatePasteState];
+    // 剪贴板是全局的：切到任何文件夹都恢复横幅与菜单状态。
+    if (gClipboardSources.count > 0) [self showPasteBanner];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     if (self.hasLoaded) [self reloadEntries];
     self.navigationController.toolbarHidden = NO;
 }
@@ -237,6 +292,18 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return NO;
 }
 
+// 源文件正好来自当前目录（剪切模式同目录粘贴的致命场景）。
+- (NSArray<NSString *> *)clipboardSourcesInCurrentDirectory
+{
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    NSString *myDirectory = self.currentPath;
+    for (NSString *source in gClipboardSources) {
+        if ([source.stringByDeletingLastPathComponent isEqualToString:myDirectory])
+            [result addObject:source];
+    }
+    return result;
+}
+
 #pragma mark - Batch mode (multi-select)
 
 - (void)toggleBatchMode
@@ -246,7 +313,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated
 {
+    // 基类已是 UIViewController：editing 状态必须手动同步到 tableView。
     [super setEditing:editing animated:animated];
+    [self.tableView setEditing:editing animated:animated];
     self.editItem.title = editing ? @"完成" : @"多选";
     if (editing) {
         // 导航栏：左侧“取消”，右侧“全选”；标题显示已选数量。
@@ -281,6 +350,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         ];
     }
     [self updatePasteState];
+    [self applyLayoutModeAnimated:NO];
 }
 
 - (void)cancelBatchMode
@@ -290,19 +360,26 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (NSArray<UIBarButtonItem *> *)buildBatchToolbarItems
 {
-    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithTitle:@"全选"
+    // 图标按钮代替长文本：6 个中文标题在窄屏会被截断（分享/删除溢出）。
+    UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"checkmark.circle" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchSelectAll)];
-    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:@"复制"
+    selectAll.accessibilityLabel = @"全选";
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"doc.on.doc" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCopy)];
-    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithTitle:@"剪切"
+    copy.accessibilityLabel = @"复制";
+    UIBarButtonItem *cut = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"scissors" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCut)];
-    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩"
+    cut.accessibilityLabel = @"剪切";
+    UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"shippingbox" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
-    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
+    zip.accessibilityLabel = @"压缩";
+    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"square.and.arrow.up" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
-    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithTitle:@"删除"
+    share.accessibilityLabel = @"分享";
+    UIBarButtonItem *trash = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"trash" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
     trash.tintColor = [UIColor systemRedColor];
+    trash.accessibilityLabel = @"删除";
     return @[selectAll, copy, cut, zip, share, trash];
 }
 
@@ -348,6 +425,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     gClipboardMode = mode;
     [self setEditing:NO animated:YES];
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     [self showPasteBanner];
 }
 
@@ -473,8 +551,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.loading = NO;
             [self applyFilter];
             [self.tableView reloadData];
+            if (self.collectionView) [self.collectionView reloadData];
             [self.refreshControl endRefreshing];
             [self updateEmptyState];
+            [self applyLayoutModeAnimated:NO];
         });
     });
 }
@@ -789,20 +869,93 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
-    UIAction *toggleHidden = [UIAction actionWithTitle:@"显示隐藏文件"
-        image:[self symbolImage:@"eye" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) {
-            self.showHiddenFiles = !self.showHiddenFiles;
-            self.moreItem.menu = [self moreMenu];
-            [self reloadEntries];
-        }];
-    toggleHidden.state = self.showHiddenFiles ? UIMenuElementStateOn : UIMenuElementStateOff;
+    UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
     UIMenu *sort = [UIMenu menuWithTitle:@"排序"
         children:@[[self sortMenu]]];
     UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
         children:@[[self filterMenu]]];
     return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, select, sort, filter, toggleHidden]];
+        children:@[paste, import, select, sort, filter]];
+}
+
+#pragma mark - Import from Files app
+
+// 外部导入：系统文件选择器（拷贝模式）。文件落到发起导入的当前目录，
+// 写入经路径安全策略校验，重名自动加序号。
+- (void)importFilesTapped
+{
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"public.data", @"public.content"]
+                       inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = YES;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+// 目标重名时自动加序号，绝不静默覆盖。
+- (NSString *)importDestinationForName:(NSString *)name inDirectory:(NSString *)directory
+{
+    NSString *candidate = [directory stringByAppendingPathComponent:name];
+    if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    NSString *base = name.stringByDeletingPathExtension;
+    NSString *ext = name.pathExtension.length ?
+        [@"." stringByAppendingString:name.pathExtension] : @"";
+    for (NSInteger index = 2; index < 1000; index++) {
+        candidate = [directory stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@ (%ld)%@", base, (long)index, ext]];
+        if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+- (void)documentPicker:(__unused UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+{
+    if (urls.count == 0) return;
+    NSMutableArray<NSURL *> *picked = [urls mutableCopy];
+    // 从哪个文件夹的右上角导入就落到哪个文件夹。目标目录是“目的地
+    // 目录”而非被创建的文件：传一个探针路径（父=当前目录）验证可写，
+    // 再用解析出的 parent（=当前目录）作为落盘根。
+    NSString *probePath = [self.currentPath stringByAppendingPathComponent:@".ff-import"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger imported = 0;
+        NSString *firstFailure = nil;
+        for (NSURL *url in picked) {
+            [url startAccessingSecurityScopedResource];
+            @try {
+                NSString *detail = nil;
+                NSString *finalName = nil;
+                NSString *parent = [FFPathPolicy resolveParentForMutation:probePath
+                    finalName:&finalName errorMessage:&detail];
+                if (!parent) { firstFailure = detail ?: @"路径不可写"; continue; }
+                NSString *destination = [weakSelf importDestinationForName:url.lastPathComponent
+                    inDirectory:parent];
+                if (!destination || ![NSFileManager.defaultManager copyItemAtPath:url.path
+                        toPath:destination error:nil]) {
+                    firstFailure = url.lastPathComponent ?: @"未知文件";
+                    continue;
+                }
+                imported++;
+            } @finally {
+                [url stopAccessingSecurityScopedResource];
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (imported > 0 && weakSelf.hasLoaded)
+                [weakSelf reloadEntries];
+            NSString *message = firstFailure ?
+                [NSString stringWithFormat:@"已导入 %lu 项；失败：%@",
+                    (unsigned long)imported, firstFailure] :
+                [NSString stringWithFormat:@"已导入 %lu 项到当前目录。", (unsigned long)imported];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
 }
 
 #pragma mark - Sort menu
@@ -870,7 +1023,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                       @"rtf", @"doc", @"docx", @"xls", @"xlsx", @"ppt", @"pptx",
                       @"pages", @"numbers", @"key"] containsObject:ext];
         case FFFilterModeArchives:
-            return [@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
+            // .deb 不属于压缩包：无解析后端，不参与归档逻辑。
+            return [@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext];
         case FFFilterModeCode:
             return [@[@"c", @"h", @"m", @"mm", @"swift", @"sh", @"py", @"js", @"ts",
                       @"html", @"css", @"java", @"kt", @"go", @"rs", @"rb", @"php"] containsObject:ext];
@@ -985,7 +1139,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             @"mp4": @"film", @"mov": @"film", @"m4v": @"film", @"avi": @"film", @"mkv": @"film",
             @"mp3": @"music.note", @"m4a": @"music.note", @"wav": @"music.note",
             @"aac": @"music.note", @"caf": @"music.note", @"flac": @"music.note",
-            @"zip": @"archivebox", @"ipa": @"archivebox", @"deb": @"archivebox",
+            @"zip": @"archivebox", @"ipa": @"archivebox",
             @"tar": @"archivebox", @"gz": @"archivebox", @"7z": @"archivebox",
             @"rar": @"archivebox", @"xz": @"archivebox",
             @"db": @"internaldrive", @"sqlite": @"internaldrive", @"sqlite3": @"internaldrive",
@@ -996,7 +1150,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             @"m": @"chevron.left.forwardslash.chevron.right",
             @"mm": @"chevron.left.forwardslash.chevron.right",
             @"swift": @"chevron.left.forwardslash.chevron.right",
-            @"sh": @"terminal", @"command": @"terminal",
+            @"sh": @"doc.plaintext", @"command": @"doc.plaintext",
             @"key": @"key", @"mobileconfig": @"lock.doc", @"cer": @"lock.doc",
             @"p12": @"lock.doc", @"crt": @"lock.doc",
             @"app": @"app.badge", @"dylib": @"shippingbox", @"bundle": @"shippingbox",
@@ -1022,7 +1176,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         return [UIColor systemOrangeColor];
     if ([@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext])
         return [UIColor systemPinkColor];
-    if ([@[@"zip", @"ipa", @"deb", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
+    if ([@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
         return [UIColor systemBrownColor];
     if ([@[@"plist", @"db", @"sqlite", @"sqlite3"] containsObject:ext])
         return [UIColor systemPurpleColor];
@@ -1052,7 +1206,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         return;
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    [self openEntry:self.filteredEntries[indexPath.row]];
+}
+
+// 打开条目：目录进入、文件预览（列表与网格共用）。
+- (void)openEntry:(FFEntry *)item
+{
     [[FFRecentService sharedService] recordPath:item.path
         name:item.displayName.length ? item.displayName : item.name
         isDirectory:item.isDirectory];
@@ -1082,7 +1241,124 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [NSString stringWithFormat:@"已选 %ld 项", (long)count];
 }
 
+#pragma mark - Grid / list layout
+
+- (void)setupCollectionView
+{
+    UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
+    layout.minimumInteritemSpacing = 8;
+    layout.minimumLineSpacing = 12;
+    layout.sectionInset = UIEdgeInsetsMake(12, 12, 12, 12);
+    self.collectionView = [[UICollectionView alloc] initWithFrame:self.view.bounds
+        collectionViewLayout:layout];
+    self.collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    self.collectionView.backgroundColor = [UIColor systemBackgroundColor];
+    self.collectionView.dataSource = self;
+    self.collectionView.delegate = self;
+    self.collectionView.hidden = YES;
+    self.collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.collectionView registerClass:UICollectionViewCell.class
+            forCellWithReuseIdentifier:@"GridCell"];
+    [self.view addSubview:self.collectionView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+    ]];
+}
+
+// 列表/网格切换：显示对应视图（网格 3 列，仅浏览；多选/编辑保持列表）。
+- (void)applyLayoutModeAnimated:(BOOL)animated
+{
+    BOOL useGrid = self.gridMode && !self.editing;
+    if (useGrid && !self.collectionView) [self setupCollectionView];
+    if (!useGrid && self.collectionView && !self.collectionView.hidden) {
+        // 退出网格即销毁：不留隐藏布局对象。
+        [self.collectionView removeFromSuperview];
+        self.collectionView = nil;
+    }
+    if (!self.collectionView) {
+        self.tableView.hidden = NO;
+        return;
+    }
+    self.collectionView.hidden = !useGrid;
+    self.tableView.hidden = useGrid;
+    if (useGrid) {
+        [self.collectionView reloadData];
+    }
+}
+
+#pragma mark - Collection view (grid)
+
+- (NSInteger)collectionView:(UICollectionView *)collectionView
+     numberOfItemsInSection:(NSInteger)section
+{
+    return (NSInteger)self.filteredEntries.count;
+}
+
+- (CGSize)collectionView:(UICollectionView *)collectionView
+                  layout:(UICollectionViewLayout *)collectionViewLayout
+  sizeForItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    // 防御性尺寸：未完成布局（宽度为 0）或极窄时给安全默认值；floor
+    // 防止浮点累加使整行宽度超出可用宽度 —— 超出会触发 flowlayout
+    // 断言闪退（复制/剪切的横幅、压缩弹窗的键盘都会引发隐藏网格的
+    // 布局提交，iOS 27 上隐藏视图同样参与 CATransaction 布局）。
+    CGFloat available = collectionView.bounds.size.width - 24 - 16;
+    if (available < 120) return CGSizeMake(44, 72);
+    CGFloat width = floor(available / 3.0);
+    return CGSizeMake(width, width + 28);
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView
+                  cellForItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    UICollectionViewCell *cell = [collectionView
+        dequeueReusableCellWithReuseIdentifier:@"GridCell" forIndexPath:indexPath];
+    FFEntry *item = self.filteredEntries[indexPath.row];
+    UIView *existing = [cell.contentView viewWithTag:999];
+    [existing removeFromSuperview];
+
+    UIListContentConfiguration *config = [UIListContentConfiguration
+        subtitleCellConfiguration];
+    config.text = item.displayName.length ? item.displayName : item.name;
+    config.textProperties.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    config.textProperties.numberOfLines = 1;
+    config.textProperties.alignment = UIListContentTextAlignmentCenter;
+    config.secondaryText = [self formatSize:item.size];
+    config.secondaryTextProperties.font = [UIFont systemFontOfSize:10];
+    config.secondaryTextProperties.alignment = UIListContentTextAlignmentCenter;
+    config.image = item.thumbnail ?: [self iconForEntry:item];
+    config.imageProperties.maximumSize = CGSizeMake(48, 48);
+    config.imageProperties.cornerRadius = 6;
+    config.imageProperties.tintColor = item.thumbnail ? nil : [self tintForEntry:item];
+    UIView *content = [config makeContentView];
+    content.tag = 999;
+    content.frame = cell.contentView.bounds;
+    content.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    [cell.contentView addSubview:content];
+    return cell;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    didSelectItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    [collectionView deselectItemAtIndexPath:indexPath animated:YES];
+    [self openEntry:self.filteredEntries[indexPath.row]];
+}
+
 #pragma mark - Context menu & swipe actions
+
+// 上下文菜单的 action handler 在菜单收起动画期间被回调；此时直接
+// present（尤其带输入框、会拉起键盘的 alert）会与进行中的转场冲突，
+// 在 iOS 27 上直接闪退。统一推迟到下一轮主循环，让菜单先完成收起。
+- (void)performAfterContextMenu:(void (^)(void))block
+{
+    dispatch_async(dispatch_get_main_queue(), block);
+}
 
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1096,43 +1372,91 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             UIAction *view = [UIAction actionWithTitle:item.isDirectory ? @"打开" : @"查看"
                 image:[self symbolImage:@"eye" tint:nil]
                 identifier:nil handler:^(__unused UIAction *action) {
-                    if (item.isDirectory) {
-                        FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
-                        next.title = item.displayName.length ? item.displayName : item.name;
-                        [weakSelf.navigationController pushViewController:next animated:YES];
-                    } else {
-                        [weakSelf previewEntry:item];
-                    }
+                    [weakSelf performAfterContextMenu:^{
+                        if (!weakSelf) return;
+                        if (item.isDirectory) {
+                            FFBrowserViewController *next = [[FFBrowserViewController alloc] initWithPath:item.path];
+                            next.title = item.displayName.length ? item.displayName : item.name;
+                            [weakSelf.navigationController pushViewController:next animated:YES];
+                        } else {
+                            [weakSelf previewEntry:item];
+                        }
+                    }];
                 }];
             UIAction *copy = [UIAction actionWithTitle:@"复制" image:[self symbolImage:@"doc.on.doc" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf setClipboard:item mode:FFClipboardModeCopy]; }];
+                }];
             UIAction *cut = [UIAction actionWithTitle:@"剪切" image:[self symbolImage:@"scissors" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf setClipboard:item mode:FFClipboardModeCut]; }];
+                }];
             UIAction *duplicate = [UIAction actionWithTitle:@"创建副本" image:[self symbolImage:@"plus.square.on.square" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf duplicateEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf duplicateEntry:item]; }];
+                }];
             UIAction *favorite = [UIAction actionWithTitle:
                 [[FFFavoritesService sharedService] isFavoritePath:item.path] ? @"取消收藏" : @"收藏"
                 image:[self symbolImage:@"star" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleFavorite:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf toggleFavorite:item]; }];
+                }];
             UIAction *compress = [UIAction actionWithTitle:@"压缩" image:[self symbolImage:@"shippingbox" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf compressEntries:@[item]]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf compressEntries:@[item]]; }];
+                }];
             UIAction *rename = [UIAction actionWithTitle:@"重命名" image:[self symbolImage:@"pencil" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf renameEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf renameEntry:item]; }];
+                }];
             UIAction *copyPath = [UIAction actionWithTitle:@"复制路径" image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf copyPath:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf copyPath:item]; }];
+                }];
             UIAction *share = [UIAction actionWithTitle:@"分享" image:[self symbolImage:@"square.and.arrow.up" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf shareEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf shareEntry:item]; }];
+                }];
             UIAction *properties = [UIAction actionWithTitle:@"属性" image:[self symbolImage:@"info.circle" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf showProperties:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf showProperties:item]; }];
+                }];
             UIAction *delete = [UIAction actionWithTitle:@"删除" image:[self symbolImage:@"trash" tint:nil]
-                identifier:nil handler:^(__unused UIAction *action) { [weakSelf deleteEntry:item]; }];
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf deleteEntry:item]; }];
+                }];
             delete.attributes = UIMenuElementAttributesDestructive;
+            // 用其他查看器打开：列出全部注册查看器（默认关联打勾）。
+            UIAction *openWith = [UIAction actionWithTitle:@"用其他查看器打开"
+                image:[self symbolImage:@"square.and.arrow.down.on.square" tint:nil]
+                identifier:nil handler:^(__unused UIAction *action) {
+                    [weakSelf performAfterContextMenu:^{ [weakSelf openWithPicker:item]; }];
+                }];
             NSMutableArray *children = [NSMutableArray arrayWithArray:
                 @[view, copy, cut, duplicate, favorite, compress, rename, copyPath, share, properties, delete]];
+            if (!item.isDirectory) {
+                NSString *ext = item.name.pathExtension.lowercaseString;
+                // 按文件能力追加：压缩包浏览 / IPA 安装 / 用其他查看器打开。
+                if ([self isArchiveEntry:item])
+                    [children insertObject:[UIAction actionWithTitle:@"浏览压缩包"
+                        image:[self symbolImage:@"shippingbox" tint:nil]
+                        identifier:nil handler:^(__unused UIAction *action) {
+                            [weakSelf performAfterContextMenu:^{ [weakSelf openWithViewer:item viewerID:@"archive"]; }];
+                        }] atIndex:children.count - 2];
+                if ([ext isEqualToString:@"ipa"])
+                    [children insertObject:[UIAction actionWithTitle:@"安装"
+                        image:[self symbolImage:@"arrow.down.app" tint:nil]
+                        identifier:nil handler:^(__unused UIAction *action) {
+                            [weakSelf performAfterContextMenu:^{ [weakSelf openWithViewer:item viewerID:@"installer"]; }];
+                        }] atIndex:children.count - 2];
+                [children insertObject:openWith atIndex:children.count - 2];
+            }
             if ([self isArchiveEntry:item])
                 [children insertObject:[UIAction actionWithTitle:@"解压"
                     image:[self symbolImage:@"shippingbox" tint:nil]
-                    identifier:nil handler:^(__unused UIAction *action) { [weakSelf extractEntry:item]; }]
+                    identifier:nil handler:^(__unused UIAction *action) {
+                        [weakSelf performAfterContextMenu:^{ [weakSelf extractEntry:item]; }];
+                    }]
                     atIndex:children.count - 2];
             return [UIMenu menuWithTitle:item.name children:children];
         }];
@@ -1141,6 +1465,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    // 编辑（多选）模式下禁用左滑：swipe 按钮与底部批量工具栏重叠。
+    if (self.editing) return nil;
     FFEntry *item = self.filteredEntries[indexPath.row];
     __weak typeof(self) weakSelf = self;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
@@ -1198,9 +1524,29 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         handler:^(__unused UIAlertAction *action) { [weakSelf renameEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
-    if ([self isArchiveEntry:item])
-        [sheet addAction:[UIAlertAction actionWithTitle:@"解压" style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) { [weakSelf extractEntry:item]; }]];
+    if (!item.isDirectory) {
+        NSString *ext = item.name.pathExtension.lowercaseString;
+        // 按文件能力追加：压缩包浏览 / IPA 安装 / 用其他查看器打开。
+        if ([self isArchiveEntry:item]) {
+            [sheet addAction:[UIAlertAction actionWithTitle:@"浏览压缩包"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    [weakSelf openWithViewer:item viewerID:@"archive"];
+                }]];
+            [sheet addAction:[UIAlertAction actionWithTitle:@"解压"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { [weakSelf extractEntry:item]; }]];
+        }
+        if ([ext isEqualToString:@"ipa"])
+            [sheet addAction:[UIAlertAction actionWithTitle:@"安装"
+                style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    [weakSelf openWithViewer:item viewerID:@"installer"];
+                }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"用其他查看器打开"
+            style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf openWithPicker:item]; }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"分享" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) { [weakSelf shareEntry:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"属性" style:UIAlertActionStyleDefault
@@ -1219,6 +1565,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardSources = @[item.path];
     gClipboardMode = mode;
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
     [self showPasteBanner];
 }
 
@@ -1292,6 +1639,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     gClipboardMode = FFClipboardModeNone;
     [self hidePasteBanner];
     [self updatePasteState];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
 }
 
 - (void)hidePasteBanner
@@ -1305,6 +1653,14 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     if (gClipboardSources.count == 0) return;
     if ([self pasteIsInsideClipboardSource]) return;
+    // 同目录粘贴（剪切模式）：移动引擎会把文件搬到自身再“替换”，
+    // 导致源文件消失。直接拦截并提示。
+    NSArray<NSString *> *sameDir = [self clipboardSourcesInCurrentDirectory];
+    if (sameDir.count > 0) {
+        [self flash:[NSString stringWithFormat:
+            @"已在当前目录内，忽略 %lu 项", (unsigned long)sameDir.count]];
+        return;
+    }
     NSArray<NSString *> *sources = gClipboardSources;
     gClipboardSources = nil;
     FFClipboardMode mode = gClipboardMode;
@@ -1317,10 +1673,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     task.sources = sources;
     task.destination = self.currentPath;
     __weak typeof(self) weakSelf = self;
-    [[FFFileTaskManager sharedManager] setConflictHandler:^FFConflictAction(NSString *name) {
+    // 冲突处理绑定到本任务，避免并发任务交叉。
+    task.conflictHandler = ^FFConflictAction(NSString *name) {
         typeof(weakSelf) strongSelf = weakSelf;
         return strongSelf ? [strongSelf askConflictForName:name] : FFConflictActionSkip;
-    }];
+    };
     [[FFFileTaskManager sharedManager] enqueueTask:task];
     [self hidePasteBanner];
     [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
@@ -1375,7 +1732,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             self.view.bounds.size.width / 2, self.view.bounds.size.height - 60, 1, 1);
         [self presentOnTop:sheet];
     });
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    // 超时兜底：90 秒未决策（例如页面已离开、弹窗被覆盖）按“跳过”处理，
+    // 避免任务永久阻塞在冲突决策上。
+    long timedOut = dispatch_semaphore_wait(semaphore,
+        dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC));
+    if (timedOut != 0) return FFConflictActionSkip;
     return chosen;
 }
 
@@ -1502,14 +1863,55 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         handler:^(__unused UIAlertAction *action) {
             NSString *newName = alert.textFields.firstObject.text;
             if (![weakSelf validNewName:newName]) return;
-            NSString *newPath = [weakSelf.currentPath stringByAppendingPathComponent:newName];
-            NSError *error = nil;
-            if (![[FFFileOperationService sharedService] renameItemAtPath:item.path
-                toPath:newPath error:&error])
-                [weakSelf showError:error];
-            [weakSelf reloadEntries];
+            [weakSelf performRenameItem:item toName:newName overwrite:NO];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// 重命名冲突处理：目标已存在时提供 取消 / 覆盖 / 保留两者。
+- (void)performRenameItem:(FFEntry *)item toName:(NSString *)newName
+                overwrite:(BOOL)overwrite
+{
+    NSString *newPath = [self.currentPath stringByAppendingPathComponent:newName];
+    NSError *error = nil;
+    if ([[FFFileOperationService sharedService] renameItemAtPath:item.path
+        toPath:newPath overwrite:overwrite error:&error]) {
+        [self reloadEntries];
+        return;
+    }
+    if (error.code != EEXIST) {
+        [self showError:error];
+        [self reloadEntries];
+        return;
+    }
+    // 目标存在：提供覆盖 / 保留两者 / 取消。
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"名称已存在"
+        message:[NSString stringWithFormat:@"“%@” 已存在，是否覆盖？", newName]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"覆盖" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [weakSelf performRenameItem:item toName:newName overwrite:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"保留两者" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *copyName = [weakSelf uniqueDestinationForName:newName];
+            if (!copyName) {
+                [weakSelf flash:@"无法生成不冲突的名称"];
+                return;
+            }
+            NSString *copyPath = [weakSelf.currentPath stringByAppendingPathComponent:copyName];
+            NSError *moveError = nil;
+            if (![[FFFileOperationService sharedService] renameItemAtPath:item.path
+                toPath:copyPath error:&moveError])
+                [weakSelf showError:moveError];
+            [weakSelf reloadEntries];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height - 60, 1, 1);
+    [self presentOnTop:sheet];
 }
 
 - (void)deleteEntry:(FFEntry *)item
@@ -1522,8 +1924,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             NSError *error = nil;
-            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error])
+            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error]) {
+                FFLogTag(@"Browser", @"delete FAIL path=%@ errno=%ld (%@)",
+                    item.path, (long)error.code, error.localizedDescription);
                 [weakSelf showError:error];
+            }
             [weakSelf reloadEntries];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -1551,8 +1956,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     static NSSet<NSString *> *extensions;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // 真实 zip 容器家族。.deb 明确排除：无解析后端，不再当作 ZIP/归档。
         extensions = [NSSet setWithArray:@[
-            @"zip", @"ipa", @"deb", @"xcarchive", @"appex", @"app",
+            @"zip", @"ipa", @"xcarchive", @"appex", @"app",
             @"bundle", @"framework", @"war", @"jar", @"crx", @"xpi",
             @"docx", @"xlsx", @"pptx", @"pages", @"numbers", @"key",
             @"epub", @"apk",
@@ -1698,6 +2104,40 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 #pragma mark - Preview
 
+// 显式指定查看器打开（长按菜单：浏览压缩包 / 安装）。
+- (void)openWithViewer:(FFEntry *)item viewerID:(NSString *)viewerID
+{
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+    [FFPreviewRouter openItem:item viewerID:viewerID navigationController:nav];
+}
+
+// 用其他查看器打开：列出全部注册查看器，当前默认关联打勾。
+- (void)openWithPicker:(FFEntry *)item
+{
+    NSString *extension = item.name.pathExtension.lowercaseString;
+    FFFileAssociationService *service = [FFFileAssociationService sharedService];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
+        message:@"选择查看器" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (FFViewerInfo *viewer in [[FFViewerRegistry sharedRegistry] allViewers]) {
+        BOOL isDefault =
+            [viewer.viewerID isEqualToString:[service effectiveViewerIDForExtension:extension]];
+        [sheet addAction:[UIAlertAction actionWithTitle:
+            isDefault ? [NSString stringWithFormat:@"✓ %@（默认关联）", viewer.displayName]
+                      : viewer.displayName
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                [self openWithViewer:item viewerID:viewer.viewerID];
+            }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width / 2,
+            self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 // Opens a path from search/favorites/recents: directories push a
 // browser, files open the preview directly. Uses the caller's
 // navigation controller (a freshly created browser has none).
@@ -1710,7 +2150,15 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         if (completion) completion(NO);
         return;
     }
+    // 符号链接：跟随目标判断类型（App Data 深层目录本身可以是链接）。
     BOOL isDirectory = S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode);
+    if (S_ISLNK(status.st_mode)) {
+        struct stat target = {0};
+        if (stat(path.fileSystemRepresentation, &target) == 0 &&
+            S_ISDIR(target.st_mode)) {
+            isDirectory = YES;
+        }
+    }
     if (isDirectory) {
         FFBrowserViewController *browser =
             [[FFBrowserViewController alloc] initWithPath:path];
@@ -1738,186 +2186,23 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             item.linkTarget = [NSString stringWithUTF8String:target];
         }
     }
-    self.previewNavigation = nav;
-    [self previewEntry:item];
+    [FFPreviewRouter previewItem:item navigationController:nav];
     if (completion) completion(YES);
 }
 
 - (void)previewEntry:(FFEntry *)item
 {
-    NSString *ext = item.name.pathExtension.lowercaseString;
-    static NSSet<NSString *> *images;
-    static NSSet<NSString *> *videos;
-    static NSSet<NSString *> *audios;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        images = [NSSet setWithArray:@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"]];
-        videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"]];
-        audios = [NSSet setWithArray:@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"]];
-    });
-    if ([images containsObject:ext]) {
-        [self previewImage:item];
-        return;
-    }
-    if ([videos containsObject:ext] || [audios containsObject:ext]) {
-        [self previewMedia:item];
-        return;
-    }
-    if ([ext isEqualToString:@"pdf"]) {
-        FFPdfPreviewViewController *viewer =
-            [[FFPdfPreviewViewController alloc] initWithPath:item.path];
-        UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-        [nav pushViewController:viewer animated:YES];
-        return;
-    }
-    [self previewData:item];
+    [FFPreviewRouter previewItem:item navigationController:self.navigationController];
 }
 
-- (void)previewImage:(FFEntry *)item
-{
-    UIImage *image = [UIImage imageWithContentsOfFile:item.path];
-    if (!image) {
-        [self flash:@"图片解码失败"];
-        return;
-    }
-    UIViewController *viewer = [UIViewController new];
-    viewer.title = item.name;
-    UIImageView *imageView = [[UIImageView alloc] initWithFrame:viewer.view.bounds];
-    imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    imageView.contentMode = UIViewContentModeScaleAspectFit;
-    imageView.backgroundColor = [UIColor systemBackgroundColor];
-    imageView.image = image;
-    imageView.userInteractionEnabled = YES;
-    [viewer.view addSubview:imageView];
-    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
-        action:@selector(shareCurrentItem:)];
-    self.interactionItem = item;
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:viewer animated:YES];
-}
 
-- (void)previewMedia:(FFEntry *)item
-{
-    NSURL *url = [NSURL fileURLWithPath:item.path];
-    AVPlayerViewController *player = [AVPlayerViewController new];
-    player.player = [AVPlayer playerWithURL:url];
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:player animated:YES];
-    [player.player play];
-}
 
-- (void)previewData:(FFEntry *)item
-{
-    NSData *data = [NSData dataWithContentsOfFile:item.path];
-    if (!data) {
-        [self flash:@"读取文件失败"];
-        return;
-    }
-    // Structured plist editing: any parseable plist opens the plist editor.
-    NSDictionary *plist = nil;
-    if (data.length > 0) {
-        NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
-        plist = [NSPropertyListSerialization propertyListWithData:data
-            options:NSPropertyListImmutable format:&format error:nil];
-    }
-    if ([plist isKindOfClass:NSDictionary.class] || [plist isKindOfClass:NSArray.class]) {
-        FFPlistEditorViewController *editor =
-            [[FFPlistEditorViewController alloc] initWithPath:item.path];
-        [self.navigationController pushViewController:editor animated:YES];
-        return;
-    }
-    NSString *candidate = [self stringFromData:data];
-    if (candidate && [self looksTextual:candidate]) {
-        FFTextEditorViewController *editor =
-            [[FFTextEditorViewController alloc] initWithPath:item.path];
-        [self.navigationController pushViewController:editor animated:YES];
-        return;
-    }
-    NSString *text = [self hexdump:data maxBytes:data.length <= 1024 * 1024 ? data.length : 1024 * 1024];
-    [self presentText:item.name body:text];
-}
 
-- (NSString *)stringFromData:(NSData *)data
-{
-    NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (utf8) return utf8;
-    NSString *utf16 = [[NSString alloc] initWithData:data encoding:NSUTF16StringEncoding];
-    if (utf16) return utf16;
-    NSString *isoLatin1 = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    return isoLatin1;
-}
 
-- (BOOL)looksTextual:(NSString *)candidate
-{
-    if (candidate.length == 0) return YES;
-    NSUInteger printable = 0;
-    for (NSUInteger i = 0; i < candidate.length && i < 4096; i++) {
-        unichar c = [candidate characterAtIndex:i];
-        if (c >= 0x20 && c != 0x7F) printable++;
-    }
-    return printable * 10 >= candidate.length * 9;
-}
 
-- (NSString *)hexdump:(NSData *)data maxBytes:(NSUInteger)maxBytes
-{
-    const uint8_t *bytes = data.bytes;
-    NSUInteger count = MIN(data.length, maxBytes);
-    NSMutableString *result = [NSMutableString string];
-    for (NSUInteger offset = 0; offset < count; offset += 16) {
-        [result appendFormat:@"%08lx  ", (unsigned long)offset];
-        NSUInteger lineLength = MIN((NSUInteger)16, count - offset);
-        for (NSUInteger i = 0; i < 16; i++) {
-            if (i < lineLength) [result appendFormat:@"%02x ", bytes[offset + i]];
-            else [result appendString:@"   "];
-            if (i == 7) [result appendString:@" "];
-        }
-        [result appendString:@" |"];
-        for (NSUInteger i = 0; i < lineLength; i++) {
-            uint8_t c = bytes[offset + i];
-            [result appendFormat:@"%c", (c >= 0x20 && c != 0x7F) ? c : '.'];
-        }
-        [result appendString:@"|\n"];
-    }
-    if (data.length > maxBytes)
-        [result appendFormat:@"\n… 已截断：共 %lu 字节，仅显示前 %lu 字节\n",
-            (unsigned long)maxBytes, (unsigned long)data.length];
-    return result;
-}
 
-- (void)presentText:(NSString *)title body:(NSString *)body
-{
-    UIViewController *viewer = [UIViewController new];
-    viewer.title = title;
-    UITextView *textView = [[UITextView alloc] initWithFrame:viewer.view.bounds];
-    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    textView.editable = NO;
-    textView.selectable = YES;
-    textView.font = [UIFont fontWithName:@"Menlo" size:12];
-    textView.text = body;
-    textView.backgroundColor = [UIColor systemBackgroundColor];
-    [viewer.view addSubview:textView];
-    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self
-        action:@selector(shareCurrentText:)];
-    self.interactionText = body;
-    UINavigationController *nav = self.previewNavigation ?: self.navigationController;
-    [nav pushViewController:viewer animated:YES];
-}
 
-- (void)shareCurrentItem:(id)sender
-{
-    if (!self.interactionItem) return;
-    [self shareEntry:self.interactionItem];
-}
 
-- (void)shareCurrentText:(id)sender
-{
-    UIActivityViewController *activity = [[UIActivityViewController alloc]
-        initWithActivityItems:@[self.interactionText ?: @""] applicationActivities:nil];
-    activity.popoverPresentationController.sourceView = self.view;
-    [self presentViewController:activity animated:YES completion:nil];
-}
 
 #pragma mark - Helpers
 

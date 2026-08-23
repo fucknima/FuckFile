@@ -17,6 +17,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 @interface FFSearchService ()
 @property(nonatomic, strong) dispatch_queue_t workQueue;
 @property(nonatomic) BOOL cancelled;
+@property(nonatomic) NSUInteger generation;
 @property(nonatomic, strong) NSMutableSet<NSString *> *visitedRealPaths;
 @end
 
@@ -50,13 +51,16 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         if (completion) completion(NO);
         return;
     }
+    // 每次搜索独立 generation：旧搜索的回调/结果不得污染新搜索。
     self.cancelled = NO;
+    self.generation++;
+    NSUInteger gen = self.generation;
     self.visitedRealPaths = [NSMutableSet set];
     dispatch_async(self.workQueue, ^{
         BOOL finished = [self searchFor:needle underPath:root depth:0
-                                   batch:batch];
+                                   generation:gen batch:batch];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(finished);
+            if (completion && self.generation == gen) completion(finished);
         });
     });
 }
@@ -64,12 +68,15 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 - (void)cancel
 {
     self.cancelled = YES;
+    self.generation++;   // 使进行中的旧搜索作废
 }
 
 - (BOOL)searchFor:(NSString *)needle underPath:(NSString *)path depth:(NSUInteger)depth
-            batch:(void (^)(NSArray<FFFoundItem *> *))batch
+            generation:(NSUInteger)generation
+              batch:(void (^)(NSArray<FFFoundItem *> *))batch
 {
-    if (self.cancelled || depth > kFFSearchMaxDepth) return NO;
+    if (self.cancelled || self.generation != generation || depth > kFFSearchMaxDepth)
+        return NO;
     DIR *directory = opendir(path.fileSystemRepresentation);
     if (!directory) return YES;
 
@@ -77,7 +84,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     NSMutableArray<NSString *> *subdirectories = [NSMutableArray array];
     struct dirent *entry = NULL;
     while ((entry = readdir(directory)) != NULL) {
-        if (self.cancelled) break;
+        if (self.cancelled || self.generation != generation) break;
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         NSString *name = [NSFileManager.defaultManager
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
@@ -102,30 +109,31 @@ static const NSUInteger kFFSearchMaxDepth = 16;
             NSArray *flush = [pending copy];
             [pending removeAllObjects];
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (batch && !self.cancelled) batch(flush);
+                if (batch && self.generation == generation) batch(flush);
             });
         }
     }
     closedir(directory);
 
     for (NSString *sub in subdirectories) {
-        if (self.cancelled) break;
+        if (self.cancelled || self.generation != generation) break;
         char resolved[PATH_MAX] = {0};
         if (!realpath(sub.fileSystemRepresentation, resolved)) continue;
         NSString *key = [NSString stringWithUTF8String:resolved];
         if ([self.visitedRealPaths containsObject:key]) continue;
         [self.visitedRealPaths addObject:key];
-        [self searchFor:needle underPath:sub depth:depth + 1 batch:batch];
+        [self searchFor:needle underPath:sub depth:depth + 1
+              generation:generation batch:batch];
     }
 
     if (pending.count > 0) {
         NSArray *flush = [pending copy];
         [pending removeAllObjects];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (batch && !self.cancelled) batch(flush);
+            if (batch && self.generation == generation) batch(flush);
         });
     }
-    return !self.cancelled;
+    return !self.cancelled && self.generation == generation;
 }
 
 - (NSArray<NSString *> *)history

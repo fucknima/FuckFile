@@ -22,6 +22,58 @@
 > - 任务中心：速度/ETA/失败原因/左滑重试
 > - 文本编辑器未保存提示、大文件分段预览、plist 深层安全完成
 > - 待办：列表/网格切换（设置页占位）、Dynamic Type/iPad 细化
+>
+> **文件查看体系（2026-08-22）**：
+> - 新增 Viewer Registry + File Association + Preview Router 三层架构（ADR-010）
+> - 打开链路收敛：文件 → FFPreviewRouter → FFFileAssociationService →
+>   FFViewerRegistry → Viewer；Browser 不再堆扩展名 if/else
+> - 新增 QuickLook/Web/Hex/SQLite3/ZIP 包内浏览器/IPA 安装器六个查看器，
+>   图片与媒体改为 Registry 内联实现，plist/text/pdf 复用既有模块
+> - 设置新增「文件查看」：支持的文件查看器 + 文件关联（覆盖/自定义/
+>   删除/恢复默认，立即生效）
+> - .deb 全部专用逻辑清除；无终端、无脚本执行
+>
+> **真机反馈修复（2026-08-22 下午）**：
+> - 修复长按菜单复制/剪切/压缩后闪退：网格 flowlayout 断言
+>   （非整数 item 宽度浮点越界 + 隐藏网格参与布局提交）；网格改为懒创建、
+>   尺寸 floor + 极窄兜底，列表模式不再实例化 UICollectionView
+> - 新增外部入口：Info.plist CFBundleDocumentTypes（public.data/content/
+>   archive），AppDelegate openURL 接收文件拷贝到 Device Storage/Imported/
+>   并提供「前往查看」；浏览器「更多」菜单新增「导入文件…」（文件选择器，
+>   重名自动加序号，写入经路径安全策略）
+> - 压缩包浏览器加固：中央目录解析失败时回退本地文件头扫描；单条目提取
+>   同样支持兜底路径；空归档/结构无法解析显示明确状态行并记录日志
+> - Hex 编辑器保存后作废页缓存（此前显示旧字节）
+>
+> **开源化改造（2026-08-22 晚，ADR-011）**：
+> - ZIP 解析全面切换到 vendored minizip（third_party/minizip），
+>   删除手写 EOCD/CDE/本地头扫描；真实世界归档兼容性问题由此解决
+> - 长按菜单闪退根因修复：菜单收起动画期间直接 present 与转场冲突，
+>   所有菜单操作统一推迟到下一轮主循环
+> - 分享接收改 Inbox 模式（LSOpenInPlace=NO），冷启动立即导入，
+>   解决"没有权限"与后台无文件问题
+> - 导入位置统一 ~/Documents/Imported/（与 Device Storage 同级）+
+>   首页「导入」快捷入口
+> - 复制/剪切/移动/解压任务完成后自动刷新目标目录列表（去抖 1 秒）
+> - 图片浏览器缩放、Hex 校验和、SQLite CSV 导出、IPA 安装器分级探测
+>   （TrollStore 一键跳转 + LSApplicationWorkspace 尝试）
+> - 待办：Hex 逐字节网格编辑、文本编辑器语法高亮（暂缓，见 ADR-011）、
+>   SQLite 记录编辑
+>
+> **真机回归修复第二波（2026-08-22 深夜）**：
+> - 压缩闪退根因实锤并修复：FFZipCreate 把含 ObjC 指针的结构体存入
+>   NSValue（ARC 不 retain，取出即悬垂指针）→ 后台任务线程
+>   EXC_ARM_PAC_FAIL；改为 ObjC 类管理生命周期
+> - 网格视图黑屏根因并修复：collectionView 曾是 UITableViewController
+>   self.view（=tableView）的子视图，被隐藏整体不可见；Browser 类改为
+>   UIViewController + 自建 tableView（网格与列表成为平级兄弟视图）
+> - 编辑模式禁用左滑（swipe 与底部批量栏重叠）；批量工具栏文字按钮改
+>   图标（窄屏不再截断溢出）
+> - 压缩包浏览器：树建不出来时降级平铺列表，不再出现"无法解析"死胡同
+> - 分享接收冷启动失败：拷贝增加 4 轮指数退避重试（0/0.5/1.5/3s），
+>   授权竞态下也能落盘
+> - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
+>   进包并写入 CFBundleIcons
 
 ## P0 架构初始化
 
@@ -108,7 +160,7 @@
 
 ## P1 Preview
 
-- [~] PreviewRouter（previewEntry 内联路由，未抽象）
+- [x] PreviewRouter（关联→Registry→fallback，Browser/Search/Favorites/Recents 共用）
 - [x] 图片
 - [x] 视频
 - [x] 音频
@@ -116,6 +168,27 @@
 - [x] PDF（PDFKit：连续滚动、缩略图侧栏、分享、失败反馈）
 - [x] JSON（文本编辑）
 - [x] plist（结构化编辑器）
+- [x] Quick Look Viewer（系统 QLPreviewController，fallback 链一环）
+- [x] Web Viewer（WKWebView；本地 HTML read-access 限定所在目录；.url/.webloc 解析）
+- [x] Hex 编辑器（pread 分页 64KB、OFFSET/HEX/ASCII、偏移跳转、内存 patch、保存经路径安全策略、失败回滚、取消修改）
+- [x] SQLite3 编辑器（只读：库信息/表/视图/索引/schema/分页浏览/SQL 查询/busy·locked·malformed 错误反馈）
+
+## P1 文件关联（2026-08-22 完成）
+
+- [x] FFViewerRegistry（viewer ID/名称/图标/可用状态/open 分发唯一来源）
+- [x] FFFileAssociationService（内置默认表在代码 + NSUserDefaults override）
+- [x] 最长后缀优先匹配（backup.tar.gz → .tar.gz → .gz）、大小写不敏感、前导点规范化
+- [x] 用户覆盖 / 自定义扩展名 / 删除覆盖项 / 恢复默认
+- [x] 升级新增默认格式不覆盖用户选择
+- [x] 修改立即生效（实时读取，无需重启）
+- [x] 设置页「文件查看」section：支持的文件查看器 / 文件关联两个管理页
+- [x] 长按菜单「用其他查看器打开」「浏览压缩包」「安装」（按能力显示）
+- [x] 默认关联全量落地（text/plist/sqlite/image/media/web/hex/ipa/archive/pdf）
+- [x] .deb 清理：不注册关联、不进 ZIP 浏览器、不交安装器，删除既有当 ZIP 的判断
+- [x] 不支持格式诚实提示（tar/gz/7z/rar/xz/bz2「当前构建暂不支持」）
+- [ ] SQLite 记录编辑（BEGIN/COMMIT/ROLLBACK 事务）
+- [ ] Archive 统一 Backend 抽象（为 7z/RAR/XZ/BZ2/TAR 后端接入预留）
+- [ ] IPA 安装后端（需越狱环境 installd/opainstaller；当前如实提示不可用原因）
 
 ## P1 缩略图
 
@@ -159,6 +232,10 @@
 - [x] 解压进度（字节比例 + 条目名，接入任务中心）
 - [x] 压缩进度（字节比例 + 条目名，接入任务中心）
 - [x] 压缩异常处理（失败清理半成品、取消、错误上报）
+- [x] ZIP 包内浏览器（FFArchiveService 中央目录列表 + FFArchiveBrowserViewController：
+      目录树浏览、文件属性、单文件预览复用 PreviewRouter、单条目提取、
+      选中项提取、全部解压接入任务中心；ipa 同样支持）
+- [ ] 7z/RAR/XZ/BZ2/TAR 解析后端（当前明确提示暂不支持）
 
 ## P3 Network
 

@@ -8,6 +8,8 @@
 @property(nonatomic, strong) PDFView *pdfView;
 @property(nonatomic, strong) PDFDocument *document;
 @property(nonatomic, strong) UIButton *thumbnailsButton;
+@property(nonatomic, strong) PDFThumbnailView *thumbnailView;
+@property(nonatomic, strong) NSLayoutConstraint *pdfLeadingConstraint;
 @end
 
 @implementation FFPdfPreviewViewController
@@ -82,6 +84,11 @@
 {
     if (!self.document) return;
     if (!self.pdfView.documentView) return;
+    if (self.thumbnailView) {
+        // 已显示：点击按钮即收起。
+        [self dismissThumbnails];
+        return;
+    }
     PDFThumbnailView *thumbnail = [PDFThumbnailView new];
     thumbnail.translatesAutoresizingMaskIntoConstraints = NO;
     thumbnail.PDFView = self.pdfView;
@@ -92,25 +99,38 @@
     NSLayoutConstraint *leading = [thumbnail.leadingAnchor
         constraintEqualToAnchor:self.view.leadingAnchor constant:8];
     leading.priority = UILayoutPriorityDefaultHigh;
-    [NSLayoutConstraint activateConstraints:@[
-        leading,
-        [thumbnail.widthAnchor constraintEqualToConstant:96],
-        [thumbnail.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
-        [thumbnail.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8],
-        [self.pdfView.leadingAnchor constraintEqualToAnchor:thumbnail.trailingAnchor constant:8],
-    ]];
-    // Tap again (or anywhere on the thumbnail) removes it.
+    NSLayoutConstraint *width = [thumbnail.widthAnchor constraintEqualToConstant:96];
+    NSLayoutConstraint *top = [thumbnail.topAnchor constraintEqualToAnchor:
+        self.view.safeAreaLayoutGuide.topAnchor constant:8];
+    NSLayoutConstraint *bottom = [thumbnail.bottomAnchor constraintEqualToAnchor:
+        self.view.safeAreaLayoutGuide.bottomAnchor constant:-8];
+    // 复用同一个约束对象，避免重复添加导致的约束冲突。
+    if (!self.pdfLeadingConstraint) {
+        self.pdfLeadingConstraint = [self.pdfView.leadingAnchor
+            constraintEqualToAnchor:self.view.leadingAnchor];
+    }
+    [NSLayoutConstraint activateConstraints:@[leading, width, top, bottom]];
+    [self.pdfLeadingConstraint setConstant:112];
+    [self.pdfLeadingConstraint setActive:YES];
+
     UITapGestureRecognizer *dismiss = [[UITapGestureRecognizer alloc]
-        initWithTarget:self action:@selector(dismissThumbnail:)];
+        initWithTarget:self action:@selector(dismissThumbnails)];
     [thumbnail addGestureRecognizer:dismiss];
     thumbnail.userInteractionEnabled = YES;
+    self.thumbnailView = thumbnail;
     self.thumbnailsButton.hidden = YES;
 }
 
-- (void)dismissThumbnail:(UITapGestureRecognizer *)gesture
+- (void)dismissThumbnails
 {
-    [gesture.view removeFromSuperview];
-    [self.pdfView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor].active = YES;
+    if (self.thumbnailView) {
+        [self.thumbnailView removeFromSuperview];
+        self.thumbnailView = nil;
+    }
+    if (self.pdfLeadingConstraint) {
+        [self.pdfLeadingConstraint setActive:NO];
+        self.pdfLeadingConstraint = nil;
+    }
     self.thumbnailsButton.hidden = NO;
 }
 
