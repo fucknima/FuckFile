@@ -79,9 +79,9 @@ jobs:
           xcrun clang -fobjc-arc -fmodules -isysroot "$SDK" \
             "${ARCHS_ARGS[@]}" -miphoneos-version-min=15.0 \
             -Wl,-undefined,dynamic_lookup \
+            -Wl,-e,_NSExtensionMain \
             -framework UIKit -framework Foundation \
             -framework UniformTypeIdentifiers \
-            ShareExtension/FFShareMain.m \
             ShareExtension/FFShareViewController.m \
             -o "$APP/PlugIns/FFShareExtension.appex/FFShareExtension" \
             || exit 1
