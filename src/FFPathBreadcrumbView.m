@@ -61,6 +61,11 @@ static NSString *FFBreadcrumbTitle(NSArray<NSString *> *names, NSUInteger i)
 {
     NSMutableArray<UIView *> *chips = [NSMutableArray array];
     UIFont *ancestorFont = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    // 当前目录加粗且随 Dynamic Type 缩放。
+    UIFontDescriptor *boldDescriptor = [ancestorFont.fontDescriptor
+        fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold];
+    UIFont *currentFont = boldDescriptor ?
+        [UIFont fontWithDescriptor:boldDescriptor size:0] : ancestorFont;
 
     for (NSUInteger i = 0; i < names.count; i++) {
         if (chips.count > 0) {
@@ -77,9 +82,7 @@ static NSString *FFBreadcrumbTitle(NSArray<NSString *> *names, NSUInteger i)
         button.tag = i;
         [button setTitle:title forState:UIControlStateNormal];
         // 当前目录加粗强调；上级目录次级色。
-        button.titleLabel.font = current
-            ? [UIFont boldSystemFontOfSize:UIFontSystemFontSizeSmall]
-            : ancestorFont;
+        button.titleLabel.font = current ? currentFont : ancestorFont;
         [button setTitleColor:current ? UIColor.labelColor : UIColor.secondaryLabelColor
                      forState:UIControlStateNormal];
         button.titleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
