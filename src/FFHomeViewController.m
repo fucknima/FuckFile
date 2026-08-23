@@ -34,7 +34,10 @@
     [super viewDidLoad];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 64;
+    self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self
         action:@selector(reloadStatus)];
@@ -71,7 +74,8 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     [self reloadStatus];
 }
 
@@ -103,7 +107,7 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 1;
+        case 0: return 2;
         case 1: return 4;
         case 2: return 1;
         default: return 0;
@@ -113,11 +117,29 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"文件";
+        case 0: return @"位置";
         case 1: return @"快捷访问";
         case 2: return nil;
         default: return nil;
     }
+}
+
+- (NSString *)deviceStorageSubtitle
+{
+    if (self.scanInProgress) {
+        NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
+        return [NSString stringWithFormat:@"正在扫描 %lu/%lu · 已发现 %lu 个 App",
+            (unsigned long)done, (unsigned long)self.scanTotal,
+            (unsigned long)self.scanLinked];
+    }
+    NSMutableString *subtitle = [NSMutableString stringWithFormat:
+        @"%lu 个 App", (unsigned long)self.appCount];
+    if (self.lastScanDate) {
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.dateFormat = @"HH:mm";
+        [subtitle appendFormat:@" · 最近扫描 %@", [formatter stringFromDate:self.lastScanDate]];
+    }
+    return subtitle;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -125,64 +147,61 @@
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Home"];
     if (!cell)
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Home"];
-    cell.detailTextLabel.numberOfLines = 0;
-    cell.imageView.tintColor = [UIColor systemBlueColor];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
-    switch (indexPath.section) {
-        case 0: {
-            // 主入口：App 数据
-            cell.textLabel.text = @"App 数据";
-            cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
-            if (self.scanInProgress) {
-                NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
-                cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"正在扫描 %lu/%lu … 已发现 %lu 个 App",
-                    (unsigned long)done, (unsigned long)self.scanTotal,
-                    (unsigned long)self.scanLinked];
-            } else {
-                NSMutableString *subtitle = [NSMutableString stringWithFormat:
-                    @"%lu 个 App", (unsigned long)self.appCount];
-                if (self.lastScanDate) {
-                    NSDateFormatter *formatter = [NSDateFormatter new];
-                    formatter.dateFormat = @"HH:mm";
-                    [subtitle appendFormat:@" · 最近扫描 %@", [formatter stringFromDate:self.lastScanDate]];
-                }
-                cell.detailTextLabel.text = subtitle;
-            }
-            break;
+    NSString *title = nil;
+    NSString *subtitle = nil;
+    NSString *symbol = nil;
+
+    if (indexPath.section == 0) {
+        if (indexPath.row == 0) {
+            title = @"设备存储";
+            subtitle = [self deviceStorageSubtitle];
+            symbol = @"internaldrive";
+        } else {
+            title = @"导入";
+            subtitle = @"外部应用分享与手动导入的文件";
+            symbol = @"tray.and.arrow.down";
         }
-        case 1: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"搜索";
-                cell.detailTextLabel.text = @"全局搜索 App 数据";
-                cell.imageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
-            } else if (indexPath.row == 1) {
-                cell.textLabel.text = @"收藏";
-                cell.detailTextLabel.text = @"收藏的文件与文件夹";
-                cell.imageView.image = [UIImage systemImageNamed:@"star"];
-            } else if (indexPath.row == 2) {
-                cell.textLabel.text = @"最近访问";
-                cell.detailTextLabel.text = @"最近打开的目录与文件";
-                cell.imageView.image = [UIImage systemImageNamed:@"clock"];
-            } else {
-                cell.textLabel.text = @"任务中心";
-                cell.detailTextLabel.text = self.activeTaskCount > 0
-                    ? [NSString stringWithFormat:@"%lu 个任务进行中", (unsigned long)self.activeTaskCount]
-                    : @"复制、移动、解压任务";
-                cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
-            }
-            break;
+    } else if (indexPath.section == 1) {
+        if (indexPath.row == 0) {
+            title = @"搜索";
+            subtitle = @"全局搜索 App 数据";
+            symbol = @"magnifyingglass";
+        } else if (indexPath.row == 1) {
+            title = @"收藏";
+            subtitle = @"收藏的文件与文件夹";
+            symbol = @"star";
+        } else if (indexPath.row == 2) {
+            title = @"最近访问";
+            subtitle = @"最近打开的目录与文件";
+            symbol = @"clock";
+        } else {
+            title = @"任务中心";
+            subtitle = self.activeTaskCount > 0
+                ? [NSString stringWithFormat:@"%lu 个任务进行中", (unsigned long)self.activeTaskCount]
+                : @"复制、移动、解压任务";
+            symbol = @"clock.arrow.circlepath";
         }
-        case 2: {
-            cell.textLabel.text = @"设置";
-            cell.detailTextLabel.text = @"显示、排序、高级与调试";
-            cell.imageView.image = [UIImage systemImageNamed:@"gearshape"];
-            break;
-        }
+    } else {
+        title = @"设置";
+        subtitle = @"显示、文件查看、高级与调试";
+        symbol = @"gearshape";
     }
+
+    UIListContentConfiguration *config = [cell defaultContentConfiguration];
+    config.text = title;
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    config.secondaryText = subtitle;
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    config.secondaryTextProperties.numberOfLines = 1;
+    config.image = [UIImage systemImageNamed:symbol];
+    config.imageProperties.tintColor = UIColor.systemBlueColor;
+    config.imageProperties.maximumSize = CGSizeMake(28, 28);
+    cell.contentConfiguration = config;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
 
@@ -192,8 +211,15 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            // 进入虚拟根：显示 AppData 文件夹、MobileGestalt 链接与日志文件。
-            next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+            if (indexPath.row == 0) {
+                // 保持原主入口语义：进入虚拟根，展示 AppData / Imported /
+                // 诊断文件等 Device Storage 内容。
+                next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
+            } else {
+                NSString *imported = [MCMVirtualRoot() stringByAppendingPathComponent:@"Imported"];
+                next = [[FFBrowserViewController alloc] initWithPath:imported];
+                next.title = @"Imported";
+            }
             break;
         case 1:
             if (indexPath.row == 0) next = [FFSearchViewController new];
