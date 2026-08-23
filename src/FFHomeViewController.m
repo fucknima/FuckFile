@@ -217,6 +217,17 @@
                 next = [[FFBrowserViewController alloc] initWithPath:MCMVirtualRoot()];
             } else {
                 NSString *imported = [MCMVirtualRoot() stringByAppendingPathComponent:@"Imported"];
+                BOOL isDirectory = NO;
+                if (![NSFileManager.defaultManager fileExistsAtPath:imported isDirectory:&isDirectory] ||
+                    !isDirectory) {
+                    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"暂无导入文件"
+                        message:@"从其他 App 分享或在文件浏览器中导入文件后，会显示在这里。"
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                        style:UIAlertActionStyleDefault handler:nil]];
+                    [self presentViewController:alert animated:YES completion:nil];
+                    return;
+                }
                 next = [[FFBrowserViewController alloc] initWithPath:imported];
                 next.title = @"Imported";
             }
