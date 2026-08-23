@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/message.h>
+#import <dlfcn.h>
 #import "FFShareBridge.h"
 
 @interface FFShareViewController : UIViewController
@@ -303,6 +305,118 @@ static NSString *FFShareSafeName(NSString *name)
     });
 }
 
+#pragma mark - Containing-app handoff
+
+static void FFEnsureLaunchServicesLoaded(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // LSApplicationWorkspace is private SPI. FuckFile already depends on
+        // private LaunchServices/MCM behavior and is not an App Store target.
+        // Loading by path keeps the extension build independent of private
+        // headers and lets this gracefully fall back when the class moves.
+        void *handle = dlopen(
+            "/System/Library/Frameworks/CoreServices.framework/CoreServices",
+            RTLD_LAZY | RTLD_LOCAL);
+        if (!handle) {
+            handle = dlopen(
+                "/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices",
+                RTLD_LAZY | RTLD_LOCAL);
+        }
+        NSLog(@"[FuckFileShare] LaunchServices dlopen=%s", handle ? "OK" : "FAIL");
+    });
+}
+
+- (BOOL)openWakeURLViaLaunchServices:(NSURL *)url
+{
+    FFEnsureLaunchServicesLoaded();
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) {
+        NSLog(@"[FuckFileShare] wake LS unavailable class=%@", workspaceClass);
+        return NO;
+    }
+
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
+    if (!workspace) {
+        NSLog(@"[FuckFileShare] wake LS defaultWorkspace=nil");
+        return NO;
+    }
+
+    NSError *error = nil;
+    SEL openSelector = NSSelectorFromString(@"openURL:withOptions:error:");
+    if ([workspace respondsToSelector:openSelector]) {
+        BOOL opened = ((BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend)(
+            workspace, openSelector, url, @{}, &error);
+        NSLog(@"[FuckFileShare] wake LS openURL result=%d error=%@", opened,
+            error.localizedDescription ?: @"(nil)");
+        if (opened) return YES;
+    }
+
+    error = nil;
+    SEL sensitiveSelector = NSSelectorFromString(@"openSensitiveURL:withOptions:error:");
+    if ([workspace respondsToSelector:sensitiveSelector]) {
+        BOOL opened = ((BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend)(
+            workspace, sensitiveSelector, url, @{}, &error);
+        NSLog(@"[FuckFileShare] wake LS sensitive result=%d error=%@", opened,
+            error.localizedDescription ?: @"(nil)");
+        if (opened) return YES;
+    }
+
+    SEL simpleSelector = NSSelectorFromString(@"openURL:");
+    if ([workspace respondsToSelector:simpleSelector]) {
+        BOOL opened = ((BOOL (*)(id, SEL, NSURL *))objc_msgSend)(
+            workspace, simpleSelector, url);
+        NSLog(@"[FuckFileShare] wake LS simple result=%d", opened);
+        if (opened) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)openWakeURLViaUIApplication:(NSURL *)url
+{
+    Class applicationClass = NSClassFromString(@"UIApplication");
+    SEL openSelector = NSSelectorFromString(@"openURL:options:completionHandler:");
+    if (!applicationClass || !openSelector) return NO;
+
+    // Share extensions are not allowed to reference UIApplication.shared at
+    // compile time, but the hosting UIKit process has a UIApplication object
+    // in its responder chain. The iOS 18+ openURL:options: API is required;
+    // the legacy openURL: path is force-rejected by modern UIKit.
+    UIResponder *responder = self;
+    while (responder) {
+        if ([responder isKindOfClass:applicationClass] &&
+            [responder respondsToSelector:openSelector]) {
+            void (^completion)(BOOL) = ^(BOOL success) {
+                NSLog(@"[FuckFileShare] wake UIApplication responder result=%d", success);
+            };
+            ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
+                responder, openSelector, url, @{}, completion);
+            NSLog(@"[FuckFileShare] wake UIApplication responder requested");
+            return YES;
+        }
+        responder = responder.nextResponder;
+    }
+
+    // Some iOS builds no longer place UIApplication directly in the responder
+    // chain. Use the same runtime-only call as a second compatibility route.
+    SEL sharedSelector = NSSelectorFromString(@"sharedApplication");
+    if ([applicationClass respondsToSelector:sharedSelector]) {
+        id application = ((id (*)(id, SEL))objc_msgSend)(applicationClass, sharedSelector);
+        if (application && [application respondsToSelector:openSelector]) {
+            void (^completion)(BOOL) = ^(BOOL success) {
+                NSLog(@"[FuckFileShare] wake UIApplication shared result=%d", success);
+            };
+            ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
+                application, openSelector, url, @{}, completion);
+            NSLog(@"[FuckFileShare] wake UIApplication shared requested");
+            return YES;
+        }
+    }
+    NSLog(@"[FuckFileShare] wake UIApplication route unavailable");
+    return NO;
+}
+
 - (void)finishWithImportedCount:(NSInteger)count
 {
     [self.spinner stopAnimating];
@@ -322,12 +436,29 @@ static NSString *FFShareSafeName(NSString *name)
     };
 
     if (count > 0 && wakeURL) {
-        [self.extensionContext openURL:wakeURL completionHandler:^(BOOL success) {
-            NSLog(@"[FuckFileShare] wake main app success=%d", success);
-            dispatch_async(dispatch_get_main_queue(), completeOnce);
-        }];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), completeOnce);
+        // NSExtensionContext.openURL is not supported by the iOS Share
+        // extension point, which is why the previous build merely dismissed
+        // this sheet. Use LaunchServices first; responder-chain UIApplication
+        // is the compatibility fallback for builds where LS SPI is filtered.
+        BOOL requested = [self openWakeURLViaLaunchServices:wakeURL];
+        if (!requested) requested = [self openWakeURLViaUIApplication:wakeURL];
+
+        if (!requested) {
+            // Keep the official API as a last diagnostic fallback. Apple only
+            // documents it as supported for Today/iMessage extension points,
+            // so failure here is expected for share-services.
+            [self.extensionContext openURL:wakeURL completionHandler:^(BOOL success) {
+                NSLog(@"[FuckFileShare] wake extensionContext fallback result=%d", success);
+            }];
+            self.statusLabel.text = @"已导入，请打开 FuckFile 查看";
+        }
+
+        // Give the foreground request a short head start, then finish the
+        // extension request exactly once. A full one-second timeout is only
+        // needed when every direct foreground route was unavailable.
+        NSTimeInterval delay = requested ? 0.20 : 1.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), completeOnce);
     } else {
         completeOnce();
     }
