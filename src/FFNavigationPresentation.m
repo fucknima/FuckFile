@@ -10,11 +10,25 @@
 
 static NSInteger const FFSelectionActionBarTag = 98421;
 
-static void FFSwapMethod(Class cls, SEL original, SEL replacement)
+// Install a hook without exchanging an inherited Method object.
+// method_exchangeImplementations(class_getInstanceMethod(subclass, inheritedSEL), ...)
+// can mutate the superclass method table and leave the alias selector unresolved on the
+// subclass. Copy the original IMP to a private alias on the concrete class first, then
+// replace only the concrete class' implementation.
+static BOOL FFInstallHook(Class cls, SEL original, SEL replacement, SEL originalAlias)
 {
-    Method a = class_getInstanceMethod(cls, original);
-    Method b = class_getInstanceMethod(cls, replacement);
-    if (a && b) method_exchangeImplementations(a, b);
+    Method originalMethod = class_getInstanceMethod(cls, original);
+    Method replacementMethod = class_getInstanceMethod(cls, replacement);
+    if (!originalMethod || !replacementMethod) return NO;
+
+    IMP originalIMP = method_getImplementation(originalMethod);
+    IMP replacementIMP = method_getImplementation(replacementMethod);
+    const char *types = method_getTypeEncoding(originalMethod);
+    if (!types) return NO;
+
+    if (!class_addMethod(cls, originalAlias, originalIMP, types)) return NO;
+    class_replaceMethod(cls, original, replacementIMP, types);
+    return YES;
 }
 
 static void FFSendVoid(id object, NSString *selectorName)
@@ -24,18 +38,11 @@ static void FFSendVoid(id object, NSString *selectorName)
         ((void (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
-static id FFSendId(id object, NSString *selectorName)
-{
-    SEL selector = NSSelectorFromString(selectorName);
-    if (object && [object respondsToSelector:selector])
-        return ((id (*)(id, SEL))objc_msgSend)(object, selector);
-    return nil;
-}
-
 #pragma mark - Home root tab
 
 @interface FFHomeViewController (FFRootNavigation)
 - (void)ffnav_homeViewDidAppear:(BOOL)animated;
+- (void)ffnav_originalHomeViewDidAppear:(BOOL)animated;
 @end
 
 @implementation FFHomeViewController (FFRootNavigation)
@@ -44,16 +51,17 @@ static id FFSendId(id object, NSString *selectorName)
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        FFSwapMethod(self, @selector(viewDidAppear:), @selector(ffnav_homeViewDidAppear:));
+        FFInstallHook(self, @selector(viewDidAppear:),
+            @selector(ffnav_homeViewDidAppear:),
+            @selector(ffnav_originalHomeViewDidAppear:));
     });
 }
 
 - (void)ffnav_homeViewDidAppear:(BOOL)animated
 {
-    [self ffnav_homeViewDidAppear:animated];
+    [self ffnav_originalHomeViewDidAppear:animated];
 
     // Remove the earlier full-width prototype tab bar if this branch created it.
-    // The new bar is one floating capsule shared by Home / Files / Settings.
     @try {
         UIView *legacy = [self valueForKey:@"bottomTabBar"];
         if (legacy && legacy.tag != FFRootTabBarViewTag) {
@@ -74,6 +82,7 @@ static id FFSendId(id object, NSString *selectorName)
 
 @interface FFSettingsViewController (FFRootNavigation)
 - (void)ffnav_settingsViewDidAppear:(BOOL)animated;
+- (void)ffnav_originalSettingsViewDidAppear:(BOOL)animated;
 @end
 
 @implementation FFSettingsViewController (FFRootNavigation)
@@ -82,15 +91,18 @@ static id FFSendId(id object, NSString *selectorName)
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        FFSwapMethod(self, @selector(viewDidAppear:), @selector(ffnav_settingsViewDidAppear:));
+        FFInstallHook(self, @selector(viewDidAppear:),
+            @selector(ffnav_settingsViewDidAppear:),
+            @selector(ffnav_originalSettingsViewDidAppear:));
     });
 }
 
 - (void)ffnav_settingsViewDidAppear:(BOOL)animated
 {
-    [self ffnav_settingsViewDidAppear:animated];
+    [self ffnav_originalSettingsViewDidAppear:animated];
     self.navigationItem.hidesBackButton = YES;
     self.navigationItem.leftBarButtonItem = nil;
+
     UIEdgeInsets insets = self.additionalSafeAreaInsets;
     insets.bottom = 96;
     self.additionalSafeAreaInsets = insets;
@@ -103,11 +115,16 @@ static id FFSendId(id object, NSString *selectorName)
 
 @interface FFBrowserViewController (FFNavigationPresentation)
 - (void)ffnav_browserViewDidLayoutSubviews;
+- (void)ffnav_originalBrowserViewDidLayoutSubviews;
 - (UIMenu *)ffnav_moreMenu;
+- (UIMenu *)ffnav_originalMoreMenu;
 - (void)ffnav_removeLegacyActionBar;
 - (void)ffnav_updateContextBars;
 - (void)ffnav_installSelectionBar;
-- (UIButton *)ffnav_selectionButton:(NSString *)title symbol:(NSString *)symbol action:(SEL)action tint:(UIColor *)tint;
+- (UIButton *)ffnav_selectionButton:(NSString *)title
+                              symbol:(NSString *)symbol
+                              action:(SEL)action
+                                tint:(UIColor *)tint;
 - (void)ffnav_batchCopy;
 - (void)ffnav_batchMove;
 - (void)ffnav_batchDelete;
@@ -121,38 +138,40 @@ static id FFSendId(id object, NSString *selectorName)
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        FFSwapMethod(self, @selector(viewDidLayoutSubviews),
-                    @selector(ffnav_browserViewDidLayoutSubviews));
-        FFSwapMethod(self, NSSelectorFromString(@"moreMenu"), @selector(ffnav_moreMenu));
+        FFInstallHook(self, @selector(viewDidLayoutSubviews),
+            @selector(ffnav_browserViewDidLayoutSubviews),
+            @selector(ffnav_originalBrowserViewDidLayoutSubviews));
+        FFInstallHook(self, NSSelectorFromString(@"moreMenu"),
+            @selector(ffnav_moreMenu),
+            @selector(ffnav_originalMoreMenu));
     });
 }
 
 - (void)ffnav_browserViewDidLayoutSubviews
 {
-    [self ffnav_browserViewDidLayoutSubviews];
+    [self ffnav_originalBrowserViewDidLayoutSubviews];
     [self ffnav_removeLegacyActionBar];
     [self ffnav_updateContextBars];
 }
 
 - (void)ffnav_removeLegacyActionBar
 {
-    // FFBrowserPresentation's first prototype created a permanent bottom bar
-    // with a direct UIStackView child. Keep the path strip, collection/table
-    // views and our tagged contextual/root bars; remove only that obsolete bar.
+    // FFBrowserPresentation's first UI pass created one permanent bottom view
+    // with a direct UIStackView child. Remove only that obsolete view.
     for (UIView *candidate in [self.view.subviews copy]) {
         if (candidate.tag == FFRootTabBarViewTag || candidate.tag == FFSelectionActionBarTag)
             continue;
-        BOOL containsStack = NO;
+
+        BOOL containsDirectStack = NO;
         for (UIView *child in candidate.subviews) {
             if ([child isKindOfClass:UIStackView.class]) {
-                containsStack = YES;
+                containsDirectStack = YES;
                 break;
             }
         }
-        if (containsStack) {
-            candidate.hidden = YES;
-            [candidate removeFromSuperview];
-        }
+        if (!containsDirectStack) continue;
+        candidate.hidden = YES;
+        [candidate removeFromSuperview];
     }
 }
 
@@ -199,7 +218,8 @@ static id FFSendId(id object, NSString *selectorName)
     config.baseForegroundColor = tint ?: UIColor.labelColor;
     config.contentInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
     button.configuration = config;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    if (action)
+        [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
 }
 
@@ -265,7 +285,8 @@ static id FFSendId(id object, NSString *selectorName)
 
 - (UIMenu *)ffnav_moreMenu
 {
-    UIMenu *base = [self ffnav_moreMenu];
+    UIMenu *base = [self ffnav_originalMoreMenu];
+    if (!base) base = [UIMenu menuWithTitle:@"更多" children:@[]];
 
     UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹"
         image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
@@ -285,6 +306,7 @@ static id FFSendId(id object, NSString *selectorName)
                 postNotificationName:@"FFSettingsChangedNotification" object:nil];
         }];
     list.state = grid ? UIMenuElementStateOff : UIMenuElementStateOn;
+
     UIAction *gridAction = [UIAction actionWithTitle:@"网格"
         image:[UIImage systemImageNamed:@"square.grid.2x2"] identifier:nil
         handler:^(__unused UIAction *action) {
