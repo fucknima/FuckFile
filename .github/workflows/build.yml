@@ -95,14 +95,15 @@ jobs:
             exit 1
           fi
           plutil -lint "$SHARE_APPEX/Info.plist"
-          # 扩展签名：先 codesign 生成签名，再 ldid 注入 application-groups entitlement。
-          codesign --force -s - "$SHARE_APPEX"
+          # 签名顺序（避免嵌套哈希失配）：
+          #   1) ldid 给主 app/扩展二进制注入 application-groups
+          #   2) codesign 最后对整个主 app（含 PlugIns）统一 ad-hoc 嵌套签名
           /usr/local/bin/ldid -S Entitlements.plist "$SHARE_APPEX/FFShareExtension" || true
-          # Strip any certificate-based signature down to ad-hoc; inject the
-          # application-groups entitlement for the App Group bridge.
-          # Fail loudly: a broken signature produces an unusable artifact.
-          codesign --force -s - "$APP"
           /usr/local/bin/ldid -S Entitlements.plist "$APP/FuckFile" || true
+          # Strip any certificate-based signature down to ad-hoc.
+          # Fail loudly: a broken signature produces an unusable artifact.
+          codesign --force -s - --preserve-metadata=identifier,entitlements "$APP"
+          plutil -lint "$APP/Info.plist"
           rm -rf Payload FuckFile.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
