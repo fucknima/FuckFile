@@ -23,7 +23,9 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 72;
+    self.tableView.estimatedRowHeight = 84;
+    self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter]
@@ -33,6 +35,12 @@
             [weakSelf reloadTasks];
         }];
     [self reloadTasks];
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
 }
 
 - (void)reloadTasks
@@ -53,44 +61,53 @@
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Task"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Task"];
     }
     FFFileTask *task = self.tasks[indexPath.row];
+    BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;
+
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = task.displayName;
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    NSMutableString *detail = [NSMutableString stringWithFormat:@"%@ · %@",
-        task.kindText, task.stateText];
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:[NSString stringWithFormat:@"%@ · %@", task.kindText, task.stateText]];
     if (task.state == FFFileTaskStateRunning) {
-        [detail appendFormat:@" · %@", task.detailName ?: @""];
+        if (task.detailName.length) [lines addObject:task.detailName];
+        NSMutableArray<NSString *> *metrics = [NSMutableArray array];
         if (task.totalBytes > 0)
-            [detail appendFormat:@" · %@ / %@",
-                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
+            [metrics addObject:[NSString stringWithFormat:@"%@ / %@",
+                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]]];
         if (task.averageBytesPerSecond > 0) {
-            [detail appendFormat:@" · %@/s",
-                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
+            [metrics addObject:[NSString stringWithFormat:@"%@/s",
+                [self formatSize:(unsigned long long)task.averageBytesPerSecond]]];
             if (task.estimatedRemainingSeconds > 0) {
                 NSTimeInterval seconds = task.estimatedRemainingSeconds;
-                if (seconds < 60)
-                    [detail appendFormat:@" · 剩余 %d 秒", (int)seconds];
-                else
-                    [detail appendFormat:@" · 剩余 %d 分", (int)(seconds / 60)];
+                [metrics addObject:seconds < 60
+                    ? [NSString stringWithFormat:@"剩余 %d 秒", (int)seconds]
+                    : [NSString stringWithFormat:@"剩余 %d 分", (int)(seconds / 60)]];
             }
         }
+        if (metrics.count) [lines addObject:[metrics componentsJoinedByString:@" · "]];
     } else if (task.state == FFFileTaskStateCompleted || task.state == FFFileTaskStateFailed) {
-        [detail appendFormat:@" · 成功 %lu 失败 %lu 跳过 %lu",
+        [lines addObject:[NSString stringWithFormat:@"成功 %lu · 失败 %lu · 跳过 %lu",
             (unsigned long)task.succeededCount, (unsigned long)task.failedCount,
-            (unsigned long)task.skippedCount];
-        if (task.state == FFFileTaskStateFailed && task.error)
-            [detail appendFormat:@"\n%@", task.error.localizedDescription];
+            (unsigned long)task.skippedCount]];
+        if (task.state == FFFileTaskStateFailed && task.error.localizedDescription.length)
+            [lines addObject:task.error.localizedDescription];
     }
-    config.secondaryText = detail;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 0;
+    config.secondaryText = [lines componentsJoinedByString:@"\n"];
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    config.secondaryTextProperties.numberOfLines = 4;
+    if (active) {
+        NSDirectionalEdgeInsets margins = config.directionalLayoutMargins;
+        margins.bottom += 10;
+        config.directionalLayoutMargins = margins;
+    }
     cell.contentConfiguration = config;
 
-    BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;
     cell.selectionStyle = active ? UITableViewCellSelectionStyleNone
                                  : UITableViewCellSelectionStyleDefault;
     if (active) {
