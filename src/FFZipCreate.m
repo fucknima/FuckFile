@@ -185,9 +185,12 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
         totalBytes += entry.size;
     }
 
-    // 先写临时文件，全部成功后原子替换目标；失败/取消时保留旧文件。
-    NSString *tempPath = [NSString stringWithFormat:@"%@.%@.tmp",
-        destinationPath, [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    // 先写临时文件（. 前缀隐藏：任务期间不出现在浏览列表），
+    // 全部成功后原子替换目标；失败/取消时保留旧文件。
+    NSString *tempName = [NSString stringWithFormat:@".%@.%@.tmp",
+        destinationPath.lastPathComponent, [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    NSString *tempPath = [destinationPath.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:tempName];
     FILE *file = fopen(tempPath.fileSystemRepresentation, "wb");
     if (!file) {
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{

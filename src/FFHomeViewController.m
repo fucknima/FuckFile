@@ -36,7 +36,7 @@
     self.tableView.delegate = self;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self
-        action:@selector(reloadStatus)];
+        action:@selector(refreshTapped)];
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
@@ -71,6 +71,16 @@
 {
     [super viewWillAppear:animated];
     [self reloadStatus];
+}
+
+// 刷新 = 真正重新扫描 App Data（与设置页「重新扫描 App Data」同一条链），
+// 完成后更新本页状态；不满足于只重数目录。
+- (void)refreshTapped
+{
+    __weak typeof(self) weakSelf = self;
+    [[MCMManager sharedManager] rescanWithCompletion:^{
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
+    }];
 }
 
 - (void)reloadStatus

@@ -68,7 +68,6 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
 @property(nonatomic) BOOL loading;
 @property(nonatomic) BOOL hasLoaded;
-@property(nonatomic) NSTimeInterval lastAutoReloadTime;
 @property(nonatomic, strong) UIRefreshControl *refreshControl;
 @property(nonatomic, strong) UIRefreshControl *gridRefreshControl;
 @property(nonatomic, strong) UIBarButtonItem *plusItem;
@@ -90,11 +89,8 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
-// 页面顶部独立搜索条（iOS 26 上 navigationItem.searchController 被渲染
-// 到屏幕底部，改为自建顶栏搜索 + 滚动隐藏，平时不下拉不占位）。
-@property(nonatomic, strong) UIView *searchBarContainer;
-@property(nonatomic, strong) NSLayoutConstraint *searchBarHeightConstraint;
-@property(nonatomic) BOOL searchBarCollapsed;
+// 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
+@property(nonatomic) BOOL pendingAutoReload;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
@@ -147,31 +143,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
-    // 顶级搜索条：挂在页面顶部（breadcrumb 下方），列表/网格共用；
-    // 内容滚动后自动收起，回到顶部展开，绝不贴屏幕底部。
-    self.searchBarContainer = [[UIView alloc] init];
-    self.searchBarContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    self.searchBarContainer.clipsToBounds = YES;
-    [self.view addSubview:self.searchBarContainer];
-
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
-    self.searchBarHeightConstraint =
-        [self.searchBarContainer.heightAnchor constraintEqualToConstant:44];
-    self.searchBarCollapsed = NO;
     [NSLayoutConstraint activateConstraints:@[
         [self.breadcrumbView.topAnchor constraintEqualToAnchor:
             self.view.safeAreaLayoutGuide.topAnchor],
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
-        [self.searchBarContainer.topAnchor constraintEqualToAnchor:
-            self.breadcrumbView.bottomAnchor],
-        [self.searchBarContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.searchBarContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        self.searchBarHeightConstraint,
         [self.tableView.topAnchor constraintEqualToAnchor:
-            self.searchBarContainer.bottomAnchor],
+            self.breadcrumbView.bottomAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.tableView.bottomAnchor constraintEqualToAnchor:
@@ -216,11 +197,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 }
             }
             if (!affectsHere) return;
-            // 去抖：通知在进度更新时也会触发，1 秒内只刷一次。
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-                if (now - strongSelf.lastAutoReloadTime < 1.0) return;
-                strongSelf.lastAutoReloadTime = now;
+            // 尾随刷新（trailing edge）：不为每个进度通知刷一次，也绝不
+            // 因为去抖而丢掉任务完成后的最后一次变化（压缩/复制完成时
+            // 临时文件 rename 成目标，必须保证最新状态可见）。
+            if (strongSelf.pendingAutoReload) return;
+            strongSelf.pendingAutoReload = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                strongSelf.pendingAutoReload = NO;
                 if (strongSelf.hasLoaded) [strongSelf reloadEntries];
             });
         }];
@@ -266,19 +250,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"在当前文件夹搜索";
-    self.searchController.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    self.searchController.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
-    // 不再挂 navigationItem.searchController（iOS 26 位置异常），
-    // 用自建顶部条；随时显示搜索条在顶部。
-    UISearchBar *searchBar = self.searchController.searchBar;
-    searchBar.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.searchBarContainer addSubview:searchBar];
-    [NSLayoutConstraint activateConstraints:@[
-        [searchBar.topAnchor constraintEqualToAnchor:self.searchBarContainer.topAnchor],
-        [searchBar.leadingAnchor constraintEqualToAnchor:self.searchBarContainer.leadingAnchor],
-        [searchBar.trailingAnchor constraintEqualToAnchor:self.searchBarContainer.trailingAnchor],
-        [searchBar.bottomAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor],
-    ]];
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
+    self.definesPresentationContext = YES;
 
     self.moreItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"ellipsis.circle" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
@@ -943,25 +917,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - Search
 
-// 顶部搜索条滚动收起/展开（iOS 设置风格）：本页列表与网格共用。
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
-{
-    if (scrollView != self.tableView && scrollView != self.collectionView) return;
-    [self updateSearchBarCollapse:scrollView.contentOffset.y > 12.0];
-}
-
-- (void)updateSearchBarCollapse:(BOOL)collapsed
-{
-    // 正在输入时不收起；多选模式下保持可见。
-    collapsed = collapsed && !self.searchController.isActive;
-    if (collapsed == self.searchBarCollapsed) return;
-    self.searchBarCollapsed = collapsed;
-    self.searchBarHeightConstraint.constant = collapsed ? 0 : 44;
-    [UIView animateWithDuration:0.2 delay:0
-        options:UIViewAnimationOptionCurveEaseOut
-        animations:^{ [self.view layoutIfNeeded]; } completion:nil];
-}
-
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
 {
     self.searchText = searchController.searchBar.text;
@@ -1575,9 +1530,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     self.gridRefreshControl = gridRefresh;
     [self.collectionView addSubview:gridRefresh];
     [NSLayoutConstraint activateConstraints:@[
-        // 顶部与列表一致：跟随搜索条（与 breadcrumb 一起在列表/网格上方）。
+        // 顶部与列表一致：跟随 breadcrumb（收起时等于安全区顶部）。
         [self.collectionView.topAnchor constraintEqualToAnchor:
-            self.searchBarContainer.bottomAnchor],
+            self.breadcrumbView.bottomAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
