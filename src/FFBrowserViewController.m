@@ -251,7 +251,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"在当前文件夹搜索";
     self.navigationItem.searchController = self.searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = YES;
+    // 常驻导航栏下：不参与滚动隐藏（iOS 26 把隐藏态渲染成底部悬浮条，
+    // 会盖住列表内容；Files 同款常驻搜索，无此问题）。
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
 
     self.moreItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"ellipsis.circle" tint:nil]
