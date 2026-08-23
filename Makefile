@@ -49,8 +49,7 @@ FuckFile_FILES = \
 	src/FFArchiveBrowserViewController.m \
 	src/FFIPaInstallerViewController.m \
 	src/FFSupportedViewersViewController.m \
-	src/FFFileAssociationsViewController.m \
-	src/FFImportService.m
+	src/FFFileAssociationsViewController.m
 
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \
@@ -74,26 +73,3 @@ include $(THEOS_MAKE_PATH)/application.mk
 after-stage::
 	@codesign --force -s - --preserve-metadata=identifier,entitlements $(THEOS_STAGING_DIR)/Applications/FuckFile.app 2>/dev/null || true
 	@echo "== ad-hoc re-signed .app at $(THEOS_STAGING_DIR)/Applications/FuckFile.app"
-
-# ---- Share Extension（theos appex.mk 官方路径，自动 -e _NSExtensionMain）----
-APPEX_NAME = FFShareExtension
-FFShareExtension_CFLAGS = -I$(PWD)/ShareExtension -fobjc-arc \
-	-Wno-unused-function -Wno-unused-variable -Wno-format \
-	-Wno-incompatible-pointer-types -Wno-deprecated-declarations
-FFShareExtension_CCFLAGS = $(FFShareExtension_CFLAGS)
-FFShareExtension_OBJCFLAGS = $(FFShareExtension_CFLAGS)
-FFShareExtension_FILES = ShareExtension/FFShareViewController.m
-FFShareExtension_FRAMEWORKS = UIKit Foundation Social UniformTypeIdentifiers
-FFShareExtension_INSTALL_PATH = /Applications
-# Info.plist 由构建目录中的资源自动带入（bundle.mk 规则）。
-FFShareExtension_RESOURCE_DIRS = ShareExtensionResources
-
-include $(THEOS_MAKE_PATH)/appex.mk
-
-# 把 appex 嵌入主 app 的 PlugIns/（CI 在 Package 段 rsync）。
-after-stage::
-	@mkdir -p $(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns
-	@rm -rf $(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns/FFShareExtension.appex
-	@rsync -a $(THEOS_STAGING_DIR)/Applications/FFShareExtension.appex/ \
-		$(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns/FFShareExtension.appex/ 2>/dev/null || true
-	@echo "== share extension staged"

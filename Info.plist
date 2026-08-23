@@ -100,10 +100,6 @@
 	     只跳转、文件不过来）。NO 时系统把文件完整拷进沙盒 Inbox，天然可读。 -->
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
-	<!-- 文件 App「我的 iPhone」显示第三方沙盒 app 需要此开关（LCSign 方案）。
-	     与 OpenInPlace=NO 不冲突：两者职责不同。 -->
-	<key>UISupportsDocumentBrowser</key>
-	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 </dict>

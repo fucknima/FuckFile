@@ -71,41 +71,10 @@ jobs:
           # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
           plutil -lint "$APP/Info.plist"
-          # ---- Share Extension（theos appex.mk 编译，自动 -e _NSExtensionMain）----
-          # theos 构建产物在 .theos/obj/FFShareExtension.appex，rsync 进主 app PlugIns。
-          SHARE_APPEX="$APP/PlugIns/FFShareExtension.appex"
-          if [ -d ".theos/obj/FFShareExtension.appex" ]; then
-            rm -rf "$SHARE_APPEX"
-            mkdir -p "$APP/PlugIns"
-            rsync -a ".theos/obj/FFShareExtension.appex/" "$SHARE_APPEX/"
-            echo "embedded theos appex into PlugIns"
-          else
-            # theos in-place fallback: 手动构建目录可能在 staging 区
-            STAGED_APPEX=$(find .theos -maxdepth 4 -name "FFShareExtension.appex" -type d | head -1)
-            if [ -n "$STAGED_APPEX" ]; then
-              rm -rf "$SHARE_APPEX"
-              mkdir -p "$APP/PlugIns"
-              rsync -a "$STAGED_APPEX/" "$SHARE_APPEX/"
-              echo "embedded staged appex: $STAGED_APPEX"
-            fi
-          fi
-          if [ ! -d "$SHARE_APPEX" ]; then
-            echo "ERROR: appex not built by theos (obj or staging missing)"
-            find .theos -maxdepth 5 -name "*.appex" -o -name "*FFShare*" | head -20
-            exit 1
-          fi
-          plutil -lint "$SHARE_APPEX/Info.plist"
-          # 签名顺序（避免嵌套哈希失配）：
-          #   1) ldid 给主 app/扩展二进制注入 application-groups
-          #   2) codesign 最后对整个主 app（含 PlugIns）统一 ad-hoc 嵌套签名
-          # 【实验】暂时禁用 ldid entitlement 注入：判定 zsign 失败源是否为
-          # application-groups 受限 entitlement（应用组需 provisioning 匹配）。
-          # /usr/local/bin/ldid -S Entitlements.plist "$SHARE_APPEX/FFShareExtension" || true
-          # /usr/local/bin/ldid -S Entitlements.plist "$APP/FuckFile" || true
-          # Strip any certificate-based signature down to ad-hoc.
+          # Strip any certificate-based signature down to ad-hoc so the
+          # artifact can be re-signed locally (zsign / 爱思 / TrollStore etc).
           # Fail loudly: a broken signature produces an unusable artifact.
-          codesign --force -s - --preserve-metadata=identifier,entitlements "$APP"
-          plutil -lint "$APP/Info.plist"
+          codesign --force -s - "$APP"
           rm -rf Payload FuckFile.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
