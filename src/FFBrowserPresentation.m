@@ -50,11 +50,6 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
 }
 
 @interface FFBrowserViewController (FFBrowserPresentation)
-// Private presentation selectors implemented by FFBrowserViewController.
-- (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item;
-- (UIMenu *)moreMenu;
-
-// Swizzle targets.
 - (void)ffui_viewDidLoad;
 - (void)ffui_viewWillAppear:(BOOL)animated;
 - (void)ffui_configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item;
@@ -75,7 +70,10 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
         Class cls = FFBrowserViewController.class;
         FFSwapBrowserMethod(cls, @selector(viewDidLoad), @selector(ffui_viewDidLoad));
         FFSwapBrowserMethod(cls, @selector(viewWillAppear:), @selector(ffui_viewWillAppear:));
-        FFSwapBrowserMethod(cls, @selector(configureCell:withItem:),
+        // These selectors are private to the Browser implementation. Resolve
+        // them by name so the presentation category does not redeclare methods
+        // it intentionally does not implement.
+        FFSwapBrowserMethod(cls, NSSelectorFromString(@"configureCell:withItem:"),
                             @selector(ffui_configureCell:withItem:));
         FFSwapBrowserMethod(cls,
             @selector(collectionView:layout:sizeForItemAtIndexPath:),
@@ -83,7 +81,7 @@ static NSString *FFBrowserCompactDetail(FFEntry *item)
         FFSwapBrowserMethod(cls,
             @selector(collectionView:cellForItemAtIndexPath:),
             @selector(ffui_collectionView:cellForItemAtIndexPath:));
-        FFSwapBrowserMethod(cls, @selector(moreMenu), @selector(ffui_moreMenu));
+        FFSwapBrowserMethod(cls, NSSelectorFromString(@"moreMenu"), @selector(ffui_moreMenu));
     });
 }
 
