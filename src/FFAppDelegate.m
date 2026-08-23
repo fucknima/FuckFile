@@ -211,16 +211,50 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
             [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
                 style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                     NSString *directory = destinations.firstObject.stringByDeletingLastPathComponent;
-                    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
-                        initWithPath:directory];
-                    browser.title = @"Imported";
-                    [navigation pushViewController:browser animated:YES];
+                    [self showImportedDirectory:directory navigationController:navigation];
                 }]];
         }
         [alert addAction:[UIAlertAction actionWithTitle:@"好"
             style:UIAlertActionStyleCancel handler:nil]];
         [top presentViewController:alert animated:YES completion:nil];
     }];
+}
+
+#pragma mark - Imported-folder navigation
+
+- (void)showImportedDirectory:(NSString *)directory
+         navigationController:(UINavigationController *)navigation
+{
+    if (!directory.length || !navigation) return;
+    NSString *target = directory.stringByStandardizingPath;
+    FFBrowserViewController *existing = nil;
+
+    // Idempotent navigation: an Imported browser is a destination, not a new
+    // screen instance per import. Reuse the existing controller if it is
+    // already anywhere in the stack, otherwise push exactly one.
+    for (UIViewController *controller in navigation.viewControllers) {
+        if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
+        FFBrowserViewController *browser = (FFBrowserViewController *)controller;
+        NSString *path = browser.currentPath.stringByStandardizingPath;
+        if ([path isEqualToString:target]) {
+            existing = browser;
+            break;
+        }
+    }
+
+    if (existing) {
+        FFLogTag(@"ImportUI", @"reuse Imported browser path=%@", target);
+        [existing reloadEntries];
+        if (navigation.topViewController != existing)
+            [navigation popToViewController:existing animated:YES];
+        return;
+    }
+
+    FFLogTag(@"ImportUI", @"push Imported browser path=%@", target);
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
+        initWithPath:target];
+    browser.title = @"Imported";
+    [navigation pushViewController:browser animated:YES];
 }
 
 #pragma mark - Import result UI
@@ -258,10 +292,8 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            FFBrowserViewController *browser = [[FFBrowserViewController alloc]
-                initWithPath:destination.stringByDeletingLastPathComponent];
-            browser.title = @"Imported";
-            [navigation pushViewController:browser animated:YES];
+            [self showImportedDirectory:destination.stringByDeletingLastPathComponent
+                   navigationController:navigation];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleCancel handler:nil]];
