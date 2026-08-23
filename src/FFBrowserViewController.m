@@ -143,11 +143,17 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
+    // 顶级布局锚点：直接锚定导航栏下边缘（转场时导航栏高度实时动画，
+    // safeAreaLayoutGuide 的顶值在 push 转场期间结算滞后，造成
+    // 导航栏与面包屑之间闪现空段后再恢复）。孤儿场景（无 nav）回退
+    // 安全区顶部。
+    NSLayoutYAxisAnchor *topAnchor = self.navigationController ?
+        self.navigationController.navigationBar.bottomAnchor :
+        self.view.safeAreaLayoutGuide.topAnchor;
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
     [NSLayoutConstraint activateConstraints:@[
-        [self.breadcrumbView.topAnchor constraintEqualToAnchor:
-            self.view.safeAreaLayoutGuide.topAnchor],
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:topAnchor],
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
