@@ -143,17 +143,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
-    // 顶级布局锚点：直接锚定导航栏下边缘（转场时导航栏高度实时动画，
-    // safeAreaLayoutGuide 的顶值在 push 转场期间结算滞后，造成
-    // 导航栏与面包屑之间闪现空段后再恢复）。孤儿场景（无 nav）回退
-    // 安全区顶部。
-    NSLayoutYAxisAnchor *topAnchor = self.navigationController ?
-        self.navigationController.navigationBar.bottomAnchor :
-        self.view.safeAreaLayoutGuide.topAnchor;
+    // 顶级布局锚点：锚定视图自身的安全区顶部。
+    // 注意：不能锚定 navigationBar.bottomAnchor —— viewDidLoad 时导航栏
+    // 仍处于 UIKit 私有布局引擎（push 转场初始化阶段），跨层级激活约束
+    // 直接抛 NSISEngine 异常崩溃（真机 SIGABRT 证据：_addOrRemoveConstraints
+    // ← FFBrowserViewController viewDidLoad）。
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
     [NSLayoutConstraint activateConstraints:@[
-        [self.breadcrumbView.topAnchor constraintEqualToAnchor:topAnchor],
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:
+            self.view.safeAreaLayoutGuide.topAnchor],
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
@@ -166,6 +165,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     ]];
     [self updateBreadcrumbVisibility];
     [self.tableView reloadData];
+    // 底部浮动搜索条是 iOS 26+ 系统 chrome（Liquid Glass 悬浮层），
+    // 不会自动为内容预留空间：最后一行会被压住。为内容与滚动指示条
+    // 补充恒定底部余量（悬停搜索条 44pt + 边缘留白）。常量 inset 与
+    // 键盘/工具栏错峰：键盘由系统 safeArea 机制处理，多选时的批量
+    // 工具栏跟随 safeArea，本余量在多选退出时恢复。
+    [self applySearchChromeInsets];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
     // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
     // flowlayout 断言闪退的源头 —— 不创建就彻底消除这一类崩溃。
@@ -335,6 +340,20 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return result;
 }
 
+// 底部浮动 Search Chrome 的余量管理。普通浏览：预留悬浮搜索条高度，
+// 保证最后一项能完整滚到搜索条上方；多选：系统底部批量工具栏接管，
+// 清掉余量避免双重空白。
+- (void)applySearchChromeInsets
+{
+    CGFloat chrome = self.editing ? 0 : 56;
+    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, chrome, 0);
+    self.tableView.verticalScrollIndicatorInsets = UIEdgeInsetsMake(0, 0, chrome, 0);
+    if (self.collectionView) {
+        self.collectionView.contentInset = UIEdgeInsetsMake(0, 0, chrome, 0);
+        self.collectionView.verticalScrollIndicatorInsets = UIEdgeInsetsMake(0, 0, chrome, 0);
+    }
+}
+
 #pragma mark - Batch mode (multi-select)
 
 - (void)toggleBatchMode
@@ -359,9 +378,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [self updateSelectionTitle];
         // 粘贴横幅退出选择模式再恢复，避免与底部批量工具栏叠在一起。
         [self hidePasteBanner];
+        // 多选时隐藏系统搜索条（避免与底部批量工具栏叠压），退出恢复。
+        self.navigationItem.searchController = nil;
         self.batchToolbarItems = [self buildBatchToolbarItems];
         self.toolbarItems = self.batchToolbarItems;
         self.navigationController.toolbarHidden = NO;
+        [self applySearchChromeInsets];
         // 工具栏就位后再同步一次：进入多选且无选中时按钮应禁用。
         [self updateBatchActionsEnabled];
     } else {
@@ -369,6 +391,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         self.navigationItem.rightBarButtonItems = @[self.plusItem, self.moreItem];
         if (_batchNormalTitle.length) self.navigationItem.title = _batchNormalTitle;
         self.navigationController.toolbarHidden = YES;
+        self.navigationItem.searchController = self.searchController;
         if (gClipboardSources.count > 0) [self showPasteBanner];
     }
     [self updatePasteState];
@@ -1545,6 +1568,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
     ]];
+    [self applySearchChromeInsets];
     [self updateEmptyState];
 }
 
