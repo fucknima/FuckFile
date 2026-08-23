@@ -673,8 +673,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self updateEmptyState];
 }
 
-// 空状态视图（列表与网格共用）：空目录 / 加载失败（权限错误等），
-// 替代普通弹窗。
+// 空状态视图（列表与网格共用）：iOS 17+ 使用系统
+// UIContentUnavailableConfiguration 模板（原生字体/图标/动效），
+// 旧系统保持居中 Label fallback。
 - (void)updateEmptyState
 {
     UIView *emptyView = nil;
@@ -685,38 +686,67 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         spinner.frame = CGRectMake(0, 0, 44, 44);
         emptyView = spinner;
     } else if (self.loadError.length) {
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
-            self.view.bounds.size.width - 80, 120)];
-        label.textAlignment = NSTextAlignmentCenter;
-        label.numberOfLines = 0;
-        label.textColor = [UIColor secondaryLabelColor];
-        label.text = [NSString stringWithFormat:@"无法打开此文件夹\n\n%@\n\n点按重试",
-            self.loadError];
-        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        label.adjustsFontForContentSizeCategory = YES;
-        label.userInteractionEnabled = YES;
-        [label addGestureRecognizer:[[UITapGestureRecognizer alloc]
-            initWithTarget:self action:@selector(reloadEntries)]];
-        emptyView = label;
+        if (@available(iOS 17.0, *)) {
+            UIContentUnavailableConfiguration *config = [UIContentUnavailableConfiguration
+                messageConfiguration];
+            config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+            config.text = @"无法打开此文件夹";
+            config.secondaryText = self.loadError;
+            emptyView = [[UIContentUnavailableView alloc] initWithConfiguration:config];
+        } else {
+            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
+                self.view.bounds.size.width - 80, 120)];
+            label.textAlignment = NSTextAlignmentCenter;
+            label.numberOfLines = 0;
+            label.textColor = [UIColor secondaryLabelColor];
+            label.text = [NSString stringWithFormat:@"无法打开此文件夹\n\n%@\n\n点按重试",
+                self.loadError];
+            label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+            label.adjustsFontForContentSizeCategory = YES;
+            label.userInteractionEnabled = YES;
+            [label addGestureRecognizer:[[UITapGestureRecognizer alloc]
+                initWithTarget:self action:@selector(reloadEntries)]];
+            emptyView = label;
+        }
     } else if (self.filteredEntries.count == 0) {
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
-            self.view.bounds.size.width - 80, 80)];
-        label.textAlignment = NSTextAlignmentCenter;
-        label.numberOfLines = 0;
-        label.textColor = [UIColor secondaryLabelColor];
         // 筛选/搜索无命中与真空目录区分提示。
-        label.text = (self.entries.count > 0 || self.searchText.length ||
-            self.filterMode != FFFilterModeAll)
-            ? @"没有匹配的文件" : @"此文件夹为空";
-        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        label.adjustsFontForContentSizeCategory = YES;
-        emptyView = label;
+        BOOL filteredOut = (self.entries.count > 0 || self.searchText.length ||
+            self.filterMode != FFFilterModeAll);
+        if (@available(iOS 17.0, *)) {
+            UIContentUnavailableConfiguration *config = [UIContentUnavailableConfiguration
+                searchConfiguration];
+            if (filteredOut) {
+                config.text = @"没有匹配的文件";
+                config.secondaryText = @"尝试其他关键词或筛选条件";
+            } else {
+                config.image = [UIImage systemImageNamed:@"folder"];
+                config.text = @"此文件夹为空";
+                config.secondaryText = @"在这里创建或导入内容";
+            }
+            emptyView = [[UIContentUnavailableView alloc] initWithConfiguration:config];
+        } else {
+            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
+                self.view.bounds.size.width - 80, 80)];
+            label.textAlignment = NSTextAlignmentCenter;
+            label.numberOfLines = 0;
+            label.textColor = [UIColor secondaryLabelColor];
+            label.text = filteredOut ? @"没有匹配的文件" : @"此文件夹为空";
+            label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+            label.adjustsFontForContentSizeCategory = YES;
+            emptyView = label;
+        }
     }
     if (emptyView) {
         UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
             self.view.bounds.size.width, self.view.bounds.size.height)];
         emptyView.center = container.center;
         [container addSubview:emptyView];
+        // 错误态支持点按重试（与旧系统 fallback 行为一致）。
+        if (self.loadError.length) {
+            UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+                initWithTarget:self action:@selector(reloadEntries)];
+            [container addGestureRecognizer:tap];
+        }
         self.tableView.backgroundView = container;
         self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
         // 网格模式下列表隐藏：空态必须同时挂到 collectionView 上。
@@ -817,7 +847,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             if (identifier.length) {
                 NSString *itemName = FFAppContainerItemName(path);
                 item.displayName = itemName ?: FFAppDisplayName(identifier);
-                item.detail = [item.detail stringByAppendingFormat:@"\n%@", identifier];
+                item.containerIdentifier = identifier;
+                item.isAppContainer = YES;
                 // Only log actual container roots (UUID-shaped names).
                 if (FFIsUUIDShapedName(name))
                     FFLogTag(@"Browser", @"metadata resolved %@ -> %@ (%@)",
@@ -879,6 +910,20 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             NSString *itemName = item.linkTarget.length
                 ? FFAppContainerItemName(item.linkTarget) : nil;
             item.displayName = itemName ?: FFAppDisplayName(item.name);
+            item.isAppContainer = YES;
+            item.containerIdentifier = item.name;
+        }
+        // App Data 容器行：Primary=App 显示名，Secondary="标识符 · 时间"
+        // （与普通目录的信息层级不同）。
+        if (item.isAppContainer) {
+            NSString *identifier = item.containerIdentifier.length
+                ? item.containerIdentifier : item.name;
+            NSString *time = item.modificationDate ?
+                [self formatDate:item.modificationDate] : nil;
+            item.detail = [NSString stringWithFormat:@"%@%@%@",
+                identifier, time ? @" · " : @"",
+                time ?: @""];
+            continue;
         }
         // 列表只展示当前决策需要的信息（ADR-013）。xattr / 权限 /
         // 链接完整目标等慢数据一律推迟到 FFFileInfoViewController。
@@ -1229,8 +1274,15 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = item.displayName.length ? item.displayName : item.name;
-    // Dynamic Type（ADR-013）：文件名 Body、元数据 Caption1，随系统字号。
-    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    // Dynamic Type（ADR-013）：文件名 Body（medium 权重提升层级）、
+    // 元数据 Caption1，随系统字号。
+    UIFont *bodyFont = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    UIFontDescriptor *semibold = [bodyFont.fontDescriptor
+        fontDescriptorByAddingAttributes:@{
+            UIFontDescriptorTraitsAttribute: @{ @UIFontWeightTrait: @(UIFontWeightMedium) }
+        }];
+    if (semibold) bodyFont = [UIFont fontWithDescriptor:semibold size:0];
+    config.textProperties.font = bodyFont;
     config.textProperties.adjustsFontForContentSizeCategory = YES;
     config.textProperties.numberOfLines = 2;
     config.secondaryText = item.detail;
@@ -1287,6 +1339,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     if (item.isDirectory) return [self symbolImage:@"folder.fill" tint:nil];
     if (item.isSymlink) return [self symbolImage:@"link" tint:nil];
+    // App 数据容器（AppData 下）：与普通蓝色文件夹区分开的容器语义图标。
+    if (item.isAppContainer) return [self symbolImage:@"cube" tint:nil];
     NSString *ext = item.name.pathExtension.lowercaseString;
     static NSDictionary<NSString *, NSString *> *map;
     static dispatch_once_t onceToken;
@@ -1468,8 +1522,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 #pragma mark - Breadcrumb
 
-// 显示规则：MCM 虚拟根之下从 Device Storage 起显示；其他路径只显示
-// 最后 3 层。绝不展示完整 /private/var/... 链路。
+// 显示规则：只展示"返回上级"层级链，当前目录不重复展示（导航标题已经
+// 告诉用户在哪）。MCM 虚拟根之下从 Device Storage 起显示；其他路径最多
+// 显示最后 2 个祖先级。绝不展示完整 /private/var/... 链路。
 - (void)updateBreadcrumbVisibility
 {
     NSString *root = MCMVirtualRoot();
@@ -1491,23 +1546,50 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                     component] stringByStandardizingPath]];
                 [names addObject:component];
             }
+        // 去掉最后一段（当前目录）：与导航标题去重，只留祖先链。
+        if (names.count > 1) {
+            [names removeLastObject];
+            [paths removeLastObject];
+        } else {
+            // 当前目录就是根下第一层：只保留 "Device Storage ＞"。
+        }
     } else {
         NSArray<NSString *> *components = self.currentPath.pathComponents;
-        NSUInteger start = components.count > 3 ? components.count - 3 : 0;
-        for (NSUInteger i = start; i < components.count; i++) {
-            NSString *component = components[i];
-            if ([component isEqualToString:@"/"]) continue;
-            if ([component isEqualToString:@".."] || [component isEqualToString:@"."]) continue;
-            [names addObject:component];
+        // 祖先链：最多取到直接父级。内容从最后一段（当前目录）前一节开始。
+        NSMutableArray<NSString *> *stages = [NSMutableArray array];
+        for (NSString *component in components) {
+            if ([component isEqualToString:@"/"] ||
+                [component isEqualToString:@".."] ||
+                [component isEqualToString:@"."]) continue;
+            [stages addObject:component];
+        }
+        if (stages.count > 1)
+            [stages removeLastObject]; // 去当前目录
+        NSUInteger start = stages.count > 2 ? stages.count - 2 : 0;
+        for (NSUInteger i = start; i < stages.count; i++) {
+            NSString *component = stages[i];
             // 从头拼接真实路径，避免手写斜杠逻辑。
             NSMutableString *path = [NSMutableString string];
-            for (NSUInteger j = 0; j <= i; j++)
-                [path appendString:[components[j] isEqualToString:@"/"]
-                    ? @"/" : [components[j] stringByAppendingString:@"/"]];
+            for (NSUInteger j = 0; j < components.count; j++) {
+                if ([components[j] isEqualToString:component]) {
+                    for (NSUInteger k = 0; k <= j; k++)
+                        [path appendString:[components[k] isEqualToString:@"/"]
+                            ? @"/" : [components[k] stringByAppendingString:@"/"]];
+                    break;
+                }
+            }
+            [names addObject:component];
             [paths addObject:path.stringByStandardizingPath];
         }
     }
+    if (names.count == 0) {
+        // 无祖先层：收起面包屑，标题已足够。
+        self.breadcrumbHeightConstraint.constant = 0;
+        self.breadcrumbView.hidden = YES;
+        return;
+    }
     self.breadcrumbPaths = paths;
+    // 最后显示的层级（直接父级）加粗：它是"下一步跳回"的目标。
     [self.breadcrumbView setComponentNames:names selectedIndex:names.count - 1
         target:self action:@selector(breadcrumbTapped:)];
 }
@@ -1912,11 +1994,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [existing removeFromSuperview];
         if (gClipboardSources.count == 0) return;
 
-        UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
-            self.view.bounds.size.width - 24, 52)];
+        // 材质：新系统下 UIVisualEffectView 的 systemMaterial 渲染为
+        // Liquid Glass 材质；旧系统回退为磨砂。与底部悬浮搜索同一语言。
+        UIVisualEffectView *banner = [[UIVisualEffectView alloc] initWithEffect:
+            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
         banner.tag = 9347;
         banner.translatesAutoresizingMaskIntoConstraints = NO;
-        banner.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
         banner.layer.cornerRadius = 12;
         banner.layer.masksToBounds = YES;
         [self.view addSubview:banner];
@@ -1935,7 +2018,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         label.adjustsFontForContentSizeCategory = YES;
         label.text = [NSString stringWithFormat:@"%@ %lu 项",
             action, (unsigned long)gClipboardSources.count];
-        [banner addSubview:label];
+        [banner.contentView addSubview:label];
 
         UIButton *pasteButton = [UIButton buttonWithType:UIButtonTypeSystem];
         pasteButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1943,7 +2026,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [pasteButton setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
         [pasteButton addTarget:self action:@selector(pasteAction:)
               forControlEvents:UIControlEventTouchUpInside];
-        [banner addSubview:pasteButton];
+        [banner.contentView addSubview:pasteButton];
 
         UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
         cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1951,13 +2034,13 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         [cancelButton setTitleColor:[UIColor secondaryLabelColor] forState:UIControlStateNormal];
         [cancelButton addTarget:self action:@selector(cancelPaste)
               forControlEvents:UIControlEventTouchUpInside];
-        [banner addSubview:cancelButton];
+        [banner.contentView addSubview:cancelButton];
 
         [NSLayoutConstraint activateConstraints:@[
-            [label.leadingAnchor constraintEqualToAnchor:banner.leadingAnchor constant:14],
-            [label.centerYAnchor constraintEqualToAnchor:banner.centerYAnchor],
-            [cancelButton.trailingAnchor constraintEqualToAnchor:banner.trailingAnchor constant:-8],
-            [cancelButton.centerYAnchor constraintEqualToAnchor:banner.centerYAnchor],
+            [label.leadingAnchor constraintEqualToAnchor:banner.contentView.leadingAnchor constant:14],
+            [label.centerYAnchor constraintEqualToAnchor:banner.contentView.centerYAnchor],
+            [cancelButton.trailingAnchor constraintEqualToAnchor:banner.contentView.trailingAnchor constant:-8],
+            [cancelButton.centerYAnchor constraintEqualToAnchor:banner.contentView.centerYAnchor],
             [pasteButton.trailingAnchor constraintEqualToAnchor:cancelButton.leadingAnchor constant:-8],
             [pasteButton.centerYAnchor constraintEqualToAnchor:banner.centerYAnchor],
         ]];

@@ -82,6 +82,20 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     }
 }
 
+// 模块语义色（仅系统色）：浏览蓝、查看青、存储橙/红、诊断灰。
+- (UIColor *)iconTintForIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section == 0)
+        return indexPath.row == 1 ? [UIColor systemTealColor] : [UIColor systemBlueColor];
+    if (indexPath.section == 1)
+        return indexPath.row == 0 ? [UIColor systemBlueColor] : [UIColor systemIndigoColor];
+    if (indexPath.section == 2)
+        return indexPath.row == 0 ? [UIColor systemOrangeColor] : [UIColor systemRedColor];
+    if (indexPath.section == 3)
+        return indexPath.row == 0 ? [UIColor systemBlueColor] : [UIColor systemGrayColor];
+    return [UIColor systemGrayColor];
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
@@ -95,7 +109,8 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     cell.detailTextLabel.text = nil;
     cell.detailTextLabel.numberOfLines = 1;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.imageView.tintColor = [UIColor systemBlueColor];
+    // 有限语义色（仅系统色）：图标形状大多单色，用色区分模块层级。
+    cell.imageView.tintColor = [self iconTintForIndexPath:indexPath];
 
     switch (indexPath.section) {
         case 0: {

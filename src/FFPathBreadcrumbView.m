@@ -93,6 +93,17 @@ static NSString *FFBreadcrumbTitle(NSArray<NSString *> *names, NSUInteger i)
         [chips addObject:button];
     }
 
+    // 尾部箭头：指示"当前目录在此层级之下"（面包屑不含当前目录名，
+    // 避免与导航标题重复）。
+    if (names.count > 0) {
+        UIButton *trailing = [UIButton buttonWithType:UIButtonTypeSystem];
+        trailing.userInteractionEnabled = NO;
+        [trailing setImage:[UIImage systemImageNamed:@"chevron.compact.right"]
+                  forState:UIControlStateNormal];
+        [trailing setTintColor:UIColor.tertiaryLabelColor];
+        [chips addObject:trailing];
+    }
+
     // 先拷贝再移除：枚举中修改 arrangedSubviews 会崩溃；
     // removeArrangedSubview 不脱离父视图，需手动 removeFromSuperview。
     NSArray<UIView *> *existing = [_stack.arrangedSubviews copy];

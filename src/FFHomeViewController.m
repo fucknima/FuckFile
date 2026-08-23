@@ -136,7 +136,6 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:@"Home"];
     cell.detailTextLabel.numberOfLines = 0;
-    cell.imageView.tintColor = [UIColor systemBlueColor];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
     switch (indexPath.section) {
@@ -144,6 +143,7 @@
             // 主入口：MCM 虚拟根（Device Storage）。名称与实际行为一致。
             cell.textLabel.text = @"设备存储";
             cell.imageView.image = [UIImage systemImageNamed:@"internaldrive"];
+            cell.imageView.tintColor = [UIColor systemBlueColor];
             if (self.scanInProgress) {
                 NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
                 cell.detailTextLabel.text = [NSString stringWithFormat:
@@ -167,20 +167,24 @@
                 cell.textLabel.text = @"搜索";
                 cell.detailTextLabel.text = @"全局搜索 App 数据";
                 cell.imageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
+                cell.imageView.tintColor = [UIColor systemBlueColor];
             } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"收藏";
                 cell.detailTextLabel.text = @"收藏的文件与文件夹";
                 cell.imageView.image = [UIImage systemImageNamed:@"star"];
+                cell.imageView.tintColor = [UIColor systemYellowColor];
             } else if (indexPath.row == 2) {
                 cell.textLabel.text = @"最近访问";
                 cell.detailTextLabel.text = @"最近打开的目录与文件";
                 cell.imageView.image = [UIImage systemImageNamed:@"clock"];
+                cell.imageView.tintColor = [UIColor systemTealColor];
             } else {
                 cell.textLabel.text = @"任务中心";
                 cell.detailTextLabel.text = self.activeTaskCount > 0
                     ? [NSString stringWithFormat:@"%lu 个任务进行中", (unsigned long)self.activeTaskCount]
                     : @"复制、移动、解压任务";
                 cell.imageView.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
+                cell.imageView.tintColor = [UIColor systemIndigoColor];
             }
             break;
         }
@@ -188,6 +192,7 @@
             cell.textLabel.text = @"设置";
             cell.detailTextLabel.text = @"显示、排序、高级与调试";
             cell.imageView.image = [UIImage systemImageNamed:@"gearshape"];
+            cell.imageView.tintColor = [UIColor systemGrayColor];
             break;
         }
     }
