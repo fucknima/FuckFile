@@ -688,7 +688,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     } else if (self.loadError.length) {
         if (@available(iOS 17.0, *)) {
             UIContentUnavailableConfiguration *config = [UIContentUnavailableConfiguration
-                messageConfiguration];
+                emptyConfiguration];
             config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
             config.text = @"无法打开此文件夹";
             config.secondaryText = self.loadError;
@@ -1279,7 +1279,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     UIFont *bodyFont = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     UIFontDescriptor *semibold = [bodyFont.fontDescriptor
         fontDescriptorByAddingAttributes:@{
-            UIFontDescriptorTraitsAttribute: @{ @UIFontWeightTrait: @(UIFontWeightMedium) }
+            UIFontDescriptorTraitsAttribute: @{ UIFontWeightTrait: @(UIFontWeightMedium) }
         }];
     if (semibold) bodyFont = [UIFont fontWithDescriptor:semibold size:0];
     config.textProperties.font = bodyFont;
