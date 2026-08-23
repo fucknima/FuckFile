@@ -26,6 +26,7 @@
     self.statusLabel = [UILabel new];
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.statusLabel.text = @"正在导入到 FuckFile…";
+    self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
     [self.view addSubview:self.statusLabel];
@@ -420,9 +421,11 @@ static void FFEnsureLaunchServicesLoaded(void)
 - (void)finishWithImportedCount:(NSInteger)count
 {
     [self.spinner stopAnimating];
-    self.statusLabel.text = count > 0
+    BOOL success = count > 0;
+    self.statusLabel.text = success
         ? [NSString stringWithFormat:@"已接收 %ld 个文件，正在打开 FuckFile…", (long)count]
         : @"没有收到可导入的文件";
+    self.statusLabel.textColor = success ? [UIColor labelColor] : [UIColor secondaryLabelColor];
 
     NSURL *wakeURL = [NSURL URLWithString:
         [NSString stringWithFormat:@"%@://shared-inbox", FFShareWakeScheme]];

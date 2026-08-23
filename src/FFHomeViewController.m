@@ -25,7 +25,12 @@
 - (instancetype)init
 {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) self.title = @"FuckFile";
+    if (self) {
+        self.title = @"FuckFile";
+        // 统一 inline 导航：标题进入顶部栏，不再占用正文区。
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 
@@ -34,7 +39,6 @@
     [super viewDidLoad];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self
         action:@selector(reloadStatus)];
@@ -71,7 +75,7 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
     [self reloadStatus];
 }
 
@@ -113,7 +117,7 @@
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return @"文件";
+        case 0: return @"位置";
         case 1: return @"快捷访问";
         case 2: return nil;
         default: return nil;
@@ -133,9 +137,9 @@
 
     switch (indexPath.section) {
         case 0: {
-            // 主入口：App 数据
-            cell.textLabel.text = @"App 数据";
-            cell.imageView.image = [UIImage systemImageNamed:@"app.dashed"];
+            // 主入口：设备存储（点击进入 MCM 虚拟根，含 AppData/Imported 等）。
+            cell.textLabel.text = @"设备存储";
+            cell.imageView.image = [UIImage systemImageNamed:@"internaldrive"];
             if (self.scanInProgress) {
                 NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
                 cell.detailTextLabel.text = [NSString stringWithFormat:

@@ -8,7 +8,11 @@
 - (instancetype)init
 {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) self.title = @"支持的文件查看器";
+    if (self) {
+        self.title = @"支持的文件查看器";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 

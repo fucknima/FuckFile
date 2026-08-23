@@ -37,6 +37,8 @@
         _archivePath = [path copy];
         _pathStack = [NSMutableArray array];
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

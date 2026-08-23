@@ -12,7 +12,11 @@
 - (instancetype)init
 {
     self = [super init];
-    if (self) self.title = @"运行日志";
+    if (self) {
+        self.title = @"运行日志";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
+    }
     return self;
 }
 

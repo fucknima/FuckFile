@@ -45,7 +45,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
     navigation.navigationBar.translucent = NO;
-    navigation.navigationBar.prefersLargeTitles = YES;
+    navigation.navigationBar.prefersLargeTitles = NO;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.backgroundColor = UIColor.systemBackgroundColor;

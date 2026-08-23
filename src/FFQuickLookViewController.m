@@ -16,6 +16,8 @@
         _filePath = [path copy];
         // QLPreviewController renders its own title; keep it aligned.
         self.title = path.lastPathComponent;
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
     }
     return self;
 }

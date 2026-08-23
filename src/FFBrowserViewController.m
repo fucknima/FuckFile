@@ -17,18 +17,19 @@
 #import "FFPathPolicy.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
+#import "FFPathBreadcrumbView.h"
+#import "FFFileInfoViewController.h"
+#import "FFPathDisplay.h"
+#import "FFTypography.h"
 
 #import <AVKit/AVKit.h>
-#import <CommonCrypto/CommonDigest.h>
 #import <dirent.h>
 #import <fcntl.h>
 #import <limits.h>
 #import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>
-#import <sys/xattr.h>
 #import <unistd.h>
-#import <objc/runtime.h>
 
 typedef NS_ENUM(NSInteger, FFClipboardMode) {
     FFClipboardModeNone = 0,
@@ -78,12 +79,14 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *filterItem;
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic) BOOL showHiddenFiles;
+@property(nonatomic) BOOL foldersFirst;
 @property(nonatomic, copy) NSString *batchNormalTitle;
 @property(nonatomic, strong) UICollectionView *collectionView;
 @property(nonatomic) BOOL gridMode;
 @property(nonatomic, copy) NSString *loadError;
 @property(nonatomic, strong) FFEntry *interactionItem;
 @property(nonatomic, copy) NSString *interactionText;
+@property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
@@ -99,7 +102,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         _currentPath = [path copy];
         _showHiddenFiles = [NSUserDefaults.standardUserDefaults
             boolForKey:@"FFSettingsShowHiddenFiles"];
+        // 未配置时默认文件夹优先（与旧行为一致）。
+        if (![NSUserDefaults.standardUserDefaults objectForKey:@"FFFoldersFirst"])
+            _foldersFirst = YES;
+        else
+            _foldersFirst = [NSUserDefaults.standardUserDefaults boolForKey:@"FFFoldersFirst"];
         self.title = path.lastPathComponent.length ? path.lastPathComponent : @"设备存储";
+        self.navigationItem.largeTitleDisplayMode =
+            UINavigationItemLargeTitleDisplayModeNever;
         _sortMode = FFSortModeName;
     }
     return self;
@@ -118,7 +128,25 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
+
+    // 目录面包屑：导航栏下方单行路径导航，root 时隐藏。
+    self.breadcrumbView = [[FFPathBreadcrumbView alloc] initWithPath:self.currentPath];
+    self.breadcrumbView.navigationController = self.navigationController;
+    [self.view addSubview:self.breadcrumbView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.tableView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.tableView.topAnchor constraintEqualToAnchor:self.breadcrumbView.bottomAnchor],
+        [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
     [self.tableView reloadData];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
     // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
@@ -196,6 +224,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.showHiddenFiles = [NSUserDefaults.standardUserDefaults
                     boolForKey:@"FFSettingsShowHiddenFiles"];
+                strongSelf.foldersFirst =
+                    [NSUserDefaults.standardUserDefaults boolForKey:@"FFFoldersFirst"];
                 strongSelf.gridMode = [NSUserDefaults.standardUserDefaults
                     boolForKey:@"FFSettingsGridMode"];
                 if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
@@ -230,13 +260,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.filterItem.menu = [self filterMenu];
     UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
         style:UIBarButtonItemStylePlain target:nil action:nil];
-    UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
-    UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
-    UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
-    addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
+    addItem.menu = [self buildAddMenu];
     self.toolbarItems = @[
         self.filterItem,
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
@@ -336,13 +360,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         if (_batchNormalTitle.length) self.navigationItem.title = _batchNormalTitle;
         UIBarButtonItem *addItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"plus" tint:nil]
             style:UIBarButtonItemStylePlain target:nil action:nil];
-        UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
-            identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
-        UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
-            identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
-        UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
-            identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
-        addItem.menu = [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, refresh]];
+        addItem.menu = [self buildAddMenu];
         self.toolbarItems = @[
             self.filterItem,
             [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
@@ -568,7 +586,18 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
         [spinner startAnimating];
         spinner.frame = CGRectMake(0, 0, 44, 44);
-        emptyView = spinner;
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
+            self.view.bounds.size.width, 120)];
+        spinner.center = CGPointMake(container.bounds.size.width / 2, 26);
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 52,
+            container.bounds.size.width, 24)];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.textColor = [UIColor secondaryLabelColor];
+        label.text = @"正在加载…";
+        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        [container addSubview:spinner];
+        [container addSubview:label];
+        emptyView = container;
     } else if (self.loadError.length) {
         UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
             self.view.bounds.size.width - 80, 120)];
@@ -577,7 +606,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         label.textColor = [UIColor secondaryLabelColor];
         label.text = [NSString stringWithFormat:@"无法打开目录\n\n%@\n\n下拉可重试",
             self.loadError];
-        label.font = [UIFont systemFontOfSize:14];
+        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
         emptyView = label;
     } else if (self.filteredEntries.count == 0) {
         UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
@@ -585,8 +614,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         label.textAlignment = NSTextAlignmentCenter;
         label.numberOfLines = 0;
         label.textColor = [UIColor secondaryLabelColor];
-        label.text = @"此文件夹为空";
-        label.font = [UIFont systemFontOfSize:15];
+        label.text = self.searchText.length ? @"没有匹配的文件" : @"此文件夹为空";
+        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
         emptyView = label;
     }
     if (emptyView) {
@@ -708,10 +737,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         self.currentPath, (unsigned long)total, (unsigned long)dirs,
         (unsigned long)files, (unsigned long)links, (unsigned long)lstatFailures);
     [self decorateEntries:result];
+    // 文件夹优先是显示偏好（设置页可关闭），不随排序方向反转。
+    BOOL foldersFirst = self.foldersFirst;
     [result sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
-        // Folder-first ordering is a display preference, unaffected by
-        // the sort direction.
-        if (left.isDirectory != right.isDirectory)
+        if (foldersFirst && left.isDirectory != right.isDirectory)
             return left.isDirectory ? NSOrderedAscending : NSOrderedDescending;
         NSComparisonResult comparison = NSOrderedSame;
         switch (self.sortMode) {
@@ -750,57 +779,20 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 ? FFAppContainerItemName(item.linkTarget) : nil;
             item.displayName = itemName ?: FFAppDisplayName(item.name);
         }
+        // 列表只展示当前决策需要的信息：类型标签 + 大小（文件）+ 时间。
+        // 完整链接目标/权限/xattr 等只在「文件信息」页按需读取。
         NSMutableArray<NSString *> *parts = [NSMutableArray array];
-        // 列表只显示简洁信息：目录不显示大小，文件显示大小 + 修改时间。
-        if (!item.isDirectory && !item.isSymlink)
+        if (item.isDirectory) {
+            [parts addObject:@"文件夹"];
+        } else if (item.isSymlink) {
+            [parts addObject:@"符号链接"];
+        } else {
             [parts addObject:[self formatSize:item.size]];
-        if (item.modificationDate)
-            [parts addObject:[self formatDate:item.modificationDate]];
-        if (item.linkTarget.length)
-            [parts addObject:[NSString stringWithFormat:@"→ %@", item.linkTarget]];
-        item.detail = [parts componentsJoinedByString:@"  "];
-
-        NSMutableArray<NSString *> *full = [NSMutableArray arrayWithArray:@[
-            [NSString stringWithFormat:@"名称：%@", item.name],
-            [NSString stringWithFormat:@"路径：%@", item.path],
-            [NSString stringWithFormat:@"类型：%@", [self kindName:item]],
-            [NSString stringWithFormat:@"权限：%04o", item.mode & 07777],
-            [NSString stringWithFormat:@"属主：%u:%u", item.uid, item.gid],
-            [NSString stringWithFormat:@"大小：%@（%llu 字节）", [self formatSize:item.size], item.size],
-        ]];
-        if (item.modificationDate)
-            [full addObject:[NSString stringWithFormat:@"修改时间：%@", [self formatDate:item.modificationDate]]];
-        if (item.creationDate)
-            [full addObject:[NSString stringWithFormat:@"创建时间：%@", [self formatDate:item.creationDate]]];
-        if (item.isSymlink)
-            [full addObject:[NSString stringWithFormat:@"链接目标：%@", item.linkTarget ?: @"？"]];
-        [full addObjectsFromArray:[self extendedAttributesForPath:item.path]];
-        item.fullDetail = [full componentsJoinedByString:@"\n"];
-    }
-}
-
-- (NSArray<NSString *> *)extendedAttributesForPath:(NSString *)path
-{
-    ssize_t size = listxattr(path.fileSystemRepresentation, NULL, 0, 0);
-    if (size <= 0) return @[];
-    NSMutableData *buffer = [NSMutableData dataWithLength:(NSUInteger)size];
-    ssize_t actual = listxattr(path.fileSystemRepresentation, buffer.mutableBytes, size, 0);
-    if (actual <= 0) return @[];
-    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithObject:@"扩展属性："];
-    const char *cursor = buffer.bytes;
-    const char *end = cursor + actual;
-    while (cursor < end) {
-        NSString *name = [NSString stringWithUTF8String:cursor];
-        if (name.length) {
-            ssize_t valueSize = getxattr(path.fileSystemRepresentation, cursor, NULL, 0, 0, 0);
-            if (valueSize >= 0)
-                [result addObject:[NSString stringWithFormat:@"  %@ (%zd bytes)", name, valueSize]];
-            else
-                [result addObject:[NSString stringWithFormat:@"  %@ (errno=%d)", name, errno]];
         }
-        cursor += strlen(cursor) + 1;
+        if (item.modificationDate)
+            [parts addObject:FFRelativeTimeString(item.modificationDate)];
+        item.detail = [parts componentsJoinedByString:@" · "];
     }
-    return result;
 }
 
 - (NSString *)kindName:(FFEntry *)item
@@ -810,17 +802,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     NSString *ext = item.name.pathExtension.lowercaseString;
     if (ext.length) return [NSString stringWithFormat:@"%@ 文件", ext.uppercaseString];
     return @"文件";
-}
-
-- (NSString *)formatDate:(NSDate *)date
-{
-    static NSDateFormatter *formatter;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        formatter = [NSDateFormatter new];
-        formatter.dateFormat = @"yyyy-MM-dd HH:mm";
-    });
-    return [formatter stringFromDate:date];
 }
 
 - (NSString *)formatSize:(unsigned long long)bytes
@@ -862,21 +843,62 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 #pragma mark - More menu
 
+// “+” 只承担新建（刷新不属于新建：pull-to-refresh 与“更多 → 刷新”负责）。
+- (UIMenu *)buildAddMenu
+{
+    UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+    UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+    return [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile]];
+}
+
 - (UIMenu *)moreMenu
 {
-    UIAction *select = [UIAction actionWithTitle:@"多选" image:[self symbolImage:@"checkmark.circle" tint:nil]
+    UIAction *select = [UIAction actionWithTitle:@"选择" image:[self symbolImage:@"checkmark.circle" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self toggleBatchMode]; }];
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
     UIAction *import = [UIAction actionWithTitle:@"导入文件…" image:[self symbolImage:@"square.and.arrow.down" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
-    UIMenu *sort = [UIMenu menuWithTitle:@"排序"
-        children:@[[self sortMenu]]];
-    UIMenu *filter = [UIMenu menuWithTitle:@"筛选"
-        children:@[[self filterMenu]]];
-    return [UIMenu menuWithTitle:@"更多"
-        children:@[paste, import, select, sort, filter]];
+    UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹" image:[self symbolImage:@"folder.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+    UIAction *newFile = [UIAction actionWithTitle:@"新建文件" image:[self symbolImage:@"doc.badge.plus" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+    UIMenu *sort = [UIMenu menuWithTitle:@"排序方式" children:@[[self sortMenu]]];
+    UIMenu *display = [UIMenu menuWithTitle:@"显示方式" children:@[[self displayModeMenu]]];
+    UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+    return [UIMenu menuWithTitle:@"更多" children:@[
+        select, paste, import, newFolder, newFile, sort, display, refresh]];
+}
+
+#pragma mark - Display mode
+
+- (UIMenu *)displayModeMenu
+{
+    UIAction *list = [UIAction actionWithTitle:@"列表" image:[self symbolImage:@"list.bullet" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) {
+            [self applyDisplayModeAnimated:NO grid:NO];
+        }];
+    UIAction *grid = [UIAction actionWithTitle:@"网格" image:[self symbolImage:@"square.grid.2x2" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) {
+            [self applyDisplayModeAnimated:YES grid:YES];
+        }];
+    list.state = self.gridMode ? UIMenuElementStateOff : UIMenuElementStateOn;
+    grid.state = self.gridMode ? UIMenuElementStateOn : UIMenuElementStateOff;
+    return [UIMenu menuWithTitle:@"显示方式" children:@[list, grid]];
+}
+
+// 运行时切换：立即作用于全部浏览器（与设置页全局同步），并持久化为
+// 设置里的「默认视图」——新打开目录沿用最后选择。
+- (void)applyDisplayModeAnimated:(BOOL)animated grid:(BOOL)grid
+{
+    if (self.gridMode == grid) return;
+    [NSUserDefaults.standardUserDefaults setBool:grid forKey:@"FFSettingsGridMode"];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"FFSettingsChangedNotification" object:nil];
 }
 
 #pragma mark - Import from Files app
@@ -1071,14 +1093,17 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     return cell;
 }
 
+#pragma mark - Typography
+
 - (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item
 {
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = item.displayName.length ? item.displayName : item.name;
-    config.textProperties.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
+    config.textProperties.numberOfLines = 2;
     config.secondaryText = item.detail;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    config.secondaryTextProperties.numberOfLines = 0;
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleSubheadline, UIFontWeightRegular);
+    config.secondaryTextProperties.numberOfLines = 1;
     config.image = item.thumbnail ?: [self iconForEntry:item];
     config.imageProperties.cornerRadius = 4;
     config.imageProperties.maximumSize = CGSizeMake(44, 44);
@@ -1167,19 +1192,16 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (UIColor *)tintForEntry:(FFEntry *)item
 {
+    // 图标只是导航辅助：文件夹蓝、符号链接青；图片/视频/PDF 有缩略图时
+    // 不再强着色。普通文件回到灰色系，仅归档/数据库/证书保留语义色。
     if (item.isDirectory) return [UIColor systemBlueColor];
     if (item.isSymlink) return [UIColor systemTealColor];
     NSString *ext = item.name.pathExtension.lowercaseString;
-    if ([@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext])
-        return [UIColor systemGreenColor];
-    if ([@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext])
+    if ([@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz",
+          @"app", @"appex", @"bundle", @"framework", @"dylib"] containsObject:ext])
         return [UIColor systemOrangeColor];
-    if ([@[@"mp3", @"m4a", @"wav", @"aac", @"caf", @"flac"] containsObject:ext])
-        return [UIColor systemPinkColor];
-    if ([@[@"zip", @"ipa", @"tar", @"gz", @"7z", @"rar", @"xz"] containsObject:ext])
-        return [UIColor systemBrownColor];
-    if ([@[@"plist", @"db", @"sqlite", @"sqlite3"] containsObject:ext])
-        return [UIColor systemPurpleColor];
+    if ([@[@"db", @"sqlite", @"sqlite3"] containsObject:ext])
+        return [UIColor systemIndigoColor];
     if ([@[@"key", @"mobileconfig", @"cer", @"p12", @"crt"] containsObject:ext])
         return [UIColor systemYellowColor];
     return [UIColor systemGrayColor];
@@ -1262,7 +1284,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             forCellWithReuseIdentifier:@"GridCell"];
     [self.view addSubview:self.collectionView];
     [NSLayoutConstraint activateConstraints:@[
-        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.breadcrumbView.bottomAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
@@ -1302,13 +1324,26 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                   layout:(UICollectionViewLayout *)collectionViewLayout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath
 {
+    // 自适应列数：按可用宽度 + 最小项宽计算，不做设备型号判断。
     // 防御性尺寸：未完成布局（宽度为 0）或极窄时给安全默认值；floor
     // 防止浮点累加使整行宽度超出可用宽度 —— 超出会触发 flowlayout
     // 断言闪退（复制/剪切的横幅、压缩弹窗的键盘都会引发隐藏网格的
     // 布局提交，iOS 27 上隐藏视图同样参与 CATransaction 布局）。
     CGFloat available = collectionView.bounds.size.width - 24 - 16;
     if (available < 120) return CGSizeMake(44, 72);
-    CGFloat width = floor(available / 3.0);
+    // 参考目标：iPhone 2~4 列、横屏 4~6、iPad 5~8（按最小宽度自然收敛，
+    // 不判断具体机型）。最小项宽：手机 ~92pt，iPad ~130pt，列数封顶。
+    CGFloat minimumWidth = UIDevice.currentDevice.userInterfaceIdiom
+        == UIUserInterfaceIdiomPad ? 130.0 : 92.0;
+    NSInteger maxColumns = UIDevice.currentDevice.userInterfaceIdiom
+        == UIUserInterfaceIdiomPad ? 8 : 6;
+    NSInteger spacing = 8;
+    NSInteger columns = (NSInteger)floor((available + spacing) /
+        (minimumWidth + spacing));
+    if (columns < 1) columns = 1;
+    if (columns > maxColumns) columns = maxColumns;
+    CGFloat width = floor((available - spacing * (columns - 1)) / columns);
+    if (width < 44) width = 44;
     return CGSizeMake(width, width + 28);
 }
 
@@ -1324,11 +1359,11 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     UIListContentConfiguration *config = [UIListContentConfiguration
         subtitleCellConfiguration];
     config.text = item.displayName.length ? item.displayName : item.name;
-    config.textProperties.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleCaption1, UIFontWeightMedium);
     config.textProperties.numberOfLines = 1;
     config.textProperties.alignment = UIListContentTextAlignmentCenter;
     config.secondaryText = [self formatSize:item.size];
-    config.secondaryTextProperties.font = [UIFont systemFontOfSize:10];
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleCaption2, UIFontWeightRegular);
     config.secondaryTextProperties.alignment = UIListContentTextAlignmentCenter;
     config.image = item.thumbnail ?: [self iconForEntry:item];
     config.imageProperties.maximumSize = CGSizeMake(48, 48);
@@ -1599,7 +1634,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         NSString *action = gClipboardMode == FFClipboardModeCopy ? @"已复制" : @"已剪切";
         UILabel *label = [[UILabel alloc] init];
         label.translatesAutoresizingMaskIntoConstraints = NO;
-        label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
         label.text = [NSString stringWithFormat:@"%@ %lu 项",
             action, (unsigned long)gClipboardSources.count];
         [banner addSubview:label];
@@ -1997,109 +2032,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (void)showProperties:(FFEntry *)item
 {
-    NSString *body = item.fullDetail ?: item.detail;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.displayName ?: item.name
-        message:body preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
-    if (item.isDirectory) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"计算目录大小" style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) { [weakSelf computeDirectorySize:item]; }]];
-    } else if (!item.isSymlink) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"计算 SHA-256" style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) { [weakSelf computeSHA256:item]; }]];
-    }
-    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)computeSHA256:(FFEntry *)item
-{
-    [self flash:@"正在计算…"];
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *hash = [self sha256OfFile:item.path];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!hash) {
-                [weakSelf flash:@"计算失败（文件不可读）"];
-                return;
-            }
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SHA-256"
-                message:[NSString stringWithFormat:@"%@\n\n%@", hash, item.path]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"复制" style:UIAlertActionStyleDefault
-                handler:^(__unused UIAlertAction *action) {
-                    UIPasteboard.generalPasteboard.string = hash;
-                    [weakSelf flash:@"哈希已复制"];
-                }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
-        });
-    });
-}
-
-- (NSString *)sha256OfFile:(NSString *)path
-{
-    int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return nil;
-    CC_SHA256_CTX context;
-    CC_SHA256_Init(&context);
-    uint8_t buffer[64 * 1024];
-    ssize_t count = 0;
-    while ((count = read(fd, buffer, sizeof(buffer))) > 0)
-        CC_SHA256_Update(&context, buffer, (CC_LONG)count);
-    close(fd);
-    if (count < 0) return nil;
-    uint8_t digest[CC_SHA256_DIGEST_LENGTH] = {0};
-    CC_SHA256_Final(digest, &context);
-    NSMutableString *result = [NSMutableString stringWithCapacity:64];
-    for (NSUInteger index = 0; index < CC_SHA256_DIGEST_LENGTH; index++)
-        [result appendFormat:@"%02x", digest[index]];
-    return result;
-}
-
-- (void)computeDirectorySize:(FFEntry *)item
-{
-    [self flash:@"正在计算…"];
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        unsigned long long size = [self directorySizeAtPath:item.path];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.name
-                message:[NSString stringWithFormat:@"目录大小：%@\n（%llu 字节）\n\n%@",
-                    [weakSelf formatSize:size], size, item.path]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
-                handler:^(__unused UIAlertAction *action) { [weakSelf copyPath:item]; }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
-        });
-    });
-}
-
-- (unsigned long long)directorySizeAtPath:(NSString *)path
-{
-    unsigned long long total = 0;
-    DIR *directory = opendir(path.fileSystemRepresentation);
-    if (!directory) return 0;
-    struct dirent *entry = NULL;
-    while ((entry = readdir(directory)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        NSString *name = [[NSFileManager defaultManager]
-            stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
-        if (!name) continue;
-        NSString *child = [path stringByAppendingPathComponent:name];
-        struct stat status = {0};
-        if (lstat(child.fileSystemRepresentation, &status) != 0) continue;
-        if (S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode)) {
-            total += [self directorySizeAtPath:child];
-        } else if (S_ISREG(status.st_mode)) {
-            total += (unsigned long long)status.st_size;
-        }
-    }
-    closedir(directory);
-    return total;
+    // 属性页取代整个 Alert：元数据（xattr/MIME/目录项数）在页面内按需
+    // 后台加载，目录扫描阶段不再为每个条目做 listxattr/getxattr。
+    FFFileInfoViewController *info = [[FFFileInfoViewController alloc] initWithEntry:item];
+    [self.navigationController pushViewController:info animated:YES];
 }
 
 #pragma mark - Preview
