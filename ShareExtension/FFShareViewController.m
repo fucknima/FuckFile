@@ -21,9 +21,10 @@ static NSString * const kShareFolder = @"SharedInbox";
             containerURLForSecurityApplicationGroupIdentifier:kGroupID];
         if (markerDir) {
             NSURL *marker = [markerDir URLByAppendingPathComponent:@"ext-marker.txt"];
-            [[[NSString stringWithFormat:@"viewDidLoad %@\n",
-                [NSDate date]] writeToURL:marker atomically:YES
-                encoding:NSUTF8StringEncoding error:nil];
+            NSString *message = [NSString stringWithFormat:@"viewDidLoad %@\n",
+                [NSDate date]];
+            [message writeToURL:marker atomically:YES
+                       encoding:NSUTF8StringEncoding error:nil];
             NSLog(@"[FFShare] marker written: %@", marker.path);
         } else {
             NSLog(@"[FFShare] group container is NIL");
