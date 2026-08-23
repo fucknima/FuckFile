@@ -75,7 +75,20 @@
 > - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
 >   进包并写入 CFBundleIcons
 >
-> > **UI/UX 入口重组（2026-08-23，ADR-014）**：
+> > **UI 第三轮 / SD金修复（2026-08-24，ADR-016）**：
+> - SDX 崩溃修复：面包屑从 navigationBar.bottomAnchor 回退
+>   safeArea（cross-hierarchy 约束激活在 viewDidLoad 抛 NSISEngine）
+> - 底部悬浮搜索：维持系统 automatic placement（官方文档证实
+>   preferredSearchBarPlacement 无 bottom 值，iOS 26+ automatic 由系统
+>   渲染底部 Liquid Glass）；内容/滚动指示条补底部余量（56pt），
+>   多选清零避免双重空白；多选时隐藏搜索
+> - 面包屑去重（祖先链 + 直接父级加粗 + 尾部箭头）；AppData 容器层级
+>   （显示名 + 标识符·时间 + cube 语义图标）；Paste Banner systemMaterial
+>   材质；文件名 medium 权重；Home/设置语义色；Empty/Error 系统模板
+>   （UIContentUnavailableConfiguration，旧系统 fallback）
+> - 待办：真机回归矩阵（见下）、10k 文件性能实测、极端 Dynamic Type 字号验证
+
+**UI/UX 入口重组（2026-08-23，ADR-014）**：
 > - 导航栏固定 `＋（新建文件夹/文件 + 导入文件…）+ …`；普通模式移除底部
 >   工具栏，底部工具栏只属于多选模式
 > - 对象级菜单单一来源：`contextMenuSectionsForEntry:` 分区定义，长按菜单

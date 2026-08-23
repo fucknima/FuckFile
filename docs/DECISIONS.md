@@ -451,10 +451,61 @@ backend 依旧零改动）：
 - iOS 26 的 UISearchController 挂 navigationItem 在真机出现渲染位置
   异常，自建顶栏搜索条绕开系统 bug，行为完全可控。
 
-未动：
+## ADR-016
 
-- 搜索/过滤后端、FFFileTaskManager（additive removeTasks: 除外）、
-  FFPreviewRouter/FileAssociation/Registry、Share/Import 架构。
+日期：2026-08-24
+
+决定：
+
+真机反馈第三轮（修复一次 launch SIGABRT + 底部搜索 chrome 完善）：
+
+1. **崩溃根因**：上一版把面包屑锚定 `navigationBar.bottomAnchor`。
+   crash report 证据：`NSISEngine setShouldIntegralize:` ←
+   `+[NSLayoutConstraint _addOrRemoveConstraints:activate:]` ←
+   `FFBrowserViewController viewDidLoad`。viewDidLoad 处于 push 转场
+   初始化阶段，导航栏仍由 UIKit 私有布局引擎管理，跨层级激活约束直接
+   abort。**回退**到 `view.safeAreaLayoutGuide.topAnchor`（纯自身
+   hierarchy），并在代码中注释禁止再次锚定导航栏。
+2. **底部悬浮搜索（系统渲染）**：经 Apple 官方文档核实（2026-08-24）：
+   `UINavigationItem.preferredSearchBarPlacement`（iOS 16+）只有
+   automatic/inline/stacked 三种取值，**没有 bottom**；iOS 26 起
+   `automatic` 由系统决定放置方式（真机观测=底部 Liquid Glass 悬浮），
+   `searchBarPlacementAllowsToolbarIntegration`（iOS 26+，默认 true）
+   允许系统把搜索条集成到底部工具栏区。结论：**不覆盖 placement，
+   保持系统默认 automatic**——系统已产出底部悬浮 chrome，无需自绘
+   （上一轮自绘 UISearchBar 尝试因缺少 presentation context 导致
+   全屏黑屏与不可取消，已回撤）。
+3. **最后一行遮挡**：系统悬浮搜索不会自动为内容预留空间。为
+   table/collection 的 contentInset 与 verticalScrollIndicatorInsets
+   补充底部常量余量（56pt = 悬浮条 44 + 留白），多选时清零（底部批量
+   工具栏由系统 safeArea 管理，避免双重空白）。键盘由 iOS 15+ 自动
+   safeArea 机制单独处理，与本余量错峰。
+4. 多选模式隐藏 navigationItem.searchController（隐藏悬浮搜索），
+   退出恢复，避免 Search/工具栏/Banner 同时堆叠。
+5. Breadcrumb 去重：面包屑只显示祖先链（不含当前目录——导航标题已
+   承担"现在在哪"），末级为直接父级（加粗）+ 尾部 chevron；根目录
+   下首层仅显示 "Device Storage ＞"。
+6. AppData 容器层级：UUID 容器目录与 bundle-id 链接标记
+   `isAppContainer`；primary=App 显示名（沿用 FFAppNames 链，
+   拿不到用目录名，禁止猜名），secondary=`标识符 · 时间`；
+   图标用容器语义符号 cube（非蓝色 folder），普通目录不变。
+7. Paste Banner 升级 `UIVisualEffectView + systemMaterial`（新系统
+   渲染 Liquid Glass 材质，旧系统回退磨砂），与搜索条同语言。
+8. 空态/错误态：iOS 17+ 用 `UIContentUnavailableConfiguration`
+   （空目录/无结果/错误模板 + 错误态点按重试），旧系统保留居中
+   Label fallback；List/Grid 共用。
+9. 列表文件名 medium 权重（Dynamic Type 安全，descriptor traits）；
+   Home/Settings 图标使用有限系统语义色（搜索蓝/收藏黄/最近青/
+   任务靛/存储橙/清理红/其余灰），取消全蓝 Demo 感。
+10. 明确不写任何"凭记忆"的新 API：所有新增 UIKit API 均有官方文档
+    或 CI 编译器验证（本机无 Xcode SDK，编译验证依赖 GitHub Actions）。
+
+未动（Behavior Contract 全部保留）：UIViewController Browser /
+兄弟视图 / Grid 懒创建销毁 / floor 防越界 / setEditing 手动同步 /
+performAfterContextMenu / 同目录剪切保护 / 贴自身子目录保护 /
+clipboard 跨目录 / 任务尾随刷新 / PreviewRouter 链路 / PathPolicy /
+FileOperationService / CopyEngine / TaskManager / ZIP / MCM /
+Share Extension。
 
 原因：
 
