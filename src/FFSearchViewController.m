@@ -6,6 +6,7 @@
 #import "FFAppNames.h"
 
 @interface FFSearchViewController () <UISearchBarDelegate>
+@property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, strong) UISearchBar *searchBar;
 @property(nonatomic, strong) NSArray<NSString *> *history;
 @property(nonatomic, strong) UIView *searchBackdrop;
@@ -31,14 +32,24 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 58;
+    self.tableView.estimatedRowHeight = 60;
+    self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
-    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)];
-    self.searchBar.placeholder = @"搜索文件名（Device Storage 全局）";
+    // Use the same native search presentation as the file browser instead of
+    // embedding a fixed-width UISearchBar in the table header. Search behavior,
+    // debounce, history and result routing remain unchanged.
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.hidesNavigationBarDuringPresentation = NO;
+    self.searchBar = self.searchController.searchBar;
+    self.searchBar.placeholder = @"搜索文件名（App 数据全局）";
     self.searchBar.delegate = self;
     self.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
-    self.tableView.tableHeaderView = self.searchBar;
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
 
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
@@ -49,6 +60,7 @@
     self.spinner.hidesWhenStopped = YES;
     self.statusLabel = [UILabel new];
     self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.statusLabel.adjustsFontForContentSizeCategory = YES;
     self.statusLabel.textColor = UIColor.secondaryLabelColor;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     UIStackView *stack = [[UIStackView alloc]
@@ -64,6 +76,12 @@
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"清空历史" style:UIBarButtonItemStylePlain
         target:self action:@selector(clearHistoryTapped)];
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -171,14 +189,16 @@
     BOOL showingHistory = !self.searching && self.results.count == 0;
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Cell"];
     }
     if (showingHistory) {
         NSString *query = self.history[indexPath.row];
         UIListContentConfiguration *config = [cell defaultContentConfiguration];
         config.text = query;
+        config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
         config.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
+        config.imageProperties.tintColor = UIColor.secondaryLabelColor;
         cell.contentConfiguration = config;
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
@@ -186,12 +206,14 @@
     FFFoundItem *item = self.results[indexPath.row];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = FFAppDisplayName(item.name);
-    config.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.secondaryText = item.path;
-    config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:10
-        weight:UIFontWeightRegular];
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     config.secondaryTextProperties.numberOfLines = 2;
-    config.image = [UIImage systemImageNamed:item.isDirectory ? @"folder" : @"doc"];
+    config.image = [UIImage systemImageNamed:item.isDirectory ? @"folder.fill" : @"doc"];
+    config.imageProperties.tintColor = item.isDirectory ? UIColor.systemBlueColor : UIColor.secondaryLabelColor;
+    config.imageProperties.maximumSize = CGSizeMake(32, 32);
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
@@ -210,7 +232,7 @@
         return;
     }
     FFFoundItem *item = self.results[indexPath.row];
-    // 点击结果先弹窗确认：打开 / 跳转所在目录。
+    // 保留现有两条路径：直接打开，或跳转到所在目录。
     __weak typeof(self) weakSelf = self;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
         message:item.path preferredStyle:UIAlertControllerStyleActionSheet];
