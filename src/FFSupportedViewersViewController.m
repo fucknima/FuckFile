@@ -2,6 +2,7 @@
 
 #import "FFViewerRegistry.h"
 #import "FFFileAssociationService.h"
+#import "FFTypography.h"
 
 @implementation FFSupportedViewersViewController
 
@@ -71,10 +72,10 @@
 
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = viewer.displayName;
+    config.textProperties.font = FFPreferredFont(UIFontTextStyleBody, UIFontWeightMedium);
     config.secondaryText = viewer.summary;
     config.secondaryTextProperties.numberOfLines = 0;
-    config.secondaryTextProperties.font =
-        [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    config.secondaryTextProperties.font = FFPreferredFont(UIFontTextStyleFootnote, UIFontWeightRegular);
     config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     UIImage *icon = [UIImage systemImageNamed:viewer.iconName];
     config.image = icon ?: [UIImage systemImageNamed:@"doc.text"];
