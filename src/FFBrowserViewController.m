@@ -89,11 +89,11 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
-// 顶部锚点：viewDidLoad 先用视图安全区（系统转场期间导航栏在私有布局引擎，
-// 不许跨层激活）；viewDidAppear 转场完成后改锚导航栏下缘（iOS 27 底部
-// 集成搜索时 safeArea.top 会残留搜索条高度，造成导航栏下空白）。
-@property(nonatomic, strong) NSLayoutConstraint *breadcrumbTopConstraint;
-@property(nonatomic) BOOL breadcrumbBarAnchored;
+// 顶部布局：breadcrumb 锚定 view.topAnchor，动态常量 = 导航栏当前
+// frame 下缘（每帧从系统 frame 读取，不依赖 safeArea 的结算结果）。
+@property(nonatomic, strong) NSLayoutConstraint *breadcrumbTopInsetConstraint;
+// 底部悬浮搜索条的真实高度：从 systemSearchBar 的 frame 实测换算。
+@property(nonatomic) CGFloat bottomChrome;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
 @property(nonatomic) BOOL pendingAutoReload;
 @end
@@ -148,16 +148,17 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
-    // 顶级布局锚点：先锚定视图自身的安全区顶部（viewDidLoad 阶段导航栏
-    // 仍在 UIKit 私有布局引擎，跨层级激活约束会抛 NSISEngine 异常——
-    // 真机 SIGABRT 证据）。转场完成后在 viewDidAppear 迁移到导航栏下缘。
+    // 顶级布局：breadcrumb 锚定 view.topAnchor + 动态常量（每帧跟随导航栏
+    // 下缘，见 viewDidLayoutSubviews）。不再锚定 safeArea/navigationBar：
+    // safeArea 在 iOS 27 底部集成搜索时残留搜索条高度出现空白；
+    // navigationBar 跨层约束在 push 转场期间抛 NSISEngine（真机 SIGABRT）。
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
-    self.breadcrumbTopConstraint =
-        [self.breadcrumbView.topAnchor constraintEqualToAnchor:
-            self.view.safeAreaLayoutGuide.topAnchor];
+    self.breadcrumbTopInsetConstraint =
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:self.view.topAnchor
+                                                      constant:self.view.safeAreaInsets.top];
     [NSLayoutConstraint activateConstraints:@[
-        self.breadcrumbTopConstraint,
+        self.breadcrumbTopInsetConstraint,
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
@@ -170,11 +171,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     ]];
     [self updateBreadcrumbVisibility];
     [self.tableView reloadData];
-    // 底部浮动搜索条是 iOS 26+ 系统 chrome（Liquid Glass 悬浮层），
-    // 不会自动为内容预留空间：最后一行会被压住。为内容与滚动指示条
-    // 补充恒定底部余量（悬停搜索条 44pt + 边缘留白）。常量 inset 与
-    // 键盘/工具栏错峰：键盘由系统 safeArea 机制处理，多选时的批量
-    // 工具栏跟随 safeArea，本余量在多选退出时恢复。
+    // 底部悬浮搜索条是 iOS 26+ 系统 chrome（Liquid Glass 悬浮层），
+    // 不会自动为内容预留空间。余量在 viewDidLayoutSubviews 每帧从系统
+    // searchBar 实测；这里给首发帧一个合理缺省，实测值随后覆盖。
+    self.bottomChrome = 64;
     [self applySearchChromeInsets];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
     // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
@@ -306,31 +306,54 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.navigationController.toolbarHidden = YES;
 }
 
-// 转场完成后把面包屑顶部改锚导航栏下缘：iOS 27 底部集成搜索时
-// safeArea.top 残留搜索条高度（导航栏下方出现整段空白），导航栏真实
-// 下缘与内容零距离。此时导航栏布局已稳定，跨层级激活是安全的
-// （崩溃仅发生在转场初始化的 viewDidLoad 阶段）。
-- (void)viewDidAppear:(BOOL)animated
-{
-    [super viewDidAppear:animated];
-    if (self.breadcrumbBarAnchored) return;
-    UINavigationController *nav = self.navigationController;
-    if (!nav) return;
-    self.breadcrumbBarAnchored = YES;
-    [NSLayoutConstraint deactivateConstraints:@[self.breadcrumbTopConstraint]];
-    self.breadcrumbTopConstraint =
-        [self.breadcrumbView.topAnchor constraintEqualToAnchor:
-            nav.navigationBar.bottomAnchor];
-    [NSLayoutConstraint activateConstraints:@[self.breadcrumbTopConstraint]];
-    [self.view layoutIfNeeded];
-}
-
+// 布局结算后同步两个动态值（均为运行时实测，不猜常量）：
+// 1) 顶部：breadcrumb 距屏幕顶 = 导航栏 frame 下缘（系统里唯一权威值）；
+// 2) 底部：悬浮搜索条高度 = 系统 searchBar 的 window frame 实测换算。
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    // 布局结算后校正底部余量：系统可能在 scroll 调整/keyboard/toolbar
-    // 变化时重写 inset，每次布局后重新应用（值未变时零开销）。
+
+    UINavigationController *nav = self.navigationController;
+    if (nav && nav.navigationBar.frame.size.height > 1) {
+        CGFloat barBottom = CGRectGetMaxY(nav.navigationBar.frame);
+        if (self.breadcrumbTopInsetConstraint.constant != barBottom) {
+            self.breadcrumbTopInsetConstraint.constant = barBottom;
+            FFLogTag(@"LayoutDiag", @"topInset=%.1f navBarMaxY=%.1f",
+                barBottom, barBottom);
+        }
+    }
+
+    if (!self.editing) {
+        CGFloat pad = [self measuredBottomChrome];
+        if (pad > 0 && fabs(pad - self.bottomChrome) > 0.5) {
+            self.bottomChrome = pad;
+            FFLogTag(@"LayoutDiag", @"bottomChrome=%.1f", pad);
+        }
+    }
     [self applySearchChromeInsets];
+}
+
+// 从系统 searchBar 的窗口坐标实测悬浮条高度（含底部留白）。
+// 搜索条不在底部（隐藏/转场中/激活时）返回上一次测量值或 0。
+- (CGFloat)measuredBottomChrome
+{
+    UISearchBar *bar = self.searchController.searchBar;
+    if (!bar.window || bar.window == nil) return self.bottomChrome;
+    CGRect inWindow = [bar convertRect:bar.bounds toView:nil];
+    CGFloat screenHeight = self.view.window.bounds.size.height;
+    if (inWindow.size.height < 10) return self.bottomChrome;
+    // 仅在搜索条真实位于下半屏时按底部测算（顶部阶段忽略）。
+    if (CGRectGetMidY(inWindow) < screenHeight * 0.4)
+        return self.bottomChrome;
+    CGFloat pad = screenHeight - CGRectGetMaxY(inWindow);
+    return MAX(pad + 12, 24);
+}
+
+// 转场完成后把面包屑顶部改锚导航栏下缘：不再使用（viewDidLayoutSubviews
+// 每帧读取导航栏 frame 已覆盖全部形态）。
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
 }
 
 #pragma mark - Clipboard state
@@ -372,14 +395,29 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return result;
 }
 
-// 底部浮动 Search Chrome 的余量管理。普通浏览：预留悬浮搜索条高度，
-// 保证最后一项能完整滚到搜索条上方；多选：系统底部批量工具栏接管，
-// 清掉余量避免双重空白。值未变化时不写（避免每帧布局抖动）。
-static const CGFloat kFFBottomChrome = 76;
+// 底部悬浮 Search Chrome 的余量管理（值为运行实测 bottomChrome）。
+// iOS 17+：contentScrollAreaInsets 抬升滚动区（最后一行无论满屏与否
+// 都悬在浮条之上，无需依赖滚动）；旧系统回退 contentInset。
+// 多选：底部批量工具栏接管，两者清零避免双重空白。
 - (void)applySearchChromeInsets
 {
-    CGFloat chrome = self.editing ? 0 : kFFBottomChrome;
+    CGFloat chrome = self.editing ? 0 : self.bottomChrome;
     UIEdgeInsets inset = UIEdgeInsetsMake(0, 0, chrome, 0);
+    if (@available(iOS 17.0, *)) {
+        UIEdgeInsets area = self.editing ? UIEdgeInsetsZero : inset;
+        if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentScrollAreaInsets, area)) {
+            self.tableView.contentScrollAreaInsets = area;
+            self.tableView.contentInset = UIEdgeInsetsZero;
+            self.tableView.verticalScrollIndicatorInsets = UIEdgeInsetsZero;
+        }
+        if (self.collectionView &&
+            !UIEdgeInsetsEqualToEdgeInsets(self.collectionView.contentScrollAreaInsets, area)) {
+            self.collectionView.contentScrollAreaInsets = area;
+            self.collectionView.contentInset = UIEdgeInsetsZero;
+            self.collectionView.verticalScrollIndicatorInsets = UIEdgeInsetsZero;
+        }
+        return;
+    }
     if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentInset, inset) ||
         !UIEdgeInsetsEqualToEdgeInsets(self.tableView.verticalScrollIndicatorInsets, inset)) {
         self.tableView.contentInset = inset;
