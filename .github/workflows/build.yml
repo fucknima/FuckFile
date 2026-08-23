@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - '**'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -36,7 +39,7 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
-          echo "Branch: ${GITHUB_REF_NAME}"
+          echo "Branch: ${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
 
           APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
           EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
@@ -50,8 +53,8 @@ jobs:
             echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
           fi
 
-          # Theos compile output is normalized explicitly so the IPA never
-          # depends on staging side effects.
+          # Normalize Info.plists explicitly so package validation does not
+          # depend on Theos staging side effects.
           cp Info.plist "$APP/Info.plist"
           cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist"
@@ -93,8 +96,7 @@ jobs:
           file "$EXT/FuckFileShare"
           otool -l "$EXT/FuckFileShare" | grep -A3 LC_MAIN
 
-          # Nested code must be signed first; the containing app is signed last
-          # so its CodeResources records the final appex signature.
+          # Sign nested code first, then the containing app.
           codesign --force -s - "$EXT"
           codesign --force -s - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
