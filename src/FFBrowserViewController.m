@@ -396,28 +396,17 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 }
 
 // 底部悬浮 Search Chrome 的余量管理（值为运行实测 bottomChrome）。
-// iOS 17+：contentScrollAreaInsets 抬升滚动区（最后一行无论满屏与否
-// 都悬在浮条之上，无需依赖滚动）；旧系统回退 contentInset。
-// 多选：底部批量工具栏接管，两者清零避免双重空白。
+// contentInset + scrollIndicatorInsets（公开 API；SDK 验证过
+// contentScrollAreaInsets 当前 SDK 不存在）。
+// alwaysBounceVertical=YES：内容不满一屏时也可滚动，配合 inset
+// 让最后一行滚出浮条上方（满屏短内容场景的关键）。
+// 多选：底部批量工具栏接管，余量清零避免双重空白。
 - (void)applySearchChromeInsets
 {
     CGFloat chrome = self.editing ? 0 : self.bottomChrome;
+    self.tableView.alwaysBounceVertical = YES;
+    if (self.collectionView) self.collectionView.alwaysBounceVertical = YES;
     UIEdgeInsets inset = UIEdgeInsetsMake(0, 0, chrome, 0);
-    if (@available(iOS 17.0, *)) {
-        UIEdgeInsets area = self.editing ? UIEdgeInsetsZero : inset;
-        if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentScrollAreaInsets, area)) {
-            self.tableView.contentScrollAreaInsets = area;
-            self.tableView.contentInset = UIEdgeInsetsZero;
-            self.tableView.verticalScrollIndicatorInsets = UIEdgeInsetsZero;
-        }
-        if (self.collectionView &&
-            !UIEdgeInsetsEqualToEdgeInsets(self.collectionView.contentScrollAreaInsets, area)) {
-            self.collectionView.contentScrollAreaInsets = area;
-            self.collectionView.contentInset = UIEdgeInsetsZero;
-            self.collectionView.verticalScrollIndicatorInsets = UIEdgeInsetsZero;
-        }
-        return;
-    }
     if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentInset, inset) ||
         !UIEdgeInsetsEqualToEdgeInsets(self.tableView.verticalScrollIndicatorInsets, inset)) {
         self.tableView.contentInset = inset;
