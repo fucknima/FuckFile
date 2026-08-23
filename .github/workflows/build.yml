@@ -71,6 +71,10 @@ jobs:
           # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
           plutil -lint "$APP/Info.plist"
+          # 物理图标文件：zsign 等第三方签名器只认 CFBundleIconFiles 指向的
+          # 文件（Assets.car 它读不了），深色/无 AppIcon 会导致签名失败。
+          cp third_party/icons/AppIcon*.png "$APP/" 2>/dev/null || true
+          ls "$APP"/AppIcon*.png
           # ---- Share Extension（theos appex.mk 编译，自动 -e _NSExtensionMain）----
           # theos 构建产物在 .theos/obj/FFShareExtension.appex，rsync 进主 app PlugIns。
           SHARE_APPEX="$APP/PlugIns/FFShareExtension.appex"
