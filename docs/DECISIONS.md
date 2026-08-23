@@ -256,3 +256,59 @@ minizip（third_party/minizip，zlib License，来源 madler/zlib contrib），
   且有性能风险，待有合适组件再评估
 
 后续新增任何格式支持（7z/RAR/TAR 等）必须同样先找成熟开源后端。
+
+## ADR-012
+
+日期：2026-08-23
+
+决定：
+
+外部文件进入采用「Document Open + Share Extension」双系统入口，并以
+LCSign 1.2-8 的实际 IPA 结构作为已验证参考，而不是继续假设所有发送方
+都会触发 `application:openURL:options:`。
+
+1. Document Open 保留 `CFBundleDocumentTypes` + AppDelegate `openURL`；
+   Files 配置固定为 `UIFileSharingEnabled=YES`、`UISupportsDocumentBrowser=YES`、
+   `LSSupportsOpeningDocumentsInPlace=NO`、`LSHandlerRank=Default`，与 LCSign
+   的最终 IPA 配置一致。Open In 目标是让系统优先交付 App 自己 Inbox 中
+   的稳定副本，而不是依赖其他 App 私有容器的短期 URL。
+2. Share Sheet 新增 `FuckFileShare.appex`，使用标准 `com.apple.share-services`
+   extension point，`NSExtensionActivationSupportsFileWithMaxCount=25`；读取
+   `NSExtensionItem` / `NSItemProvider`，使用 `registeredTypeIdentifiers` 与
+   `loadFileRepresentationForTypeIdentifier:completionHandler:`。
+3. NSItemProvider 给出的 representation 必须在 completion handler 存活期间
+   立即持久化。Extension 先写 `.partial-UUID/payload + metadata.plist`，完整后
+   rename 为 `UUID.ffshare`；禁止保存 provider 临时路径后让主 App 再读。
+4. App Group 只作为可选桥梁，不作为正确性前提。历史实验已证明第三方
+   重签工具可能剥离/拒绝 App Group entitlement。若 App Group 不可用，Share
+   Extension 写入自身 Extension Data 容器；主 App 利用既有
+   `com.apple.mobile.MobileHouseArrest` MCM 身份，通过 class 4（Extension Data）
+   直接取得 `FuckFileShare` 的 PluginKitPlugin 数据容器并消费收件箱。
+5. 主 App 统一由 `FFSharedInboxService` 扫描 App Group 与 class-4 fallback，
+   再交给 `FFImportService`。成功后删除共享条目；失败保留，避免数据丢失。
+6. `FFImportService` 统一 staging/原子提交/重名命名。稳定本地/MCM lease 路径
+   直接流式复制；真正的外部 URL 使用 security scope + `NSFileCoordinator`，
+   copy 必须发生在 coordinator accessor 内。
+7. CI 必须真正构建 MH_EXECUTE `.appex`、验证 `LC_MAIN`、嵌入
+   `FuckFile.app/PlugIns/FuckFileShare.appex`、先签 nested extension 后签主 App，
+   并执行 `codesign --verify --deep --strict`。构建成功不能只代表主 App 成功。
+
+依据：
+
+- 真机 A/B：微信 PDF 能进入现有 openURL 管线；系统 Files PDF 与 LCSign
+  IPA/ZIP 仅唤起主 App且没有 Import 回调日志，证明发送方通道不同。
+- 对 LCSign-1.2-8.ipa 的实际检查确认：主 App 配置为 Files sharing +
+  Document Browser + OpenInPlace=NO；包内存在 `LCShareExtension.appex`；其
+  extension manifest 为 `com.apple.share-services`、FileWithMaxCount=25，二进制
+  引用了 NSItemProvider 的 registered types / loadFileRepresentation / loadItem、
+  文件复制与共享容器 API。
+- FilzaSlop 的 MobileContainerManager 实现明确映射 class 4 为 Extension Data，
+  并以 class-4 identifier 获取 `/var/mobile/Containers/Data/PluginKitPlugin`
+  类型容器。FuckFile 已经依赖同一 MHA-MCM 基础设施，因此可把它用作不依赖
+  App Group provisioning 的稳定桥梁。
+
+边界：
+
+- CI 可以证明编译、Mach-O entry point、嵌入结构和嵌套签名正确；只有真机
+  能最终证明具体 iOS/重签器组合下 Share Extension 被系统加载以及 class-4
+  bridge 的运行时授权。未做真机验证前不得把该项写成“已完全验证”。
