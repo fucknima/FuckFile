@@ -89,6 +89,11 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
+// 顶部锚点：viewDidLoad 先用视图安全区（系统转场期间导航栏在私有布局引擎，
+// 不许跨层激活）；viewDidAppear 转场完成后改锚导航栏下缘（iOS 27 底部
+// 集成搜索时 safeArea.top 会残留搜索条高度，造成导航栏下空白）。
+@property(nonatomic, strong) NSLayoutConstraint *breadcrumbTopConstraint;
+@property(nonatomic) BOOL breadcrumbBarAnchored;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
 @property(nonatomic) BOOL pendingAutoReload;
 @end
@@ -143,16 +148,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
-    // 顶级布局锚点：锚定视图自身的安全区顶部。
-    // 注意：不能锚定 navigationBar.bottomAnchor —— viewDidLoad 时导航栏
-    // 仍处于 UIKit 私有布局引擎（push 转场初始化阶段），跨层级激活约束
-    // 直接抛 NSISEngine 异常崩溃（真机 SIGABRT 证据：_addOrRemoveConstraints
-    // ← FFBrowserViewController viewDidLoad）。
+    // 顶级布局锚点：先锚定视图自身的安全区顶部（viewDidLoad 阶段导航栏
+    // 仍在 UIKit 私有布局引擎，跨层级激活约束会抛 NSISEngine 异常——
+    // 真机 SIGABRT 证据）。转场完成后在 viewDidAppear 迁移到导航栏下缘。
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
-    [NSLayoutConstraint activateConstraints:@[
+    self.breadcrumbTopConstraint =
         [self.breadcrumbView.topAnchor constraintEqualToAnchor:
-            self.view.safeAreaLayoutGuide.topAnchor],
+            self.view.safeAreaLayoutGuide.topAnchor];
+    [NSLayoutConstraint activateConstraints:@[
+        self.breadcrumbTopConstraint,
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
@@ -301,6 +306,33 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.navigationController.toolbarHidden = YES;
 }
 
+// 转场完成后把面包屑顶部改锚导航栏下缘：iOS 27 底部集成搜索时
+// safeArea.top 残留搜索条高度（导航栏下方出现整段空白），导航栏真实
+// 下缘与内容零距离。此时导航栏布局已稳定，跨层级激活是安全的
+// （崩溃仅发生在转场初始化的 viewDidLoad 阶段）。
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (self.breadcrumbBarAnchored) return;
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+    self.breadcrumbBarAnchored = YES;
+    [NSLayoutConstraint deactivateConstraints:@[self.breadcrumbTopConstraint]];
+    self.breadcrumbTopConstraint =
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:
+            nav.navigationBar.bottomAnchor];
+    [NSLayoutConstraint activateConstraints:@[self.breadcrumbTopConstraint]];
+    [self.view layoutIfNeeded];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    // 布局结算后校正底部余量：系统可能在 scroll 调整/keyboard/toolbar
+    // 变化时重写 inset，每次布局后重新应用（值未变时零开销）。
+    [self applySearchChromeInsets];
+}
+
 #pragma mark - Clipboard state
 
 - (void)updatePasteState
@@ -342,15 +374,22 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 // 底部浮动 Search Chrome 的余量管理。普通浏览：预留悬浮搜索条高度，
 // 保证最后一项能完整滚到搜索条上方；多选：系统底部批量工具栏接管，
-// 清掉余量避免双重空白。
+// 清掉余量避免双重空白。值未变化时不写（避免每帧布局抖动）。
+static const CGFloat kFFBottomChrome = 76;
 - (void)applySearchChromeInsets
 {
-    CGFloat chrome = self.editing ? 0 : 56;
-    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, chrome, 0);
-    self.tableView.verticalScrollIndicatorInsets = UIEdgeInsetsMake(0, 0, chrome, 0);
-    if (self.collectionView) {
-        self.collectionView.contentInset = UIEdgeInsetsMake(0, 0, chrome, 0);
-        self.collectionView.verticalScrollIndicatorInsets = UIEdgeInsetsMake(0, 0, chrome, 0);
+    CGFloat chrome = self.editing ? 0 : kFFBottomChrome;
+    UIEdgeInsets inset = UIEdgeInsetsMake(0, 0, chrome, 0);
+    if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentInset, inset) ||
+        !UIEdgeInsetsEqualToEdgeInsets(self.tableView.verticalScrollIndicatorInsets, inset)) {
+        self.tableView.contentInset = inset;
+        self.tableView.verticalScrollIndicatorInsets = inset;
+    }
+    if (self.collectionView &&
+        (!UIEdgeInsetsEqualToEdgeInsets(self.collectionView.contentInset, inset) ||
+         !UIEdgeInsetsEqualToEdgeInsets(self.collectionView.verticalScrollIndicatorInsets, inset))) {
+        self.collectionView.contentInset = inset;
+        self.collectionView.verticalScrollIndicatorInsets = inset;
     }
 }
 
