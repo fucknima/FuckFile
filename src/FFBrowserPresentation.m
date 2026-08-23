@@ -125,6 +125,8 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
 // Custom preview-style chrome.
 - (void)ffui_installBrowserChrome;
 - (void)ffui_refreshBottomBar;
+- (void)ffui_refreshNavigationActions;
+- (void)ffui_popBrowser;
 - (void)ffui_syncClipboardChrome;
 - (UIButton *)ffui_buttonWithTitle:(NSString *)title
                             symbol:(NSString *)symbol
@@ -185,9 +187,9 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.navigationItem.searchController.searchBar.placeholder = @"搜索当前目录";
-    self.tableView.estimatedRowHeight = 68;
+    self.tableView.estimatedRowHeight = 70;
     self.tableView.cellLayoutMarginsFollowReadableWidth = YES;
-    self.tableView.separatorInset = UIEdgeInsetsMake(0, 72, 0, 16);
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.backgroundColor = UIColor.systemBackgroundColor;
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAlways;
 
@@ -199,6 +201,7 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
     self.additionalSafeAreaInsets = safeInsets;
 
     [self ffui_installBrowserChrome];
+    [self ffui_refreshNavigationActions];
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter]
@@ -206,6 +209,7 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
         object:nil queue:[NSOperationQueue mainQueue]
         usingBlock:^(__unused NSNotification *note) {
             [weakSelf ffui_syncClipboardChrome];
+            if (!weakSelf.editing) [weakSelf ffui_refreshNavigationActions];
         }];
 }
 
@@ -217,9 +221,10 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     // The preview uses a fixed in-content action bar, not the iOS 27 glass
-    // UINavigationController toolbar (which renders as two floating circles).
+    // UINavigationController toolbar (which renders as floating circles).
     [self.navigationController setToolbarHidden:YES animated:NO];
     [self ffui_refreshBottomBar];
+    [self ffui_refreshNavigationActions];
     [self ffui_syncClipboardChrome];
 }
 
@@ -238,8 +243,43 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
             action:NSSelectorFromString(@"cancelBatchMode")];
         self.navigationItem.leftBarButtonItem = selectAll;
         self.navigationItem.rightBarButtonItems = @[cancel];
+    } else {
+        [self ffui_refreshNavigationActions];
     }
     [self ffui_refreshBottomBar];
+}
+
+- (void)ffui_refreshNavigationActions
+{
+    if (self.editing) return;
+
+    // Custom views prevent iOS 27 from wrapping these two compact navigation
+    // controls in the oversized floating glass circles seen in the test build.
+    UIButton *back = [UIButton buttonWithType:UIButtonTypeSystem];
+    back.frame = CGRectMake(0, 0, 34, 34);
+    [back setImage:[UIImage systemImageNamed:@"chevron.left"] forState:UIControlStateNormal];
+    back.tintColor = UIColor.labelColor;
+    back.accessibilityLabel = @"返回";
+    [back addTarget:self action:@selector(ffui_popBrowser)
+      forControlEvents:UIControlEventTouchUpInside];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:back];
+
+    UIButton *more = [UIButton buttonWithType:UIButtonTypeSystem];
+    more.frame = CGRectMake(0, 0, 34, 34);
+    [more setImage:[UIImage systemImageNamed:@"ellipsis.circle"] forState:UIControlStateNormal];
+    more.tintColor = UIColor.labelColor;
+    more.accessibilityLabel = @"更多";
+    UIMenu *menu = FFUISendId(self, @"moreMenu");
+    if (menu) {
+        more.menu = menu;
+        more.showsMenuAsPrimaryAction = YES;
+    }
+    self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:more]];
+}
+
+- (void)ffui_popBrowser
+{
+    [self.navigationController popViewControllerAnimated:YES];
 }
 
 - (void)ffui_installBrowserChrome
@@ -334,7 +374,7 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
     configuration.image = [UIImage systemImageNamed:symbol];
     configuration.imagePlacement = NSDirectionalRectEdgeTop;
     configuration.imagePadding = 3;
-    configuration.baseForegroundColor = tint ?: UIColor.systemBlueColor;
+    configuration.baseForegroundColor = tint ?: UIColor.labelColor;
     configuration.contentInsets = NSDirectionalEdgeInsetsMake(3, 4, 3, 4);
     button.configuration = configuration;
     if (selector) [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
@@ -531,9 +571,15 @@ static BOOL FFExtensionIn(NSString *ext, NSArray<NSString *> *values)
     config.secondaryTextProperties.numberOfLines = 1;
     config.imageProperties.maximumSize = CGSizeMake(38, 38);
     config.imageProperties.cornerRadius = 7;
-    config.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(9, 16, 9, 12);
+    config.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(10, 22, 10, 20);
     cell.contentConfiguration = config;
-    cell.backgroundColor = UIColor.systemBackgroundColor;
+
+    UIBackgroundConfiguration *background = [UIBackgroundConfiguration clearConfiguration];
+    background.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    background.cornerRadius = 10;
+    background.backgroundInsets = NSDirectionalEdgeInsetsMake(3, 12, 3, 12);
+    cell.backgroundConfiguration = background;
+    cell.backgroundColor = UIColor.clearColor;
 }
 
 - (UIImage *)ffui_iconForEntry:(FFEntry *)item
