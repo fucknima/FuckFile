@@ -75,5 +75,25 @@ after-stage::
 	@codesign --force -s - --preserve-metadata=identifier,entitlements $(THEOS_STAGING_DIR)/Applications/FuckFile.app 2>/dev/null || true
 	@echo "== ad-hoc re-signed .app at $(THEOS_STAGING_DIR)/Applications/FuckFile.app"
 
-# Share Extension 由 GitHub Actions 的 Package 步骤用 xcrun 手动编译
-# 并嵌入 PlugIns/（theos 对 appex 支持有限，CI 手动编译更可控）。
+# ---- Share Extension（theos appex.mk 官方路径，自动 -e _NSExtensionMain）----
+APPEX_NAME = FFShareExtension
+FFShareExtension_CFLAGS = -I$(PWD)/ShareExtension -fobjc-arc \
+	-Wno-unused-function -Wno-unused-variable -Wno-format \
+	-Wno-incompatible-pointer-types -Wno-deprecated-declarations
+FFShareExtension_CCFLAGS = $(FFShareExtension_CFLAGS)
+FFShareExtension_OBJCFLAGS = $(FFShareExtension_CFLAGS)
+FFShareExtension_FILES = ShareExtension/FFShareViewController.m
+FFShareExtension_FRAMEWORKS = UIKit Foundation Social UniformTypeIdentifiers
+FFShareExtension_INSTALL_PATH = /Applications
+# Info.plist 由构建目录中的资源自动带入（bundle.mk 规则）。
+FFShareExtension_RESOURCE_DIRS = ShareExtensionResources
+
+include $(THEOS_MAKE_PATH)/appex.mk
+
+# 把 appex 嵌入主 app 的 PlugIns/（CI 在 Package 段 rsync）。
+after-stage::
+	@mkdir -p $(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns
+	@rm -rf $(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns/FFShareExtension.appex
+	@rsync -a $(THEOS_STAGING_DIR)/Applications/FFShareExtension.appex/ \
+		$(THEOS_STAGING_DIR)/Applications/FuckFile.app/PlugIns/FFShareExtension.appex/ 2>/dev/null || true
+	@echo "== share extension staged"

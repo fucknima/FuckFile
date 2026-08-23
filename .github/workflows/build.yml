@@ -71,26 +71,33 @@ jobs:
           # 合并 actool 生成的 CFBundleIcons（含暗色变体声明）进 Info.plist。
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb')); print('merged CFBundleIcons')" "$APP/Info.plist" "$APP/icon-partial-info.plist"
           plutil -lint "$APP/Info.plist"
-          # ---- Share Extension（系统分享面板收任意文件，≤25 个）----
-          # theos 对 appex 支持有限，这里用 xcrun 手动编译再嵌入 PlugIns/。
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          ARCHS_ARGS=(-arch arm64 -arch arm64e)
-          mkdir -p "$APP/PlugIns/FFShareExtension.appex"
-          xcrun clang -fobjc-arc -fmodules -isysroot "$SDK" \
-            "${ARCHS_ARGS[@]}" -miphoneos-version-min=15.0 \
-            -Wl,-undefined,dynamic_lookup \
-            -Wl,-e,_NSExtensionMain \
-            -framework UIKit -framework Foundation \
-            -framework UniformTypeIdentifiers \
-            ShareExtension/FFShareViewController.m \
-            -o "$APP/PlugIns/FFShareExtension.appex/FFShareExtension" \
-            || exit 1
-          python3 -c "import plistlib,sys; p=plistlib.load(open('ShareExtension/Info.plist','rb')); plistlib.dump(p,open(sys.argv[1],'wb'),sort_keys=False)" "$APP/PlugIns/FFShareExtension.appex/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FFShareExtension" "$APP/PlugIns/FFShareExtension.appex/Info.plist" 2>/dev/null || true
+          # ---- Share Extension（theos appex.mk 编译，自动 -e _NSExtensionMain）----
+          # theos 构建产物在 .theos/obj/FFShareExtension.appex，rsync 进主 app PlugIns。
+          SHARE_APPEX="$APP/PlugIns/FFShareExtension.appex"
+          if [ -d ".theos/obj/FFShareExtension.appex" ]; then
+            rm -rf "$SHARE_APPEX"
+            mkdir -p "$APP/PlugIns"
+            rsync -a ".theos/obj/FFShareExtension.appex/" "$SHARE_APPEX/"
+            echo "embedded theos appex into PlugIns"
+          else
+            # theos in-place fallback: 手动构建目录可能在 staging 区
+            STAGED_APPEX=$(find .theos -maxdepth 4 -name "FFShareExtension.appex" -type d | head -1)
+            if [ -n "$STAGED_APPEX" ]; then
+              rm -rf "$SHARE_APPEX"
+              mkdir -p "$APP/PlugIns"
+              rsync -a "$STAGED_APPEX/" "$SHARE_APPEX/"
+              echo "embedded staged appex: $STAGED_APPEX"
+            fi
+          fi
+          if [ ! -d "$SHARE_APPEX" ]; then
+            echo "ERROR: appex not built by theos (obj or staging missing)"
+            find .theos -maxdepth 5 -name "*.appex" -o -name "*FFShare*" | head -20
+            exit 1
+          fi
+          plutil -lint "$SHARE_APPEX/Info.plist"
           # 扩展签名：先 codesign 生成签名，再 ldid 注入 application-groups entitlement。
-          codesign --force -s - "$APP/PlugIns/FFShareExtension.appex"
-          /usr/local/bin/ldid -S Entitlements.plist "$APP/PlugIns/FFShareExtension.appex/FFShareExtension" || true
-          plutil -lint "$APP/PlugIns/FFShareExtension.appex/Info.plist"
+          codesign --force -s - "$SHARE_APPEX"
+          /usr/local/bin/ldid -S Entitlements.plist "$SHARE_APPEX/FFShareExtension" || true
           # Strip any certificate-based signature down to ad-hoc; inject the
           # application-groups entitlement for the App Group bridge.
           # Fail loudly: a broken signature produces an unusable artifact.
