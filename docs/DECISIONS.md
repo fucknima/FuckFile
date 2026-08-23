@@ -407,6 +407,55 @@ UI 入口重组（在 ADR-013 之后的第二轮，仍不改文件操作 backend
 10. Settings 共用 cell 在配置前重置 accessoryView/accessoryType/
     detailTextLabel/selectionStyle，消除 Switch 与副标题跨行泄漏。
 
+## ADR-015
+
+日期：2026-08-23
+
+决定：
+
+基于真机截图反馈的第二轮调整（用户否决了 ADR-014 的部分界面形态，
+backend 依旧零改动）：
+
+1. 更多菜单只允许一个二级：动作（选择/粘贴/刷新/复制当前路径/
+   文件夹信息）一级直接可见；排序方式、筛选、显示方式归并为单个
+   「视图」子菜单。不出现"全是箭头"的效果。
+2. 导入文件从「更多」移入 `＋`（`＋` = 创建 + 外部文件进入，语义同为
+   "往当前目录添加内容"）。
+3. 搜索改为页面顶部自建 UISearchBar（面包屑正下方，列表/网格共用），
+   不再挂 `navigationItem.searchController` —— 该写法在 iOS 26 真机上
+   被渲染到屏幕底部（反馈图证实），且位置随滚动不稳定。新行为：顶部
+   时显示、内容下滚收起、回到顶部展开、输入中不收起（iOS 设置风格）。
+4. 压缩目标重名检测：`compressWithName:items:` 在入队前探测同名文件，
+   存在时弹「替换 / 保留两者 / 取消」（与重命名冲突同一套交互），
+   不静默覆盖已有压缩包。
+5. 长按 Context Menu 的分区 UIMenu 全部加 `UIMenuOptionsDisplayInline`：
+   选项平铺在顶层，不折叠成箭头子菜单；iPad 上系统自动双列。分组仅供
+   视觉分段。
+6. 粘贴横幅生命周期收紧：粘贴成功、取消、被拦截（贴自身/子目录、
+   同目录）一律收起横幅；进入多选立即收起、退出多选（剪贴板非空）
+   恢复，不再与批量工具栏叠放。
+7. 多选底栏直接显示 复制/移动/分享/压缩/删除（取消「更多」二级，
+   压缩从子菜单提回一级）。
+8. 文件图标差异化：30+ 扩展名专属 SF Symbol（pdf/doc.richtext、
+   md/text.alignleft、csv 与表格/tablecells、sqlite/cylinder.split.1x2、
+   ipa/arrow.down.app、jar/war/apk/epub/archivebox 等），配六类有限
+   语义色系（文档蓝、代码与配置紫、压缩棕、数据库橙、证书黄、媒体绿；
+   文件夹蓝、链接青、其余灰）——形状 + 色系双维度区分，不做彩虹配色。
+
+原因：
+
+- 「操作藏到二级」与「一个功能一个主要入口」同样伤害发现性：用户认知
+  中的菜单是"直接选择"，子菜单只用于选项组（排序/筛选/显示方式）。
+- 压缩静默覆盖是真实数据风险；与重命名冲突一致化，遵守"任何可能造成
+  数据丢失的行为不得静默执行"。
+- iOS 26 的 UISearchController 挂 navigationItem 在真机出现渲染位置
+  异常，自建顶栏搜索条绕开系统 bug，行为完全可控。
+
+未动：
+
+- 搜索/过滤后端、FFFileTaskManager（additive removeTasks: 除外）、
+  FFPreviewRouter/FileAssociation/Registry、Share/Import 架构。
+
 原因：
 
 - 同一功能多个入口（底栏筛选 + 更多菜单、＋ 与导航栏更多里的新建、
