@@ -56,7 +56,8 @@ FuckFile_FILES = \
 	src/FFFileAssociationsViewController.m \
 	src/FFPathBreadcrumbView.m \
 	src/FFFileMetadataService.m \
-	src/FFFileInfoViewController.m
+	src/FFFileInfoViewController.m \
+	src/FFViewerPickerViewController.m
 
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip -fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable -Wno-format \

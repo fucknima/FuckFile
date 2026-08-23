@@ -26,6 +26,8 @@
 @property(nonatomic, copy) NSString *unsupportedMessage;
 @property(nonatomic) BOOL loading;
 @property(nonatomic, strong) UIBarButtonItem *extractItem;
+@property(nonatomic, strong) UIBarButtonItem *moreItem;
+@property(nonatomic, copy) NSString *normalTitle;
 @end
 
 @implementation FFArchiveBrowserViewController
@@ -51,16 +53,37 @@
     if (!self.unsupportedMessage)
         [self loadEntries];
 
-    // 多选提取 + 全部解压
-    UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:@"选择"
-        style:UIBarButtonItemStylePlain target:self action:@selector(toggleEditing)];
-    UIBarButtonItem *extractSelected = [[UIBarButtonItem alloc] initWithTitle:@"提取"
-        style:UIBarButtonItemStyleDone target:self action:@selector(extractSelected)];
-    extractSelected.enabled = NO;
-    self.extractItem = extractSelected;
-    UIBarButtonItem *extractAll = [[UIBarButtonItem alloc] initWithTitle:@"全部解压"
-        style:UIBarButtonItemStylePlain target:self action:@selector(extractAll)];
-    self.navigationItem.rightBarButtonItems = @[extractAll, extractSelected, select];
+    // 普通状态只有一个「…」：选择 / 全部解压 / 分享压缩包（ADR-014），
+    // 与 Browser 同一套交互语言。进入选择后导航栏变为 取消/全选，
+    // 底栏只提供「提取」。
+    UIAction *selectAction = [UIAction actionWithTitle:@"选择"
+        image:[UIImage systemImageNamed:@"checkmark.circle"]
+        identifier:nil handler:^(__unused UIAction *action) { [self setEditing:YES animated:YES]; }];
+    UIAction *extractAllAction = [UIAction actionWithTitle:@"全部解压"
+        image:[UIImage systemImageNamed:@"shippingbox"]
+        identifier:nil handler:^(__unused UIAction *action) { [self extractAll]; }];
+    UIAction *shareAction = [UIAction actionWithTitle:@"分享压缩包"
+        image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+        identifier:nil handler:^(__unused UIAction *action) { [self shareZip]; }];
+    self.moreItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"ellipsis.circle"]
+        style:UIBarButtonItemStylePlain target:nil action:nil];
+    self.moreItem.menu = [UIMenu menuWithTitle:@"更多" children:
+        @[selectAction, extractAllAction, shareAction]];
+    self.moreItem.accessibilityLabel = @"更多操作";
+    self.navigationItem.rightBarButtonItems = @[self.moreItem];
+
+    self.extractItem = [[UIBarButtonItem alloc] initWithTitle:@"提取"
+        style:UIBarButtonItemStylePlain target:self action:@selector(extractSelected)];
+    self.extractItem.enabled = NO;
+    self.navigationController.toolbarHidden = YES;
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    // 选择模式打开底栏：离开页面必须收起，避免泄漏到前一个页面。
+    self.navigationController.toolbarHidden = YES;
 }
 
 // tar/gz/7z/rar/xz/bz2 等默认关联到压缩包浏览器，但当前构建没有解析后端：
@@ -254,7 +277,7 @@
     FFArchiveNode *node = self.visibleNodes.count > (NSUInteger)indexPath.row ?
         self.visibleNodes[(NSUInteger)indexPath.row] : nil;
     if (self.editing) {
-        self.extractItem.enabled = tableView.indexPathsForSelectedRows.count > 0;
+        [self updateSelectionTitle];
         return;
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -278,8 +301,7 @@
 - (void)tableView:(__unused UITableView *)tableView didDeselectRowAtIndexPath:(__unused NSIndexPath *)indexPath
 {
     if (!self.editing) return;
-    self.extractItem.enabled =
-        self.tableView.indexPathsForSelectedRows.count > 0;
+    [self updateSelectionTitle];
 }
 
 #pragma mark - Entry actions
@@ -319,9 +341,67 @@
     [self presentViewController:wait animated:YES completion:nil];
 }
 
-- (void)toggleEditing
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated
 {
-    [self.tableView setEditing:!self.tableView.editing animated:YES];
+    [super setEditing:editing animated:animated];
+    [self.tableView setEditing:editing animated:animated];
+    if (editing) {
+        _normalTitle = self.navigationItem.title;
+        UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:@"取消"
+            style:UIBarButtonItemStylePlain target:self action:@selector(cancelEditing)];
+        self.navigationItem.leftBarButtonItem = cancel;
+        UIBarButtonItem *selectAll = [[UIBarButtonItem alloc] initWithTitle:@"全选"
+            style:UIBarButtonItemStylePlain target:self action:@selector(selectAllEntries)];
+        self.navigationItem.rightBarButtonItems = @[selectAll];
+        [self updateSelectionTitle];
+        self.toolbarItems = @[self.extractItem];
+        self.navigationController.toolbarHidden = NO;
+    } else {
+        self.navigationItem.leftBarButtonItem = nil;
+        self.navigationItem.rightBarButtonItems = @[self.moreItem];
+        if (_normalTitle.length) self.navigationItem.title = _normalTitle;
+        self.extractItem.enabled = NO;
+        self.navigationController.toolbarHidden = YES;
+        [self.tableView reloadData];
+    }
+    [self updateSelectionTitleIfEditing];
+}
+
+- (void)cancelEditing
+{
+    [self setEditing:NO animated:YES];
+}
+
+- (void)selectAllEntries
+{
+    for (NSInteger row = 0; row < (NSInteger)self.visibleNodes.count; row++)
+        [self.tableView selectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]
+            animated:NO scrollPosition:UITableViewScrollPositionNone];
+    [self updateSelectionTitle];
+}
+
+- (void)updateSelectionTitle
+{
+    if (!self.editing) return;
+    NSInteger count = (NSInteger)self.tableView.indexPathsForSelectedRows.count;
+    self.navigationItem.title = [NSString stringWithFormat:@"已选 %ld 项", (long)count];
+    self.extractItem.enabled = count > 0;
+}
+
+- (void)updateSelectionTitleIfEditing
+{
+    if (self.editing) [self updateSelectionTitle];
+}
+
+- (void)shareZip
+{
+    NSURL *url = [NSURL fileURLWithPath:self.archivePath];
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[url] applicationActivities:nil];
+    activity.popoverPresentationController.sourceView = self.view;
+    activity.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:activity animated:YES completion:nil];
 }
 
 // 提取所选（编辑模式下勾选的条目，含文件夹递归）。
@@ -372,8 +452,7 @@
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf.tableView setEditing:NO animated:YES];
-            weakSelf.extractItem.enabled = NO;
+            [weakSelf setEditing:NO animated:YES];
             NSString *message;
             if (firstError && done == 0)
                 message = [NSString stringWithFormat:@"提取失败：%@",

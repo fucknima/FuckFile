@@ -45,13 +45,51 @@
     self.items = self.mode == FFBookmarksModeFavorites
         ? [FFFavoritesService sharedService].bookmarks
         : [FFRecentService sharedService].entries;
+    [self updateEmptyState];
     [self.tableView reloadData];
 }
 
+// 空状态：收藏为空与最近为空分别给明确的引导文案。
+- (void)updateEmptyState
+{
+    if (self.items.count > 0) {
+        self.tableView.backgroundView = nil;
+        self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+        return;
+    }
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
+        self.view.bounds.size.width - 80, 120)];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    label.textColor = [UIColor secondaryLabelColor];
+    label.text = self.mode == FFBookmarksModeFavorites
+        ? @"还没有收藏\n长按文件或文件夹即可收藏"
+        : @"还没有最近访问记录";
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    label.adjustsFontForContentSizeCategory = YES;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
+        self.view.bounds.size.width, self.view.bounds.size.height)];
+    label.center = container.center;
+    [container addSubview:label];
+    self.tableView.backgroundView = container;
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+}
+
+// 「清空最近记录」必须有确认：清理的是用户历史，不是可恢复的临时状态。
 - (void)clearAll
 {
-    [[FFRecentService sharedService] clear];
-    [self reloadItems];
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"清空最近记录"
+        message:@"将删除全部最近访问记录。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"清空"
+        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+            [[FFRecentService sharedService] clear];
+            [weakSelf reloadItems];
+        }]];
+    [self presentViewController:confirm animated:YES completion:nil];
 }
 
 #pragma mark - Table view

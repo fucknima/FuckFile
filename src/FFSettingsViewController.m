@@ -89,8 +89,13 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:@"Cell"];
-    cell.imageView.tintColor = [UIColor systemBlueColor];
+    // 复用前必须重置全部可变状态：Switch/副标题/选中态都会跨行泄漏。
+    cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.detailTextLabel.text = nil;
+    cell.detailTextLabel.numberOfLines = 1;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.imageView.tintColor = [UIColor systemBlueColor];
 
     switch (indexPath.section) {
         case 0: {

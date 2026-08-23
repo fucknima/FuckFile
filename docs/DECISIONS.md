@@ -368,3 +368,60 @@ UI 体系统一为「Inline 导航 + 紧凑浏览器信息架构」，在不改�
   menu 延迟 present、setEditing 手动同步 tableView、同目录剪切粘贴拦截、
   FFPreviewRouter 统一打开链路。
 - Imported 唯一路径与幂等导航不变；首页不加第二 Imported 入口。
+
+## ADR-014
+
+日期：2026-08-23
+
+决定：
+
+UI 入口重组（在 ADR-013 之后的第二轮，仍不改文件操作 backend）：
+
+1. Browser 导航栏固定两件套：`＋`（唯一创建入口：新建文件夹/文件）与
+   `…`（低频页面级操作：选择/粘贴/导入 ‖ 排序 ‖ 筛选 ‖ 显示方式 ‖
+   刷新/复制当前路径/文件夹信息）。创建操作禁止再进 `…`；设置类持久化
+   偏好在设置页管理，Browser 菜单不重复。
+2. 普通浏览模式移除底部工具栏（原 `筛选 …… +`），底部工具栏只属于多选
+   模式；文件内容获得最大垂直空间，Paste Banner 不再与常驻工具栏竞争。
+3. 多选底栏为 复制/移动/分享/更多/删除：全选只在导航栏；压缩收进「更多」；
+   删除单独红色并保留 destructive 确认。
+4. 对象级操作唯一来源：`contextMenuSectionsForEntry:` 输出分区菜单
+   （打开/查看 ‖ 复制·剪切·副本·重命名·收藏·分享 ‖ 压缩·浏览压缩包·
+   解压·安装 ‖ 用其他查看器打开 ‖ 复制路径·属性·删除），长按 Context
+   Menu、Grid Context Menu、左滑「更多」Action Sheet 三处共用同一份定义；
+   文件夹不显示查看器类操作。
+5. 左滑只保留 删除 + 更多（UIKit 不能在 UIContextualAction 内展示
+   UIMenu，「更多」用同一份定义渲染成 Action Sheet）。
+6. Grid 补齐与列表一致的能力：Context Menu、异步缩略图、下拉刷新、
+   空态/Loading/Error（共享 backgroundView 容器）；统一
+   `refreshVisibleContent` 刷新入口，搜索/筛选/排序/任务完成/设置变化
+   不再只碰 tableView。
+7. Archive 浏览器与 Browser 同语言：普通状态 `…`（选择/全部解压/分享
+   压缩包），进入选择后 取消 | 已选 X 项 | 全选 + 底栏「提取」。
+8. 查看器选择由超长 Action Sheet 改 `FFViewerPickerViewController` 列表页
+   （当前默认关联打勾），「用其他查看器打开」选中即写入覆盖关联并立即
+   打开（复用 setOverrideViewerID:forExtension:，不改 FileAssociationService）。
+9. 任务中心分「进行中 / 历史」两段 + 「清除已完成」（removeTasks 批量
+   移除，管理线程安全与 removeTask 一致）；收藏/最近/搜索空状态统一
+   标准空态；最近记录「清空」增加确认。
+10. Settings 共用 cell 在配置前重置 accessoryView/accessoryType/
+    detailTextLabel/selectionStyle，消除 Switch 与副标题跨行泄漏。
+
+原因：
+
+- 同一功能多个入口（底栏筛选 + 更多菜单、＋ 与导航栏更多里的新建、
+  多选底栏与导航栏的全选、普通模式常驻底栏）让用户不知道该点哪里；
+  「一个功能一个主要入口」是本次改造的判断标准。
+- Grid 此前只是"能看到文件的展示模式"：无长按菜单、无缩略图、无下拉
+  刷新、空态随隐藏的 tableView 不可见；搜索/筛选后 collectionView 不
+  刷新，与 List 行为存在明显不一致。
+
+未做（保持现状）：
+
+- Share Extension / AppDelegate openURL / Imported / Shared Inbox 全部
+  不动（ADR-012 真机验证窗口内）。
+- Clipboard backend、Copy/Move/Delete/Rename、ZIP、FileTaskManager、
+  FFPathPolicy、FFSearchService 只做无行为差异的接口补充
+  （FFFileTaskManager removeTasks: 批量移除已完成任务）。
+- 设置页不新增 backend 不存在的选项（默认冲突策略、显示扩展名等仅写入
+  PRODUCT 目标，待有实现后再进 UI）。

@@ -101,6 +101,19 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     [self notifyChange];
 }
 
+- (void)removeTasks:(NSArray<FFFileTask *> *)tasks
+{
+    [self.lock lock];
+    for (FFFileTask *task in tasks) {
+        if (task.state == FFFileTaskStateQueued ||
+            task.state == FFFileTaskStateRunning)
+            continue;
+        [self.taskList removeObject:task];
+    }
+    [self.lock unlock];
+    [self notifyChange];
+}
+
 - (void)notifyChange
 {
     dispatch_async(dispatch_get_main_queue(), ^{

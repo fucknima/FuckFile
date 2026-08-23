@@ -2,6 +2,7 @@
 
 #import "FFFileAssociationService.h"
 #import "FFViewerRegistry.h"
+#import "FFViewerPickerViewController.h"
 
 @interface FFFileAssociationsViewController ()
 @property(nonatomic, strong) NSArray<NSString *> *extensions;
@@ -78,41 +79,12 @@
 
 #pragma mark - Association editing
 
-// 点条目 → 查看器选择列表（含不可用状态的诚实标注）。
+// 点条目 → 查看器选择页（ADR-014：列表替代超长 Action Sheet）。
 - (void)pickViewerForExtension:(NSString *)extension
 {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:
-        [NSString stringWithFormat:@".%@ 使用", extension]
-        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    FFFileAssociationService *service =
-        [FFFileAssociationService sharedService];
-    for (FFViewerInfo *viewer in [[FFViewerRegistry sharedRegistry] allViewers]) {
-        NSString *current = [service effectiveViewerIDForExtension:extension];
-        BOOL isCurrent = [current isEqualToString:viewer.viewerID];
-        UIAlertAction *action = [UIAlertAction actionWithTitle:
-            isCurrent ? [NSString stringWithFormat:@"✓ %@", viewer.displayName]
-                      : viewer.displayName
-            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *act) {
-                [[FFFileAssociationService sharedService]
-                    setOverrideViewerID:viewer.viewerID forExtension:extension];
-                // 通知由服务发出并触发列表刷新。
-            }];
-        [sheet addAction:action];
-    }
-    // 内置默认项存在时允许删除覆盖。
-    if ([service hasOverrideForExtension:extension]) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"删除此项（恢复默认）"
-            style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-                [service removeOverrideForExtension:extension];
-            }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
-        style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.view;
-    sheet.popoverPresentationController.sourceRect =
-        CGRectMake(self.view.bounds.size.width / 2,
-            self.view.bounds.size.height / 2, 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    FFViewerPickerViewController *picker =
+        [[FFViewerPickerViewController alloc] initWithExtension:extension];
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 #pragma mark - Table

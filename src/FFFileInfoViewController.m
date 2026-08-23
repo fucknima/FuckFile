@@ -1,6 +1,28 @@
 #import "FFFileInfoViewController.h"
 #import "FFFileMetadataService.h"
 
+#import <objc/runtime.h>
+
+// UIBarButtonItem 的 target 是弱引用：关联对象强持有，防止点击无反应。
+@interface FFInfoShareTarget : NSObject
+@property(nonatomic, copy) NSURL *fileURL;
+@property(nonatomic, weak) UINavigationController *nav;
+- (void)share:(UIBarButtonItem *)sender;
+@end
+
+@implementation FFInfoShareTarget
+- (void)share:(UIBarButtonItem *)sender
+{
+    if (!self.fileURL) return;
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[self.fileURL] applicationActivities:nil];
+    activity.popoverPresentationController.barButtonItem = sender;
+    UIViewController *presenter = self.nav.topViewController;
+    if (presenter)
+        [presenter presentViewController:activity animated:YES completion:nil];
+}
+@end
+
 @interface FFFileInfoViewController ()
 @property(nonatomic, strong) FFEntry *entry;
 @property(nonatomic, strong) UIImage *icon;
@@ -30,6 +52,16 @@
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
     [self setupHeader];
     [self loadSlowMetadata];
+    // 分享当前文件/文件夹（NSURL 由关联对象持有）。
+    FFInfoShareTarget *target = [FFInfoShareTarget new];
+    target.fileURL = [NSURL fileURLWithPath:self.entry.path];
+    target.nav = self.navigationController;
+    UIBarButtonItem *share = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAction
+                             target:target action:@selector(share:)];
+    objc_setAssociatedObject(share, "ffInfoShareTarget", target,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.navigationItem.rightBarButtonItem = share;
 }
 
 - (void)setupHeader
@@ -152,6 +184,7 @@
     cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+    cell.detailTextLabel.numberOfLines = 1;
 
     NSString *title = @"";
     NSString *value = @"";

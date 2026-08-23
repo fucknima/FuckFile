@@ -30,6 +30,9 @@ FOUNDATION_EXPORT NSNotificationName const FFFileTaskManagerDidChangeNotificatio
 // Removes a finished task from the history.
 - (void)removeTask:(FFFileTask *)task;
 
+// Removes finished tasks in bulk (skips running/queued).
+- (void)removeTasks:(NSArray<FFFileTask *> *)tasks;
+
 // Conflict policy callback. Called from the worker queue whenever a
 // copy/move destination already exists; the callback is expected to
 // block until the user decides (see FFBrowserViewController's

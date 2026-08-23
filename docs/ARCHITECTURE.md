@@ -272,6 +272,9 @@ Preview/
 ├── PreviewRouter（FFPreviewRouter：关联→Registry→fallback）
 ├── ViewerRegistry（FFViewerRegistry）
 ├── FileAssociationService（FFFileAssociationService）
+├── ViewerPicker（FFViewerPickerViewController：列表式查看器选择，
+│   Browser「用其他查看器打开」与设置页「文件关联」编辑共用，
+│   选中即写入覆盖关联并立即打开，见 ADR-014）
 ├── ImagePreview
 ├── VideoPreview / AudioPreview（media）
 ├── QuickLookPreview

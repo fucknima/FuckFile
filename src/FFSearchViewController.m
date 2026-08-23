@@ -15,6 +15,7 @@
 @property(nonatomic, strong) NSMutableArray<FFFoundItem *> *results;
 @property(nonatomic) BOOL searching;
 @property(nonatomic) BOOL finished;
+@property(nonatomic, copy) NSString *lastQuery;
 @end
 
 @implementation FFSearchViewController
@@ -40,7 +41,7 @@
     // 提交/历史重搜仍走 UISearchBarDelegate。
     self.searchController.searchBar.delegate = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
-    self.searchController.searchBar.placeholder = @"搜索文件名（Device Storage 全局）";
+    self.searchController.searchBar.placeholder = @"搜索文件名（全部 App 数据）";
     self.searchController.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.searchController.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
     self.navigationItem.searchController = self.searchController;
@@ -58,6 +59,7 @@
     self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     self.statusLabel.textColor = UIColor.secondaryLabelColor;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
+    self.statusLabel.numberOfLines = 0;
     UIStackView *stack = [[UIStackView alloc]
         initWithArrangedSubviews:@[self.spinner, self.statusLabel]];
     stack.axis = UILayoutConstraintAxisVertical;
@@ -94,6 +96,8 @@
     if (searchText.length == 0) {
         [[FFSearchService sharedService] cancel];
         self.searching = NO;
+        self.finished = NO;
+        self.lastQuery = nil;
         [self.results removeAllObjects];
         [self updateSearchBackground];
         [self.tableView reloadData];
@@ -122,6 +126,12 @@
         self.statusLabel.text = [NSString stringWithFormat:
             @"搜索中… 已找到 %lu 个结果", (unsigned long)self.results.count];
         self.tableView.backgroundView = self.searchBackdrop;
+    } else if (self.finished && self.lastQuery.length && self.results.count == 0) {
+        // 搜索完成但无结果：明确空状态，提示缩短关键词。
+        [self.spinner stopAnimating];
+        self.statusLabel.text = [NSString stringWithFormat:
+            @"没有找到“%@”\n尝试缩短关键词", self.lastQuery];
+        self.tableView.backgroundView = self.searchBackdrop;
     } else {
         [self.spinner stopAnimating];
         self.tableView.backgroundView = nil;
@@ -136,6 +146,7 @@
     if (query.length == 0) return;
     self.searching = YES;
     self.finished = NO;
+    self.lastQuery = query;
     [self.results removeAllObjects];
     [self updateSearchBackground];
     [self.tableView reloadData];
