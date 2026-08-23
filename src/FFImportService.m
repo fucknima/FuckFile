@@ -37,6 +37,12 @@ NSString * const FFAppGroupInboxFolder = @"SharedInbox";
         FFLogTag(@"Import", @"App Group 容器不可用（缺少 application-groups entitlement）");
         return 0;
     }
+    // 诊断：扩展是否真正启动过（viewDidLoad 会写 marker）。
+    NSURL *marker = [groupURL URLByAppendingPathComponent:@"ext-marker.txt"];
+    NSString *markerContent = [NSString stringWithContentsOfURL:marker
+        encoding:NSUTF8StringEncoding error:nil];
+    FFLogTag(@"Import", @"group container OK path=%@ marker=%@",
+        groupURL.path, markerContent ?: @"(absent)");
     NSURL *inbox = [groupURL URLByAppendingPathComponent:FFAppGroupInboxFolder];
     NSArray<NSString *> *names = [[NSFileManager defaultManager]
         contentsOfDirectoryAtPath:inbox.path error:nil];
