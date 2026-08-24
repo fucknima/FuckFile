@@ -723,19 +723,30 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)showFindBar
 {
+    // ① 确保 Runestone 输入视图持有焦点（键盘在/将弹出）。
+    if (!self.editorView.isFirstResponder) {
+        (void)[self.editorView becomeFirstResponder];
+    }
+    // ② 替换 accessory 后对真实输入视图 reload，附件立即生效。
     self.editorView.editorInputAccessoryView = self.findBar;
-    [self.editorView reloadInputViews];
-    if (!self.editorView.isFirstResponder) (void)[self.editorView becomeFirstResponder];
-    (void)[self.findField becomeFirstResponder];
-    [self updateFindButtons];
+    [self.editorView reloadEditorInputViews];
+    self.currentMatchIndex = -1;
     [self refreshFindMatches];
+    [self updateFindButtons];
+    // ③ 焦点交给查找框（位于附件内，键盘保持）。
+    (void)[self.findField becomeFirstResponder];
 }
 
 - (void)hideFindBar
 {
-    [self.findField resignFirstResponder];
+    (void)[self.findField resignFirstResponder];
+    (void)[self.replaceField resignFirstResponder];
+    // 先把编辑焦点还给编辑器，再换回 accessory，避免键盘消失/闪烁。
     self.editorView.editorInputAccessoryView = self.accessoryBar;
-    [self.editorView reloadInputViews];
+    [self.editorView reloadEditorInputViews];
+    if (!self.editorView.isFirstResponder) {
+        (void)[self.editorView becomeFirstResponder];
+    }
     [self.editorView clearSearchHighlights];
 }
 

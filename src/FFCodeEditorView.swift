@@ -200,17 +200,19 @@ final class FFCodeEditorView: UIView {
 
     // MARK: - Editing surface
 
-    @objc override var canBecomeFirstResponder: Bool { true }
-
+    // 只转发到 Runestone 的 TextInputView：wrapper 自身不得抢占
+    // first responder（那会挤掉真实输入视图、收起键盘）。
     @objc override func becomeFirstResponder() -> Bool {
-        super.becomeFirstResponder()
         return textView.becomeFirstResponder()
     }
 
     @objc override func resignFirstResponder() -> Bool {
-        let was = textView.resignFirstResponder()
-        _ = super.resignFirstResponder()
-        return was
+        return textView.resignFirstResponder()
+    }
+
+    // 让 accessory 互换立即生效：必须 reload 真实 TextInputView。
+    @objc func reloadEditorInputViews() {
+        textView.reloadInputViews()
     }
 
     @objc var editorInputAccessoryView: UIView? {
