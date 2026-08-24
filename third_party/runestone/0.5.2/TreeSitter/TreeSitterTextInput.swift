@@ -20,7 +20,7 @@ final class TreeSitterTextInput {
 
     func makeTSInput() -> TSInput {
         let payload = Unmanaged.passUnretained(self).toOpaque()
-        return TSInput(payload: payload, read: read, decode: nil, encoding: encoding)
+        return TSInput(payload: payload, read: read, encoding: encoding, decode: nil)
     }
 
     func deallocate() {
