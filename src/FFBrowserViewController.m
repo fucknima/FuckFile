@@ -92,6 +92,9 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 // 顶部布局：breadcrumb 锚定 view.topAnchor，动态常量 = 导航栏当前
 // frame 下缘（每帧从系统 frame 读取，不依赖 safeArea 的结算结果）。
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbTopInsetConstraint;
+// KVO 监听导航栏高度（搜索条顶置/深底集成切换时导航栏只有自身会触发
+// layout，本 VC 感知不到；监听 bounds 保证任何高度变化都及时改 topInset）。
+@property(nonatomic) BOOL navBarObserved;
 // 底部悬浮搜索条的真实高度：从 systemSearchBar 的 frame 实测换算。
 @property(nonatomic) CGFloat bottomChrome;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
@@ -304,6 +307,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     [super viewWillDisappear:animated];
     self.navigationController.toolbarHidden = YES;
+    [self stopObservingNavigationBar];
+}
+
+- (void)dealloc
+{
+    [self stopObservingNavigationBar];
 }
 
 // 布局结算后同步两个动态值（均为运行时实测，不猜常量）：
@@ -312,16 +321,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-
-    UINavigationController *nav = self.navigationController;
-    if (nav && nav.navigationBar.frame.size.height > 1) {
-        CGFloat barBottom = CGRectGetMaxY(nav.navigationBar.frame);
-        if (self.breadcrumbTopInsetConstraint.constant != barBottom) {
-            self.breadcrumbTopInsetConstraint.constant = barBottom;
-            FFLogTag(@"LayoutDiag", @"topInset=%.1f navBarMaxY=%.1f",
-                barBottom, barBottom);
-        }
-    }
+    [self updateTopInsetFromNavigationBar];
 
     if (!self.editing) {
         CGFloat pad = [self measuredBottomChrome];
@@ -331,6 +331,48 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         }
     }
     [self applySearchChromeInsets];
+}
+
+// 顶部动态常量：navigationBar.frame 的下缘。KVO 监听 bounds，
+// 搜索条顶置/底部集成切换时导航栏高度变化会第一时间对齐内容。
+- (void)updateTopInsetFromNavigationBar
+{
+    UINavigationController *nav = self.navigationController;
+    if (!nav || !nav.navigationBar) return;
+    if (!self.navBarObserved) {
+        self.navBarObserved = YES;
+        [nav.navigationBar addObserver:self forKeyPath:@"bounds"
+            options:0 context:NULL];
+    }
+    CGRect barFrame = nav.navigationBar.frame;
+    CGFloat barBottom = CGRectGetMaxY(barFrame);
+    // 转场进行中 frame 不可信（<20 或异常高）：保持上一值。
+    if (barBottom < 20 || barBottom > 400) return;
+    if (fabs(self.breadcrumbTopInsetConstraint.constant - barBottom) > 0.5) {
+        self.breadcrumbTopInsetConstraint.constant = barBottom;
+        FFLogTag(@"LayoutDiag", @"topInset=%.1f navBarMaxY=%.1f",
+            barBottom, barBottom);
+    }
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+    change:(NSDictionary *)change context:(void *)context
+{
+    UINavigationBar *observed = self.navigationController.navigationBar;
+    if (object == observed && [keyPath isEqualToString:@"bounds"]) {
+        [self updateTopInsetFromNavigationBar];
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (void)stopObservingNavigationBar
+{
+    UINavigationController *nav = self.navigationController;
+    if (nav && nav.navigationBar && self.navBarObserved) {
+        [nav.navigationBar removeObserver:self forKeyPath:@"bounds"];
+        self.navBarObserved = NO;
+    }
 }
 
 // 从系统 searchBar 的窗口坐标实测悬浮条高度（含底部留白）。
