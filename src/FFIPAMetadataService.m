@@ -39,6 +39,45 @@ static NSString *FFIPACacheKey(NSString *path)
     return [NSString stringWithFormat:@"%@#%@#%.0f", path, size, mtime.timeIntervalSince1970];
 }
 
+// ZIP writers are not required to emit explicit directory entries. A valid IPA
+// may therefore contain Payload/Foo.app/Info.plist without ever containing a
+// Payload/Foo.app/ entry. Derive the main bundle root from the Info.plist path
+// itself and only accept a first-level app directly below Payload so embedded
+// Watch apps / PlugIns are never mistaken for the main application.
+static NSString *FFIPAMainAppRoot(NSArray<FFArchiveEntry *> *entries)
+{
+    NSString *best = nil;
+    for (FFArchiveEntry *entry in entries) {
+        if (entry.isDirectory) continue;
+        NSString *path = [entry.entryPath stringByTrimmingCharactersInSet:
+            [NSCharacterSet characterSetWithCharactersInString:@"/"]];
+        NSArray<NSString *> *parts = path.pathComponents;
+        if (parts.count != 3) continue;
+        if (![parts[0] caseInsensitiveCompare:@"Payload"] == NSOrderedSame) continue;
+        if (![parts[1].pathExtension caseInsensitiveCompare:@"app"] == NSOrderedSame) continue;
+        if (![parts[2] caseInsensitiveCompare:@"Info.plist"] == NSOrderedSame) continue;
+        NSString *candidate = [NSString pathWithComponents:@[parts[0], parts[1]]];
+        if (!best || [candidate compare:best options:NSCaseInsensitiveSearch] == NSOrderedAscending)
+            best = candidate;
+    }
+
+    // Compatibility fallback for unusual archives that do have an explicit
+    // app directory but whose Info.plist could not be listed/decoded.
+    if (!best) {
+        for (FFArchiveEntry *entry in entries) {
+            NSString *trimmed = [entry.entryPath stringByTrimmingCharactersInSet:
+                [NSCharacterSet characterSetWithCharactersInString:@"/"]];
+            NSArray<NSString *> *parts = trimmed.pathComponents;
+            if (parts.count != 2) continue;
+            if (![parts[0] caseInsensitiveCompare:@"Payload"] == NSOrderedSame) continue;
+            if (![parts[1].pathExtension caseInsensitiveCompare:@"app"] == NSOrderedSame) continue;
+            best = trimmed;
+            break;
+        }
+    }
+    return best;
+}
+
 static NSArray<NSString *> *FFIPAIconNamesFromInfo(NSDictionary *info)
 {
     NSMutableArray<NSString *> *names = [NSMutableArray array];
@@ -53,7 +92,8 @@ static NSArray<NSString *> *FFIPAIconNamesFromInfo(NSDictionary *info)
     append(info[@"CFBundleIconName"]);
     for (NSString *iconsKey in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
         NSDictionary *icons = [info[iconsKey] isKindOfClass:NSDictionary.class] ? info[iconsKey] : nil;
-        NSDictionary *primary = [icons[@"CFBundlePrimaryIcon"] isKindOfClass:NSDictionary.class] ? icons[@"CFBundlePrimaryIcon"] : nil;
+        NSDictionary *primary = [icons[@"CFBundlePrimaryIcon"] isKindOfClass:NSDictionary.class]
+            ? icons[@"CFBundlePrimaryIcon"] : nil;
         append(primary[@"CFBundleIconFiles"]);
         append(primary[@"CFBundleIconName"]);
     }
@@ -89,7 +129,8 @@ static NSInteger FFIPAIconScore(NSString *entryPath, NSArray<NSString *> *declar
 - (FFIPAMetadata *)metadataForIPAAtPath:(NSString *)path error:(NSError **)error
 {
     if (!path.length) {
-        if (error) *error = [NSError errorWithDomain:@"FFIPA" code:1 userInfo:@{NSLocalizedDescriptionKey:@"IPA 路径为空"}];
+        if (error) *error = [NSError errorWithDomain:@"FFIPA" code:1
+            userInfo:@{NSLocalizedDescriptionKey:@"IPA 路径为空"}];
         return nil;
     }
     NSString *key = FFIPACacheKey(path);
@@ -100,32 +141,26 @@ static NSInteger FFIPAIconScore(NSString *entryPath, NSArray<NSString *> *declar
     NSArray<FFArchiveEntry *> *entries = [archive listEntries:path error:error];
     if (!entries) return nil;
 
-    NSString *appRoot = nil;
-    for (FFArchiveEntry *entry in entries) {
-        if (!entry.isDirectory || ![entry.entryPath hasPrefix:@"Payload/"]) continue;
-        NSString *trimmed = [entry.entryPath stringByTrimmingCharactersInSet:
-            [NSCharacterSet characterSetWithCharactersInString:@"/"]];
-        if ([trimmed.pathExtension.lowercaseString isEqualToString:@"app"] &&
-            trimmed.pathComponents.count == 2) {
-            appRoot = trimmed;
-            break;
-        }
-    }
+    NSString *appRoot = FFIPAMainAppRoot(entries);
     if (!appRoot) {
-        if (error) *error = [NSError errorWithDomain:@"FFIPA" code:2 userInfo:@{NSLocalizedDescriptionKey:@"归档中找不到 Payload/*.app"}];
+        if (error) *error = [NSError errorWithDomain:@"FFIPA" code:2
+            userInfo:@{NSLocalizedDescriptionKey:@"归档中找不到主应用 Payload/*.app/Info.plist"}];
         return nil;
     }
 
     NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
         [NSString stringWithFormat:@"ffipa-%@", NSUUID.UUID.UUIDString]];
-    [NSFileManager.defaultManager createDirectoryAtPath:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
+    [NSFileManager.defaultManager createDirectoryAtPath:tempDir
+        withIntermediateDirectories:YES attributes:nil error:nil];
 
     NSString *infoEntry = [appRoot stringByAppendingPathComponent:@"Info.plist"];
-    NSString *infoPath = [archive extractEntry:infoEntry fromArchive:path toDirectory:tempDir error:error];
+    NSString *infoPath = [archive extractEntry:infoEntry fromArchive:path
+        toDirectory:tempDir error:error];
     NSDictionary *info = infoPath ? [NSDictionary dictionaryWithContentsOfFile:infoPath] : nil;
     if (![info isKindOfClass:NSDictionary.class]) {
         [NSFileManager.defaultManager removeItemAtPath:tempDir error:nil];
-        if (error && !*error) *error = [NSError errorWithDomain:@"FFIPA" code:3 userInfo:@{NSLocalizedDescriptionKey:@"无法解析 IPA 中的 Info.plist"}];
+        if (error && !*error) *error = [NSError errorWithDomain:@"FFIPA" code:3
+            userInfo:@{NSLocalizedDescriptionKey:@"无法解析 IPA 中的 Info.plist"}];
         return nil;
     }
 
@@ -136,40 +171,57 @@ static NSInteger FFIPAIconScore(NSString *entryPath, NSArray<NSString *> *declar
     for (FFArchiveEntry *entry in entries) {
         if (entry.isDirectory || ![entry.entryPath hasPrefix:appPrefix]) continue;
         NSString *relative = [entry.entryPath substringFromIndex:appPrefix.length];
+        // Main app icon PNGs are normally at bundle root. Ignore nested
+        // extension/watch/resource icons so the app's own icon always wins.
         if ([relative containsString:@"/"]) continue;
         NSInteger score = FFIPAIconScore(entry.entryPath, declaredNames);
-        if (score > bestScore) { bestScore = score; bestIconEntry = entry.entryPath; }
+        if (score > bestScore) {
+            bestScore = score;
+            bestIconEntry = entry.entryPath;
+        }
     }
 
     UIImage *icon = nil;
     if (bestIconEntry && bestScore > 0) {
-        NSString *iconPath = [archive extractEntry:bestIconEntry fromArchive:path toDirectory:tempDir error:nil];
+        NSString *iconPath = [archive extractEntry:bestIconEntry fromArchive:path
+            toDirectory:tempDir error:nil];
         if (iconPath) icon = [UIImage imageWithContentsOfFile:iconPath];
     }
 
     FFIPAMetadata *metadata = [FFIPAMetadata new];
-    metadata.displayName = [info[@"CFBundleDisplayName"] isKindOfClass:NSString.class] ? info[@"CFBundleDisplayName"] :
-        ([info[@"CFBundleName"] isKindOfClass:NSString.class] ? info[@"CFBundleName"] : appRoot.lastPathComponent.stringByDeletingPathExtension);
-    metadata.bundleIdentifier = [info[@"CFBundleIdentifier"] isKindOfClass:NSString.class] ? info[@"CFBundleIdentifier"] : @"?";
-    metadata.version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class] ? info[@"CFBundleShortVersionString"] : @"?";
-    metadata.build = [info[@"CFBundleVersion"] isKindOfClass:NSString.class] ? info[@"CFBundleVersion"] : @"?";
-    metadata.minimumOS = [info[@"MinimumOSVersion"] isKindOfClass:NSString.class] ? info[@"MinimumOSVersion"] : @"?";
-    metadata.executableName = [info[@"CFBundleExecutable"] isKindOfClass:NSString.class] ? info[@"CFBundleExecutable"] : nil;
+    metadata.displayName = [info[@"CFBundleDisplayName"] isKindOfClass:NSString.class]
+        ? info[@"CFBundleDisplayName"]
+        : ([info[@"CFBundleName"] isKindOfClass:NSString.class]
+            ? info[@"CFBundleName"] : appRoot.lastPathComponent.stringByDeletingPathExtension);
+    metadata.bundleIdentifier = [info[@"CFBundleIdentifier"] isKindOfClass:NSString.class]
+        ? info[@"CFBundleIdentifier"] : @"?";
+    metadata.version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class]
+        ? info[@"CFBundleShortVersionString"] : @"?";
+    metadata.build = [info[@"CFBundleVersion"] isKindOfClass:NSString.class]
+        ? info[@"CFBundleVersion"] : @"?";
+    metadata.minimumOS = [info[@"MinimumOSVersion"] isKindOfClass:NSString.class]
+        ? info[@"MinimumOSVersion"] : @"?";
+    metadata.executableName = [info[@"CFBundleExecutable"] isKindOfClass:NSString.class]
+        ? info[@"CFBundleExecutable"] : nil;
     metadata.appBundlePath = appRoot;
     metadata.icon = icon;
 
     [self.cache setObject:metadata forKey:key];
     [NSFileManager.defaultManager removeItemAtPath:tempDir error:nil];
-    FFLogTag(@"IPA", @"metadata parsed %@ (%@) icon=%@", metadata.displayName, metadata.bundleIdentifier, icon ? @"yes" : @"no");
+    FFLogTag(@"IPA", @"metadata parsed %@ (%@) root=%@ icon=%@",
+        metadata.displayName, metadata.bundleIdentifier, appRoot, icon ? @"yes" : @"no");
     return metadata;
 }
 
-- (void)metadataForIPAAtPath:(NSString *)path completion:(void (^)(FFIPAMetadata *, NSError *))completion
+- (void)metadataForIPAAtPath:(NSString *)path
+                  completion:(void (^)(FFIPAMetadata *, NSError *))completion
 {
     dispatch_async(self.queue, ^{
         NSError *error = nil;
         FFIPAMetadata *metadata = [self metadataForIPAAtPath:path error:&error];
-        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(metadata, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(metadata, error);
+        });
     });
 }
 
