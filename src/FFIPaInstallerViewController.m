@@ -38,6 +38,11 @@
 - (void)parse
 {
     self.loading = YES;
+    self.failureMessage = nil;
+    self.metadata = nil;
+    self.navigationItem.rightBarButtonItem.enabled = NO;
+    [self.tableView reloadData];
+
     __weak typeof(self) weakSelf = self;
     [[FFIPAMetadataService sharedService] metadataForIPAAtPath:self.ipaPath
         completion:^(FFIPAMetadata *metadata, NSError *error) {
@@ -46,13 +51,19 @@
             self.loading = NO;
             if (!metadata) {
                 self.failureMessage = error.localizedDescription ?: @"无法解析 IPA";
-                self.navigationItem.rightBarButtonItem.enabled = NO;
             } else {
                 self.metadata = metadata;
                 self.navigationItem.rightBarButtonItem.enabled = YES;
             }
             [self.tableView reloadData];
         }];
+}
+
+- (void)openArchiveBrowser
+{
+    FFArchiveBrowserViewController *browser =
+        [[FFArchiveBrowserViewController alloc] initWithArchivePath:self.ipaPath];
+    [self.navigationController pushViewController:browser animated:YES];
 }
 
 - (void)installTapped
@@ -76,7 +87,8 @@
             style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 NSString *encoded = [self.ipaPath stringByAddingPercentEncodingWithAllowedCharacters:
                     NSCharacterSet.URLQueryAllowedCharacterSet];
-                NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"applestore://install?url=%@", encoded]];
+                NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
+                    @"applestore://install?url=%@", encoded]];
                 [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
                 FFLogTag(@"IPA", @"hand-off to TrollStore path=%@", self.ipaPath);
             }]];
@@ -89,9 +101,7 @@
     }
     [alert addAction:[UIAlertAction actionWithTitle:@"浏览压缩包"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            FFArchiveBrowserViewController *browser =
-                [[FFArchiveBrowserViewController alloc] initWithArchivePath:self.ipaPath];
-            [self.navigationController pushViewController:browser animated:YES];
+            [self openArchiveBrowser];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -118,32 +128,69 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section == 0 ? 1 : 6; }
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView
+{
+    return 2;
+}
+
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if (section == 0) return 1;
+    if (self.loading) return 1;
+    if (self.failureMessage.length || !self.metadata) return 2;
+    return 6;
+}
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell" forIndexPath:indexPath];
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    config.secondaryTextProperties.numberOfLines = 0;
     cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
     if (indexPath.section == 0) {
-        config.image = self.metadata.icon ?: [UIImage systemImageNamed:@"app"];
+        config.image = self.metadata.icon ?: [UIImage systemImageNamed:self.failureMessage.length ? @"exclamationmark.triangle" : @"app"];
         config.imageProperties.maximumSize = CGSizeMake(64, 64);
         config.imageProperties.cornerRadius = 13;
         if (self.metadata.icon) config.imageProperties.tintColor = nil;
-        config.text = self.loading ? @"正在解析…" : (self.failureMessage ?: self.metadata.displayName);
-        config.secondaryText = self.failureMessage ? nil : self.metadata.appBundlePath;
+        if (self.loading) {
+            config.text = @"正在解析 IPA…";
+            config.secondaryText = self.ipaPath.lastPathComponent;
+        } else if (self.failureMessage.length) {
+            config.text = @"无法读取应用信息";
+            config.secondaryText = self.failureMessage;
+        } else {
+            config.text = self.metadata.displayName;
+            config.secondaryText = self.metadata.appBundlePath;
+        }
         cell.contentConfiguration = config;
         return cell;
     }
 
-    if (self.failureMessage || self.loading || !self.metadata) {
-        config.text = self.failureMessage ?: @"解析中…";
+    if (self.loading) {
+        config.text = @"正在读取 Info.plist 与应用图标…";
         cell.contentConfiguration = config;
         return cell;
     }
+
+    if (self.failureMessage.length || !self.metadata) {
+        if (indexPath.row == 0) {
+            config.text = @"解析失败";
+            config.secondaryText = self.failureMessage ?: @"无法解析 IPA";
+            config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+        } else {
+            config.text = @"浏览压缩包";
+            config.secondaryText = @"查看 IPA 内部文件，确认归档结构";
+            config.image = [UIImage systemImageNamed:@"archivebox"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        }
+        cell.contentConfiguration = config;
+        return cell;
+    }
+
     switch (indexPath.row) {
         case 0: config.text = @"App 名称"; config.secondaryText = self.metadata.displayName; break;
         case 1: config.text = @"Bundle ID"; config.secondaryText = self.metadata.bundleIdentifier; break;
@@ -160,7 +207,7 @@
     return cell;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     return section == 0 ? nil : @"应用信息";
 }
@@ -168,7 +215,12 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 1 && indexPath.row == 5 && self.metadata) [self installTapped];
+    if (indexPath.section != 1) return;
+    if (self.failureMessage.length && indexPath.row == 1) {
+        [self openArchiveBrowser];
+        return;
+    }
+    if (self.metadata && indexPath.row == 5) [self installTapped];
 }
 
 @end
