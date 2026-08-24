@@ -67,7 +67,7 @@
 {
     id value = self.header[key];
     if ([value isKindOfClass:NSString.class]) return value;
-    if ([value isKindOfClass:NSNumber.class]) return value.stringValue;
+    if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
     return nil;
 }
 
@@ -77,7 +77,7 @@
     if (![custom isKindOfClass:NSDictionary.class]) return nil;
     id value = custom[key];
     if ([value isKindOfClass:NSString.class]) return value;
-    if ([value isKindOfClass:NSNumber.class]) return value.stringValue;
+    if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
     return nil;
 }
 
@@ -220,7 +220,7 @@
                                                                    forIndexPath:indexPath];
             UIListContentConfiguration *config = [cell defaultContentConfiguration];
             config.text = [self customHeaderString:@"sender"] ?: self.title;
-            config.text.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+            config.textProperties.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
             config.secondaryText = pair[1];
             config.secondaryTextProperties.numberOfLines = 0;
             config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
