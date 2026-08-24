@@ -5,7 +5,9 @@
 
 #import <arpa/inet.h>
 #import <errno.h>
+#import <fcntl.h>
 #import <netinet/in.h>
+#import <string.h>
 #import <sys/socket.h>
 #import <unistd.h>
 
