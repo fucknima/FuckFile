@@ -206,7 +206,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
     self.accessoryBar = [[FFEditorAccessoryBar alloc] initWithController:self];
     [self configureFindBar];
-    self.editorView.editorInputAccessoryView = self.accessoryBar;    UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
+    self.editorView.editorInputAccessoryView = self.accessoryBar;
+    UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
         UIBarButtonSystemItemSave target:self action:@selector(save)];
     save.enabled = NO;
     UIBarButtonItem *menu = [[UIBarButtonItem alloc] initWithTitle:@"⋯"
