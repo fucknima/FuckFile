@@ -126,6 +126,8 @@ FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 # Swift（vendored Runestone + FFCodeEditorView.swift）：
 # Bridging（FuckFile-Bridging-Header.h）导入 C 头（tree_sitter/api.h +
 # grammars.h）；-I include 路径供 `#include <tree_sitter/api.h>` 解析。
+# 注意：必须传绝对路径 —— theos 的 swiftc 调用目录不在项目根。
+FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/FuckFile-Bridging-Header.h
 FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
 FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit
