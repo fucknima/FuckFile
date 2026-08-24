@@ -5,6 +5,7 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 
+#import <limits.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -144,18 +145,17 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
         if (![NSBundle.mainBundle.bundleIdentifier
             isEqualToString:@"com.apple.mobile.MobileHouseArrest"]) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(NO, @"当前 App 身份不是 MobileHouseArrest。 ");
+                completion(NO, @"当前 App 身份不是 MobileHouseArrest。");
             });
             return;
         }
         if (!MCMBridgeAvailable()) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(NO, @"ContainerManager 接口不可用。 ");
+                completion(NO, @"ContainerManager 接口不可用。");
             });
             return;
         }
 
-        NSString *root = FFStorageRootPath();
         NSString *apps = FFAppDataVirtualPath();
         [NSFileManager.defaultManager createDirectoryAtPath:apps
             withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
