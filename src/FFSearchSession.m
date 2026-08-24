@@ -70,12 +70,12 @@ static const NSRange FFNoRange = {NSNotFound, 0};
 
 #pragma mark - Scan & publish
 
-- (NSRegularExpression *)regexForQuery:(NSString *)query
-                          regexEnabled:(BOOL)regex
++ (NSRegularExpression *)regexForQuery:(NSString *)query
+                          regexEnabled:(BOOL)regexEnabled
                          caseSensitive:(BOOL)caseSensitive
 {
     if (query.length == 0) return nil;
-    NSString *pattern = regex ? query : [NSRegularExpression escapedPatternForString:query];
+    NSString *pattern = regexEnabled ? query : [NSRegularExpression escapedPatternForString:query];
     NSRegularExpressionOptions options = NSRegularExpressionAnchorsMatchLines;
     if (!caseSensitive) options |= NSRegularExpressionCaseInsensitive;
     return [NSRegularExpression regularExpressionWithPattern:pattern options:options error:nil];
@@ -83,13 +83,13 @@ static const NSRange FFNoRange = {NSNotFound, 0};
 
 // 核心扫描：纯函数，输出升序/去重/合法 ranges。由 background/TEST 共用。
 + (NSArray<NSValue *> *)scanMatchesForQuery:(NSString *)query
-                               regexEnabled:(BOOL)regex
+                               regexEnabled:(BOOL)regexEnabled
                               caseSensitive:(BOOL)caseSensitive
                                        text:(NSString *)text
 {
     if (text.length == 0 || query.length == 0) return @[];
     NSRegularExpression *regex = [FFSearchSession regexForQuery:query
-                                  regexEnabled:regex caseSensitive:caseSensitive];
+                                  regexEnabled:regexEnabled caseSensitive:caseSensitive];
     if (!regex) return @[];
     NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
     [regex enumerateMatchesInString:text options:0 range:NSMakeRange(0, text.length)
