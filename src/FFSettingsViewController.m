@@ -3,7 +3,7 @@
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
 #import "FFSystemAccessManager.h"
-#import "MCMManager.h"
+#import "FFAppDataScanCoordinator.h"
 #import "FFThumbnailService.h"
 #import "FFLogger.h"
 
@@ -37,6 +37,10 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     [[NSNotificationCenter defaultCenter] addObserverForName:FFSystemAccessPreferenceDidChangeNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             [weakSelf reloadPreferences];
+            [weakSelf.tableView reloadData];
+        }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             [weakSelf.tableView reloadData];
         }];
 }
@@ -100,7 +104,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (access.state == FFSystemAccessStateFailed && access.failureReason.length)
         return [NSString stringWithFormat:@"高级系统访问启用失败：%@\n本地文件管理仍可正常使用。", access.failureReason];
     if (self.systemAccessEnabled)
-        return @"高级系统访问只增加 App Data 等受保护位置；本地文件始终使用同一个“设备存储”目录。关闭后本次进程已加载的能力不会强行卸载，下次启动恢复普通模式。";
+        return @"启用时先做快速能力探测，成功后立即可用；App Data 全量发现会在后台继续，不阻塞界面。关闭后本次进程已加载的能力不会强行卸载，下次启动恢复普通模式。";
     return @"默认关闭。关闭时不初始化高级系统访问组件，本地文件、搜索、收藏、最近访问等普通功能保持可用。";
 }
 
@@ -191,8 +195,11 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
             cell.textLabel.text = @"启用高级系统访问";
             switch (access.state) {
-                case FFSystemAccessStateLoading: cell.detailTextLabel.text = @"正在加载…"; break;
-                case FFSystemAccessStateReady: cell.detailTextLabel.text = @"本次会话已就绪"; break;
+                case FFSystemAccessStateLoading: cell.detailTextLabel.text = @"正在快速探测…"; break;
+                case FFSystemAccessStateReady:
+                    cell.detailTextLabel.text = FFAppDataScanCoordinator.sharedCoordinator.scanning
+                        ? @"已就绪 · App Data 后台扫描中" : @"本次会话已就绪";
+                    break;
                 case FFSystemAccessStateFailed: cell.detailTextLabel.text = @"启用失败，本地文件仍可用"; break;
                 case FFSystemAccessStateIdle: cell.detailTextLabel.text = @"等待加载"; break;
                 default: cell.detailTextLabel.text = @"普通文件管理模式"; break;
@@ -209,13 +216,16 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         case 4: {
             if (indexPath.row == 0) {
                 BOOL ready = FFSystemAccessManager.sharedManager.ready;
+                BOOL scanning = FFAppDataScanCoordinator.sharedCoordinator.scanning;
+                BOOL enabled = ready && !scanning;
                 cell.textLabel.text = @"重新扫描 App Data";
-                cell.detailTextLabel.text = ready ? @"重新发现可访问的 App 数据" : @"高级系统访问就绪后可用";
+                cell.detailTextLabel.text = scanning ? @"扫描进行中，请稍候"
+                    : (ready ? @"重新发现可访问的 App 数据" : @"高级系统访问就绪后可用");
                 cell.imageView.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-                cell.accessoryType = ready ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
-                cell.selectionStyle = ready ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
-                cell.textLabel.enabled = ready;
-                cell.detailTextLabel.enabled = ready;
+                cell.accessoryType = enabled ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+                cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+                cell.textLabel.enabled = enabled;
+                cell.detailTextLabel.enabled = enabled;
             } else {
                 cell.textLabel.text = @"运行日志";
                 cell.detailTextLabel.text = @"查看、分享、导出诊断信息";
@@ -266,12 +276,16 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     }
     if (indexPath.section == 4) {
         if (indexPath.row == 0) {
-            if (!FFSystemAccessManager.sharedManager.ready) return;
-            [[MCMManager sharedManager] rescanWithCompletion:^{
+            FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
+            if (!FFSystemAccessManager.sharedManager.ready || scan.scanning) return;
+            [self.tableView reloadData];
+            __weak typeof(self) weakSelf = self;
+            [scan scanWithCompletion:^{
+                [weakSelf.tableView reloadData];
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"扫描完成"
                     message:@"App 数据已重新扫描。" preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
+                if (weakSelf.view.window) [weakSelf presentViewController:alert animated:YES completion:nil];
             }];
         } else {
             [self.navigationController pushViewController:[FFLogViewController new] animated:YES];
@@ -341,7 +355,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 
     toggle.on = NO;
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"启用高级系统访问？"
-        message:@"启用后只会在“设备存储”中增加 App Data 等高级入口；本地文件目录不会切换。"
+        message:@"先快速验证访问能力；验证成功后立即可用，完整 App Data 扫描会在后台继续。"
         preferredStyle:UIAlertControllerStyleAlert];
     [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
@@ -354,12 +368,13 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
                 [weakSelf reloadPreferences];
                 [weakSelf.tableView reloadData];
                 NSString *title = loaded ? @"系统访问已启用" : @"系统访问启用失败";
-                NSString *message = loaded ? @"App Data 等高级入口已经可用。"
+                NSString *message = loaded
+                    ? @"高级访问已经可用；App Data 正在后台继续发现，不需要停留在此页面等待。"
                     : (access.failureReason ?: @"未能获得高级系统访问能力。本地文件管理不受影响。");
                 UIAlertController *result = [UIAlertController alertControllerWithTitle:title
                     message:message preferredStyle:UIAlertControllerStyleAlert];
                 [result addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-                [weakSelf presentViewController:result animated:YES completion:nil];
+                if (weakSelf.view.window) [weakSelf presentViewController:result animated:YES completion:nil];
             }];
         }]];
     [self presentViewController:confirm animated:YES completion:nil];
