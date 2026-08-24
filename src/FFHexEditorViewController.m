@@ -117,6 +117,9 @@ static const NSUInteger kPageSize = 64 * 1024;
     // Save enabled only with pending patches.
     self.navigationItem.rightBarButtonItems.firstObject.enabled =
         self.patches.count > 0;
+    // 「取消修改」同样只在有未保存修改时可点（避免点了没反应）。
+    self.navigationItem.rightBarButtonItems.lastObject.enabled =
+        self.patches.count > 0;
 }
 
 #pragma mark - Page reading

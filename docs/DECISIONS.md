@@ -525,3 +525,166 @@ Share Extension。
   （FFFileTaskManager removeTasks: 批量移除已完成任务）。
 - 设置页不新增 backend 不存在的选项（默认冲突策略、显示扩展名等仅写入
   PRODUCT 目标，待有实现后再进 UI）。
+
+## ADR-017
+
+日期：2026-08-24
+
+决定：
+
+**Preview & Editor Core Upgrade**：统一内容探测 / 统一文本编解码 / 正式代码编辑器
+（Runestone + Tree-sitter）/ Apple .ips 诊断查看器，并修掉文本误判根因。
+
+### 1. FFContentProbe（src/FFContentProbe.h/.m）
+
+内容类别判定统一由一个 Service 承担（UTF-8 文本 / UTF-16 文本 / JSON / XML /
+plist / SQLite / ZIP / IPS / 已知二进制 / 未知二进制）。采样头部 64 KB，绝不
+整读大文件。
+
+根因修复：旧 fallback 链是 UTF-8 → UTF-16 → **Latin-1** →「可打印比例」，
+任何二进制都能用 Latin-1 硬解出可见字符从而误入文本编辑器。现在：
+
+- `isTextData` 与 `decodeTextData` 彻底分离；
+- 自动判定只接受严格 UTF-8（拒绝 NUL、拒绝 surrogate、拒绝 overlong）与
+  UTF-16（BOM 或 NUL 位置启发式）；
+- **Latin-1 只保留在「用户强制以文本打开」路径**（FFTextCodec forcedEncoding）。
+
+### 2. FFTextCodec（src/FFTextCodec.h/.m）
+
+BOM / 编码 / 换行符的检测与编解码单点化：
+
+- 自动白名单：UTF-8、UTF-8 BOM、UTF-16 LE/BE（含无 BOM 的 NUL 启发式）；
+- 保存默认保持原编码 / 原 BOM / 原换行符（LF/CRLF/CR），不再无脑
+  `dataUsingEncoding:NSUTF8StringEncoding`；
+- 用户通过编辑器「⋯」菜单显式切换编码 / 换行符后，按用户选择保存；
+- 编码失败返回 nil（Encode 不含 Lossy），不会毁坏原文件（写入仍走
+  FFPathPolicy + NSDataWritingAtomic，失败原文件不变）。
+
+### 3. 正式 Code/Text Editor：Runestone + Tree-sitter
+
+选择 **Runestone 0.5.2（MIT）**（third_party/runestone/0.5.2，完整 vendored
+Swift 源）＋ **tree-sitter v0.25.10（MIT）C 运行库**＋ 16 个语言 grammar
+（独立仓库 tag 固定，见 ADR 附录「第三方版本表」）。理由：
+
+- Runestone 用真实 tree-sitter AST 做高亮/缩进/括号匹配/行号/不可见字符/
+  右括号联动删除（AvalonEdit 行模型 + 增量 parse）；用正则表达式做高亮
+  （ADR-011 已否决）无法获得等价质量且性能更差。
+- Theos 官方支持 Swift 应用目标（theos docs Swift: ObjC ↔ Swift 通过
+  `<instance>-Swift.h` / `<instance>-Bridging-Header.h` 互通）；ObjC 侧
+  与 Swift 侧通过唯一的适配层 **FFCodeEditorView.swift** 通信，第三方
+  API 不散落到项目其余位置。C 侧 bridging：FuckFile-Bridging-Header.h
+  （`#include <tree_sitter/api.h>` + `#include grammars.h`）。theos 对
+  Swift 是逐文件编译，module map 方案不可靠（-I 不会在每个文件生效），
+  vendored Runestone 的 `import TreeSitter` 已移除（13 处），改为纯
+  bridging header 暴露 C 声明；SwiftFLAGS 仅需
+  `-I$(PWD)/third_party/tree-sitter/include`。
+- wasm 支持被裁剪：运行时编译 11 个核心 .c（不含 wasm_store）＋
+  third_party/tree-sitter/wasm_stub.c 桩（ts_language_is_wasm 恒 false，
+  桩函数按 api.h 原型补齐，实际不可达，防止未定义符号）。
+
+支持语言（grammar → 扩展名）：
+
+tree-sitter-c（c/h）、cpp（cpp/cc/cxx/hpp）、objc（m/objc；mm 用 cpp）、
+swift、python（py）、javascript（js/mjs）、typescript（ts）与 tsx、
+json、html（html/htm）、css、bash（sh/zsh）、sql、yaml（yml）、
+xml、markdown（md）。未知扩展名 → PlainTextLanguageMode。
+
+### 4. 大文件策略（写进代码与文档）
+
+- ≤ 2 MB：完整编辑 + 语法高亮（tree-sitter 全文件解析）；
+- 2 MB ～ 8 MB：完整编辑，**禁用树高亮**（轻量文本模式，避免大文件全量
+  parse 卡顿/内存）；
+- \> 8 MB：只读，仅显示前 1 MB 并标注「已超过编辑上限」（分段只读预览）。
+
+所有读取在后台队列完成，主线程不阻塞。阈值用常量记录在
+FFTextEditorViewController.m 顶部。
+
+### 5. Apple .ips 诊断查看器
+
+- 新 viewerID `diagnostic`（显示名「系统诊断查看器」，图标 stethoscope）；
+  默认关联 `ips → diagnostic`，用户覆盖仍优先（关联系统三件套不动，
+  仅 FFDefaultAssociations() 加一行）；
+- FFIPSParser（src/FFIPSParser.m）：findHeaderJSON边界扫描（字符串/转义安全）→
+  取顶层 JSON（bug_type/custom_headers → declaredCompression）→ 有 payload 时
+  先标准 zlib inflate，**Z_DATA_ERROR 后回退 raw DEFLATE（inflateInit2(-15)）**——
+  真实样本的 Header 声称 zlib 但 payload 是 raw DEFLATE，metadata 不可全信；
+- 解压边界：输出上限 64 MB、压缩比上限 256:1、超限/截断/损坏均返回明确
+  失败状态（DecompressFailed / DecompressBomb），**不允许 OOM**；解析全程
+  后台队列；
+- RHWN：FFRHWNDecoder 只输出可确认信息（magic RHWN、数据总大小、可打印
+  字符串段、ASCII 预览）。**版本/字段一律不猜**：没有公开格式说明且无多样本
+  验证前，不展示「版本」，更不杜撰网络延迟/码率等含义；
+- Diagnostic Viewer 本体是 inset-grouped 表格（概览 / RHWN 或 Payload /
+  操作），「操作」全部复用既有链路：原始 Header→只读文本视图、
+  查看解码 Payload→按探测路由（json/xml/text→text，bplist→plist，
+  RHWN/binary→hex）、原文件 Hex→hex、导出 Payload→ Documents 写入 +
+  Share Sheet。**没有复制 Hex/文本实现**。
+
+### 6. PreviewRouter fallback 重构
+
+用 FFContentProbe 替换「plist 嗅探 → 文本嗅探 → QuickLook → Hex」中的
+Latin-1 文本判断。binary 一律 QuickLook/Hex，不再进文本编辑器；同时保持
+Browser/Search/Favorites/Recents 共用同一个 Router（零行为变化，只换
+探测后端）。
+
+### 7. CodeMirror 结论
+
+Plan B（CodeMirror 6 + WKWebView）**未采用**：Theos/ObjC 构建链下
+Runestone 方案通过既有 Swift 支持可行；WKWebView 方案会失去原生文本编辑
+体验（中文输入法组合、原生选择/撤销、键盘 accessory 稳定挂载都是原生
+控件更可靠），且编辑器核心换成 JS 会引入第二个事实来源。仓库未保留任何
+CodeMirror 代码。
+
+### 8. 明确不做
+
+- 不为 RHWN/私有格式猜字段；
+- 不写 Tree-sitter grammar 或手写高亮正则；
+- 不引入终端/脚本执行；
+- 不恢复 DEB 能力。
+
+### 附录：第三方版本表（全部 vendored，构建不联网）
+
+| 组件 | 来源 & tag | commit | License |
+|---|---|---|---|
+| Runestone | simonbs/Runestone 0.5.2 | 592434a103a4d1ab83e14f87ac6eef569dd7a99d | MIT |
+| tree-sitter | tree-sitter/tree-sitter v0.25.10 | 208c6cac1453315e979f05ab34b6d4f7cd0340be | MIT |
+| tree-sitter-c | v0.23.6 | ec69f91b23dd8630d68710b911d77127146ff7ef | MIT |
+| tree-sitter-cpp | v0.23.3 | 26edde9453cd06c72910d198acf07c6dd702fe56 | MIT |
+| tree-sitter-objc | tree-sitter-grammars v3.0.0 | 12b85fa6ea3767271adffd7bae86bf83060f7170 | MIT |
+| tree-sitter-swift | alex-pinkus 0.7.3-with-generated-files | 31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5 | MIT |
+| tree-sitter-python | v0.23.6 | bffb65a8cfe4e46290331dfef0dbf0ef3679de11 | MIT |
+| tree-sitter-javascript | v0.23.1 | 3a837b6f3658ca3618f2022f8707e29739c91364 | MIT |
+| tree-sitter-typescript | v0.23.2 | f975a621f4e7f532fe322e13c4f79495e0a7b2e7 | MIT |
+| tree-sitter-json | v0.24.8 | ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24 | MIT |
+| tree-sitter-html | v0.23.2 | 5a5ca8551a179998360b4a4ca2c0f366a35acc03 | MIT |
+| tree-sitter-css | v0.23.2 | c0d581e32d183a536731ed6c3a72758b27e20411 | MIT |
+| tree-sitter-bash | v0.23.3 | 487734f87fd87118028a65a4599352fa99c9cde8 | MIT |
+| tree-sitter-yaml | tree-sitter-grammars v0.7.2 | 7708026449bed86239b1cd5bce6e3c34dbca6415 | MIT |
+| tree-sitter-xml | tree-sitter-grammars v0.7.0 | 4b64dd3a03ec002258d6268d712fd93716d6ab57 | MIT |
+| tree-sitter-markdown | tree-sitter-grammars v0.5.2 | aca7767daa8bbe3daddafc312c34be88383c828b | MIT |
+| tree-sitter-sql | gortexhq/tree-sitter-sql main（LANG 15，支持 scanner） | 5fb86e3b9a6762c2bc86adb6811e602d347bbc08 | MIT |
+
+grammar 选择基准：LANGUAGE_VERSION ≤ 14（新于 tree-sitter 0.25 起 runtime 声明的
+LANG_VERSION 15，见 0.25.10 api.h；0.23.x tag 的 parser.c 多为 0.25 CLI 重新生成，
+需 runtime >= 0.25）且各自仓库既有生成好的 parser.c/scanner.c（不自造生成步骤）。
+
+## ADR-018
+
+日期：2026-08-24
+
+决定：
+
+**弃用 Apple .ips 系统诊断查看器，删除全部相关代码。**
+
+删除：FFIPSParser、FFRHWNDecoder、FFDiagnosticViewController、Viewer Registry
+中的 `diagnostic` viewer、文件关联 `ips → diagnostic`、FFContentProbe 的 IPS
+检测分支、tests/self_check.m 的 IPS 用例；docs 同步（PRODUCT/ROADMAP/ARCHITECTURE
+移除、TODO 标注下线）。ADR-017 保留作为历史记录。
+
+原因（产品决策）：.ips 诊断查看实际使用率极低，维持「Header/压缩/RHWN
+安全识别」的成本（zlib/raw DEFLATE 双通道、防炸弹边界、RHWN 不猜字段的
+克制）与其无收益不成比例。弃用后该格式回归 内容探测 fallback 链（文本→
+QuickLook→Hex）。
+
+约束：不恢复任何 .ips 专用分支；后续若重新需要，应以「真实样本验证过的
+完整解析器」为准重新立项。

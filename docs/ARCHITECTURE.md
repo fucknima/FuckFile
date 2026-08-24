@@ -347,3 +347,30 @@ UI 更新回到 MainActor。
 Debug 时保留详细日志。
 
 Release 避免泄漏敏感路径及账户信息。
+
+
+查看器表新增：
+
+| viewer ID | 名称 | 实现 |
+
+## 代码/文本编辑器（2026-08-24，ADR-017）
+
+```text
+FFTextEditorViewController (ObjC: 保存/未保存/编码菜单/查找/快捷键)
+        ↓
+FFCodeEditorView.swift (@objc 适配层，第三方 API 唯一入点)
+        ↓
+Runestone 0.5.2 (vendored, MIT)  ────  Tree-sitter v0.24.7 (vendored, MIT)
+        ↓                                ↓
+16 个语言 grammar（third_party/tree-sitter-languages，tag 固定）
+```
+
+- theos Swift：`FuckFile-Files 含 .swift` → swiftc `-module-name FuckFile`，
+  ObjC 侧 `#import "FuckFile-Swift.h"`；Swift 侧 C 声明经
+  `FuckFile-Bridging-Header.h`（tree_sitter/api.h + grammars.h）与
+  TreeSitter module map（third_party/tree-sitter/module.modulemap）。
+- 大文件阈值（FFTextEditorViewController.m 常量）：
+  2 MB 高亮/编辑 → 8 MB 编辑无高亮 → 超 8 MB 只读预览前 1 MB。
+- language queries 打进 bundle `Languages/<lang>/highlights.scm`；
+  Runestone Theme.xcassets 由 CI actool 与 AppIcon 合并进 Assets.car
+  （Swift 侧提供 Bundle.module = Bundle.main shim）。
