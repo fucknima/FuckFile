@@ -4,10 +4,17 @@ on:
   push:
     branches:
       - '**'
-  pull_request:
-    branches:
-      - main
+      - '!build-counter'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 全仓库统一串行分配“成功构建号”。失败不会写回 build-counter，
+# 下一次仍复用该候选号；只有完整构建、签名、打包、上传均成功才 +1。
+concurrency:
+  group: fuckfile-successful-build-counter
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -15,6 +22,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+        with:
+          fetch-depth: 1
+
+      - name: Resolve next successful build number
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin build-counter --depth=1
+          CURRENT="$(git show FETCH_HEAD:BUILD_NUMBER | tr -d '[:space:]')"
+          if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+            echo "Invalid BUILD_NUMBER on build-counter: $CURRENT" >&2
+            exit 1
+          fi
+          NEXT=$((CURRENT + 1))
+          echo "BUILD_NUMBER=$NEXT" >> "$GITHUB_ENV"
+          echo "IPA_NAME=FuckFile-build-${NEXT}.ipa" >> "$GITHUB_ENV"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" Info.plist
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ShareExtension/Info.plist >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" ShareExtension/Info.plist
+          else
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $NEXT" ShareExtension/Info.plist
+          fi
+          echo "Candidate successful build: $NEXT"
 
       - name: Install Theos
         run: |
@@ -53,7 +84,8 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
-          echo "Branch: ${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          echo "Branch: ${GITHUB_REF_NAME}"
+          echo "Build: ${BUILD_NUMBER}"
 
           APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
           EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
@@ -67,12 +99,12 @@ jobs:
             echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
           fi
 
-          # Normalize Info.plists explicitly so package validation does not
-          # depend on Theos staging side effects.
           cp Info.plist "$APP/Info.plist"
           cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_BUILD/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
           plutil -lint "$APP/Info.plist"
           plutil -lint "$EXT_BUILD/Info.plist"
 
@@ -89,17 +121,12 @@ jobs:
             --output-partial-info-plist "$APP/icon-partial-info.plist"
           test -f "$APP/Assets.car"
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
-          echo "== editor language resources =="
-          test -d "$APP/Languages/c" && ls "$APP/Languages" | head -20
+          test -d "$APP/Languages/c"
 
           rm -rf "$APP/PlugIns/FuckFileShare.appex"
           mkdir -p "$APP/PlugIns"
           ditto "$EXT_BUILD" "$APP/PlugIns/FuckFileShare.appex"
           EXT="$APP/PlugIns/FuckFileShare.appex"
-
-          echo "== LCSign-parity plist verification =="
-          plutil -p "$APP/Info.plist"
-          plutil -p "$EXT/Info.plist"
 
           [ "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :UISupportsDocumentBrowser' "$APP/Info.plist")" = "true" ] || exit 1
@@ -109,31 +136,42 @@ jobs:
           [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")" = "FFShareViewController" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionActivationRule:NSExtensionActivationSupportsFileWithMaxCount' "$EXT/Info.plist")" = "25" ] || exit 1
 
-          echo "== Share extension Mach-O =="
           file "$EXT/FuckFileShare"
           otool -l "$EXT/FuckFileShare" | grep -A3 LC_MAIN
-
-          # Sign nested code first, then the containing app.
           codesign --force -s - "$EXT"
           codesign --force -s - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-          echo "== Embedded signatures/entitlements (diagnostic) =="
-          codesign -d --entitlements :- "$APP" 2>/dev/null || true
-          codesign -d --entitlements :- "$EXT" 2>/dev/null || true
-
-          rm -rf Payload FuckFile.ipa
+          rm -rf Payload "$IPA_NAME"
           mkdir -p Payload
           ditto "$APP" Payload/FuckFile.app
-          zip -qry FuckFile.ipa Payload
+          zip -qry "$IPA_NAME" Payload
 
-          test -f FuckFile.ipa
-          unzip -l FuckFile.ipa | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
-          echo "IPA: $(pwd)/FuckFile.ipa ($(du -h FuckFile.ipa | cut -f1))"
+          test -f "$IPA_NAME"
+          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
+          echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
-      - name: Upload artifact
+      - name: Upload build ${{ env.BUILD_NUMBER }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: FuckFile-unsigned-ipa
-          path: FuckFile.ipa
+          name: FuckFile-build-${{ env.BUILD_NUMBER }}
+          path: ${{ env.IPA_NAME }}
           if-no-files-found: error
+
+      # 只有上面所有步骤成功才执行。提交只发生在 build-counter 分支，
+      # 该分支被 workflow trigger 排除，因此不会形成自触发循环。
+      - name: Commit successful build number
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "FuckFile Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          rm -rf /tmp/ff-build-counter
+          git fetch origin build-counter --depth=1
+          git worktree add --detach /tmp/ff-build-counter FETCH_HEAD
+          cd /tmp/ff-build-counter
+          git checkout -B build-counter
+          printf '%s\n' "$BUILD_NUMBER" > BUILD_NUMBER
+          git add BUILD_NUMBER
+          git commit -m "Build ${BUILD_NUMBER} succeeded"
+          git push origin HEAD:build-counter
