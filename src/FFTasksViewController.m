@@ -69,7 +69,6 @@
     BOOL empty = self.activeTasks.count == 0 && self.historyTasks.count == 0;
     if (!empty) {
         self.tableView.backgroundView = nil;
-        if (@available(iOS 17.0, *)) self.contentUnavailableConfiguration = nil;
         return;
     }
 
@@ -78,8 +77,7 @@
         config.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
         config.text = @"还没有任务";
         config.secondaryText = @"复制、移动、压缩、解压等操作会显示在这里";
-        self.contentUnavailableConfiguration = config;
-        self.tableView.backgroundView = nil;
+        self.tableView.backgroundView = [[UIContentUnavailableView alloc] initWithConfiguration:config];
         return;
     }
 
