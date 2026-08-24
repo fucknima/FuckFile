@@ -4,6 +4,7 @@
 #import <arpa/inet.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <limits.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
@@ -67,11 +68,11 @@ static int FFConnectLoopback(void)
     return -1;
 }
 
-BOOL FFLocalShareBridgeSendInbox(NSString *inboxPath, NSString *token,
+BOOL FFLocalShareBridgeSendInbox(NSString *inboxPath, NSString *sessionID, NSString *token,
                                  NSUInteger *sentCount, NSError **error)
 {
     if (sentCount) *sentCount = 0;
-    if (!inboxPath.length || !token.length) {
+    if (!inboxPath.length || !sessionID.length || !token.length) {
         if (error) *error = [NSError errorWithDomain:@"FFLocalShareBridge" code:1
             userInfo:@{NSLocalizedDescriptionKey: @"本地分享桥接参数无效"}];
         return NO;
@@ -85,6 +86,10 @@ BOOL FFLocalShareBridgeSendInbox(NSString *inboxPath, NSString *token,
         NSString *payload = [itemDir stringByAppendingPathComponent:@"payload"];
         NSString *metadataPath = [itemDir stringByAppendingPathComponent:@"metadata.plist"];
         NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath] ?: @{};
+        NSString *itemSession = [metadata[@"session"] isKindOfClass:NSString.class]
+            ? metadata[@"session"] : nil;
+        if (![itemSession isEqualToString:sessionID]) continue;
+
         BOOL isDirectory = NO;
         if (![fm fileExistsAtPath:payload isDirectory:&isDirectory] || isDirectory) continue;
         NSNumber *size = [fm attributesOfItemAtPath:payload error:nil][NSFileSize];
@@ -100,7 +105,7 @@ BOOL FFLocalShareBridgeSendInbox(NSString *inboxPath, NSString *token,
 
     if (items.count == 0) {
         if (error) *error = [NSError errorWithDomain:@"FFLocalShareBridge" code:2
-            userInfo:@{NSLocalizedDescriptionKey: @"没有可直传的共享文件"}];
+            userInfo:@{NSLocalizedDescriptionKey: @"没有可直传的本次共享文件"}];
         return NO;
     }
 
