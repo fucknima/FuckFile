@@ -31,18 +31,28 @@ NSArray<NSString *> *FFManagedSystemEntryNames(void)
     return @[@"AppData", @"App Data", @"ACCESS MAP.txt"];
 }
 
+static BOOL FFIsManagedRootName(NSString *name)
+{
+    if (!name.length) return NO;
+    if ([FFManagedSystemEntryNames() containsObject:name]) return YES;
+    // MCM advanced probes are intentionally namespaced this way. Keep the
+    // predicate generic so future [MHA-*] links do not leak into normal mode.
+    return [name hasPrefix:@"[MHA-"];
+}
+
 BOOL FFPathRequiresSystemAccess(NSString *path)
 {
     if (!path.length) return NO;
     NSString *candidate = path.stringByStandardizingPath;
     NSString *root = FFStorageRootPath().stringByStandardizingPath;
-    for (NSString *name in FFManagedSystemEntryNames()) {
-        NSString *managed = [root stringByAppendingPathComponent:name].stringByStandardizingPath;
-        if ([candidate isEqualToString:managed] ||
-            [candidate hasPrefix:[managed stringByAppendingString:@"/"]])
-            return YES;
-    }
-    return NO;
+    if (![candidate isEqualToString:root] &&
+        ![candidate hasPrefix:[root stringByAppendingString:@"/"]])
+        return NO;
+
+    NSString *relative = [candidate substringFromIndex:root.length];
+    while ([relative hasPrefix:@"/"]) relative = [relative substringFromIndex:1];
+    NSString *firstComponent = relative.pathComponents.firstObject;
+    return FFIsManagedRootName(firstComponent);
 }
 
 static void FFRemoveGeneratedSymlinksInDirectory(NSString *directory)
@@ -71,6 +81,17 @@ void FFPrepareStorageRootForNormalMode(void)
     // never delete a real user-created file or directory tree.
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"AppData"]);
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"App Data"]);
+
+    // Root-level [MHA-*] entries are generated advanced-access symlinks too
+    // (for example MobileGestalt). They must not survive into normal mode.
+    for (NSString *name in [NSFileManager.defaultManager
+            contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
+        if (![name hasPrefix:@"[MHA-"]) continue;
+        NSString *path = [root stringByAppendingPathComponent:name];
+        struct stat st = {0};
+        if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode))
+            unlink(path.fileSystemRepresentation);
+    }
 
     NSString *map = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
     struct stat st = {0};
