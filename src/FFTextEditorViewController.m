@@ -702,9 +702,11 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [vstack.trailingAnchor constraintEqualToAnchor:self.findBar.trailingAnchor],
     ]];
 
-    // 关键：查找栏是「两个输入框自己的 accessory」，谁获得焦点都带着它。
-    // 若是挂在编辑器文本视图上，输入框一接管焦点原 accessory 就被系统丢弃
-    // （表现为点输入框工具栏消失、键盘收起）。
+    // 归属协议（与 showFindBar/hideFindBar 配合，缺一不可）：
+    // 1) 每个输入框自己的 inputAccessoryView = findBar —— field 接管焦点时
+    //    bar 由 field 侧继续持有（不会像挂在编辑器上那样被系统丢弃）；
+    // 2) 打开时先借编辑器把同一根 findBar 带入 window，field 才能成为
+    //    first responder（UIKit 拒绝给不在窗口中的控件焦点）。
     self.findField.inputAccessoryView = self.findBar;
     self.replaceField.inputAccessoryView = self.findBar;
 }
@@ -728,11 +730,21 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)showFindBar
 {
+    // 编辑器必须持有键盘且 findBar 在窗口内，field 才可能接管焦点：
+    // 1. 编辑器成为 first responder（⋯/⌘F 路径键盘未弹时先弹）；
+    if (!self.editorView.isFirstResponder) {
+        (void)[self.editorView becomeFirstResponder];
+    }
+    // 2. 把 findBar 临时挂到编辑器的 inputAccessoryView —— 此刻 bar 进入
+    //    window，其子 view（findField/replaceField）才具备成为
+    //    responder 的资格（UIKit 拒绝授予「不在窗口」的控件焦点）。
+    self.editorView.editorInputAccessoryView = self.findBar;
+    [self.editorView reloadEditorInputViews];
     self.currentMatchIndex = -1;
     [self refreshFindMatches];
     [self updateFindButtons];
-    // 输入框自己带 accessory（findBar），获得焦点即带出键盘+查找栏；
-    // 编辑器文本视图自动释放焦点，不再有 accessory 被丢弃的问题。
+    // 3. 焦点交给查找框：该输入框自己的 accessory 就是同一根 findBar，
+    //    焦点交接后 bar 由 field 侧继续持有，不会消失。
     (void)[self.findField becomeFirstResponder];
 }
 
@@ -740,9 +752,13 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 {
     (void)[self.findField resignFirstResponder];
     (void)[self.replaceField resignFirstResponder];
-    // 焦点还给编辑器：恢复「编辑」accessory 与光标。
-    (void)[self.editorView becomeFirstResponder];
     [self.editorView clearSearchHighlights];
+    // 焦点归还编辑器前先把「编辑」accessory 挂回去，避免键盘带回查找栏。
+    self.editorView.editorInputAccessoryView = self.accessoryBar;
+    if (!self.editorView.isFirstResponder) {
+        (void)[self.editorView becomeFirstResponder];
+    }
+    [self.editorView reloadEditorInputViews];
 }
 
 - (void)findTextChanged:(__unused UITextField *)field

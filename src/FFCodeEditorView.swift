@@ -210,6 +210,11 @@ final class FFCodeEditorView: UIView {
         return textView.resignFirstResponder()
     }
 
+    // 让 accessory 互换立即生效：必须 reload 真实 TextInputView。
+    @objc func reloadEditorInputViews() {
+        textView.reloadInputViews()
+    }
+
     @objc var editorInputAccessoryView: UIView? {
         get { textView.inputAccessoryView }
         set { textView.inputAccessoryView = newValue }
