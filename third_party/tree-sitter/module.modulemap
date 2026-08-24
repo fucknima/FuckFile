@@ -1,5 +1,0 @@
-module TreeSitter [system] {
-  header "include/tree_sitter/api.h"
-  header "grammars.h"
-  export *
-}

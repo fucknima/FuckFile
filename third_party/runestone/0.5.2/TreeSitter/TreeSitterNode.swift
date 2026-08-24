@@ -1,4 +1,3 @@
-import TreeSitter
 
 final class TreeSitterNode {
     let rawValue: TSNode

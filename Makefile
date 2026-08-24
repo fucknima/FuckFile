@@ -124,9 +124,9 @@ FuckFile_CCFLAGS = $(FuckFile_CFLAGS) -Wno-implicit-function-declaration
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
 # Swift（vendored Runestone + FFCodeEditorView.swift）：
-# -I$(PWD)/third_party/tree-sitter 使 swiftc 找到 TreeSitter module map
-#  (module.modulemap)，Runestone 的 `import TreeSitter` 直接可用。
-FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter
+# Bridging（FuckFile-Bridging-Header.h）导入 C 头（tree_sitter/api.h +
+# grammars.h）；-I include 路径供 `#include <tree_sitter/api.h>` 解析。
+FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
 FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit
 FuckFile_LIBRARIES = z sqlite3

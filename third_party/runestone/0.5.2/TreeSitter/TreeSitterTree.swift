@@ -1,4 +1,3 @@
-import TreeSitter
 
 final class TreeSitterTree {
     let pointer: OpaquePointer

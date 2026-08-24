@@ -1,4 +1,3 @@
-import TreeSitter
 
 final class TreeSitterTextPoint {
     var row: UInt32 {

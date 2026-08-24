@@ -1,4 +1,3 @@
-import TreeSitter
 
 final class TreeSitterTextRange {
     let rawValue: TSRange
