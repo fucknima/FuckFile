@@ -11,6 +11,7 @@ APPEX_NAME = FuckFileShare
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFSystemAccessManager.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
@@ -29,6 +30,8 @@ FuckFile_FILES = \
 	src/FFTextEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
+	src/FFPdfReaderViewController.m \
+	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
