@@ -9,7 +9,6 @@
 #import "FFAppDataScanCoordinator.h"
 #import "FFStorageEnvironment.h"
 #import "FFPathPolicy.h"
-#import "MCMManager.h"
 #import "FFFileTaskManager.h"
 #import "FFLogger.h"
 
@@ -53,28 +52,26 @@
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
-        object:nil queue:nil usingBlock:^(NSNotification *note) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSDictionary *info = note.userInfo;
-                if ([info[@"Scanning"] isKindOfClass:NSNumber.class]) {
-                    weakSelf.scanInProgress = [info[@"Scanning"] boolValue];
-                    weakSelf.scanProgress = [info[@"Progress"] isKindOfClass:NSNumber.class]
-                        ? [info[@"Progress"] doubleValue] : 0;
-                    weakSelf.scanTotal = [info[@"Total"] isKindOfClass:NSNumber.class]
-                        ? [info[@"Total"] unsignedIntegerValue] : 0;
-                    weakSelf.scanLinked = [info[@"Linked"] isKindOfClass:NSNumber.class]
-                        ? [info[@"Linked"] unsignedIntegerValue] : 0;
-                    if (!weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
-                }
-                [weakSelf reloadStatus];
-            });
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            NSDictionary *info = note.userInfo;
+            weakSelf.scanInProgress = [info[@"Scanning"] boolValue];
+            weakSelf.scanProgress = [info[@"Progress"] doubleValue];
+            weakSelf.scanTotal = [info[@"Total"] unsignedIntegerValue];
+            weakSelf.scanLinked = [info[@"Linked"] unsignedIntegerValue];
+            if (!weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
+            [weakSelf reloadStatus];
         }];
     [[NSNotificationCenter defaultCenter] addObserverForName:FFFileTaskManagerDidChangeNotification
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
     [self reloadStatus];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -92,11 +89,6 @@
 {
     FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
     FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
-
-    // Refresh is deliberately inert while enabling or scanning. The previous
-    // implementation queued another full rescan while the first async LS pass
-    // was still running, causing duplicate ContainerManager traffic and UI
-    // stalls. There must be at most one discovery pass in flight.
     if (!access.enabled || !access.ready || access.state == FFSystemAccessStateLoading ||
         scan.scanning || self.scanInProgress) {
         [self reloadStatus];
@@ -106,9 +98,7 @@
     self.scanInProgress = YES;
     [self reloadStatus];
     __weak typeof(self) weakSelf = self;
-    [scan scanWithCompletion:^{
-        [weakSelf reloadStatus];
-    }];
+    [scan scanWithCompletion:^{ [weakSelf reloadStatus]; }];
 }
 
 - (void)reloadStatus
@@ -147,10 +137,7 @@
 
 #pragma mark - Table view
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
-{
-    return 3;
-}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
