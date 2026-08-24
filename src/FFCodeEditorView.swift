@@ -10,14 +10,10 @@
 import UIKit
 import Foundation
 
-/// theos 下没有 SPM 资源包；Bundle.module 指向主 bundle。
 extension Bundle {
     static var module: Bundle { .main }
 }
 
-/// 编辑器回调（ObjC 侧以 block 注入，跨语言边界稳定）。
-
-/// 可设置的字符对（自动闭合）。
 final class FFSimpleCharacterPair: CharacterPair {
     let leading: String
     let trailing: String
@@ -27,7 +23,6 @@ final class FFSimpleCharacterPair: CharacterPair {
     }
 }
 
-/// 单文件语言配置（parser 指针 + 可选 highlights query 资源名）。
 final class FFLanguageSpec {
     let language: UnsafePointer<TSLanguage>
     let queryResource: String?
@@ -47,7 +42,6 @@ private let ffLanguages: [String: FFLanguageSpec] = {
     add(["c", "h"], tree_sitter_c(), query: "c")
     add(["cpp", "cc", "cxx", "hpp", "inl"], tree_sitter_cpp(), query: "cpp")
     add(["m", "objc"], tree_sitter_objc(), query: "objc")
-    // .mm 用 cpp grammar（ObjC++ 高亮以 cpp 为主，比无高亮强）。
     add(["mm"], tree_sitter_cpp(), query: "cpp")
     add(["swift"], tree_sitter_swift(), query: "swift")
     add(["py", "python"], tree_sitter_python(), query: "python")
@@ -74,11 +68,16 @@ final class FFCodeEditorView: UIView {
 
     private let textView = TextView()
     private var characterPairList: [CharacterPair] = []
+    private var currentLanguageSpec: FFLanguageSpec?
 
-    // 键盘高度（含 inputAccessoryView——keyboardFrameEndUserInfoKey 的
-    // frame 覆盖整个键盘窗口区）。Runestone 的 TextView 不维护任何键盘
-    // contentInset，滚动定位必须用这个实测值计算可见区。
-    private var keyboardHeight: CGFloat = 0
+    // 搜索定位不能使用“屏幕高度 - 键盘高度”猜 viewport，也不能把
+    // firstRect(for:) 当文档绝对坐标直接写 contentOffset。保存系统给出的
+    // 键盘 screen frame，定位时统一转换到 window 坐标并与编辑器/附件求交。
+    private var keyboardEndFrameInScreen: CGRect = .null
+
+    // Previous/Next 连续快速点击时，旧一次定位的 async 校正必须失效。
+    // 否则旧 match 的延迟 layout 回调会在新 match 已选中后再次改 contentOffset。
+    private var searchNavigationGeneration: UInt64 = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -137,13 +136,9 @@ final class FFCodeEditorView: UIView {
 
     @objc private func ffKeyboardFrameChanged(_ notification: Notification) {
         if let endValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue {
-            let endFrame = endValue.cgRectValue
-            // 屏幕坐标系：键盘顶边 = 屏幕高度 - frame.minY（Home 指示条也被
-            // 计入 frame 高度，minY 即键盘/附件可见顶边）。
-            let screenHeight = UIScreen.main.bounds.height
-            keyboardHeight = max(0, screenHeight - endFrame.minY)
-        } else {
-            keyboardHeight = 0 // 无 frame 信息（hide 场景）
+            keyboardEndFrameInScreen = endValue.cgRectValue
+        } else if notification.name == UIResponder.keyboardWillHideNotification {
+            keyboardEndFrameInScreen = .null
         }
     }
 
@@ -185,7 +180,6 @@ final class FFCodeEditorView: UIView {
         }
     }
 
-    /// 启用/禁用语法高亮（第 2 档大文件降级：禁用 tree-sitter 语言模式）。
     @objc func setLanguageEnabled(_ enabled: Bool) {
         let mode: LanguageMode
         if enabled, let spec = currentLanguageSpec {
@@ -206,13 +200,10 @@ final class FFCodeEditorView: UIView {
         textView.setLanguageMode(mode)
     }
 
-    /// 根据扩展名（不含点）设置语言并启用高亮。
     @objc func setLanguageForExtension(_ ext: String) {
         currentLanguageSpec = ffLanguages[ext.lowercased()]
         setLanguageEnabled(currentLanguageSpec != nil)
     }
-
-    private var currentLanguageSpec: FFLanguageSpec?
 
     private static func queryForResource(name: String) -> TreeSitterLanguage.Query? {
         var candidates: [URL] = []
@@ -225,14 +216,11 @@ final class FFCodeEditorView: UIView {
                 return query
             }
         }
-        // 兜底：读主 bundle 顶层（开发未打包资源时）。
         return nil
     }
 
     // MARK: - Editing surface
 
-    // 只转发到 Runestone 的 TextInputView：wrapper 自身不得抢占
-    // first responder（那会挤掉真实输入视图、收起键盘）。
     @objc override func becomeFirstResponder() -> Bool {
         return textView.becomeFirstResponder()
     }
@@ -241,7 +229,6 @@ final class FFCodeEditorView: UIView {
         return textView.resignFirstResponder()
     }
 
-    // 让 accessory 互换立即生效：必须 reload 真实 TextInputView。
     @objc func reloadEditorInputViews() {
         textView.reloadInputViews()
     }
@@ -265,51 +252,147 @@ final class FFCodeEditorView: UIView {
         textView.goToLine(max(0, line - 1))
     }
 
-    /// 选区定位 + 光标滚动。
     @objc func selectRange(_ range: NSRange) {
-        let length = min(range.length, max(0, (textView.text as NSString).length - range.location))
-        textView.selectedRange = NSRange(location: range.location, length: max(0, length))
-        textView.scrollRangeToVisible(textView.selectedRange)
-    }
-
-    /// 选区定位并把命中行滚动到搜索工具条上方（不要居中：键盘区域会遮挡）。
-    /// firstRect(for:) 为内容坐标（LayoutManager 用 line.yPosition + inset）。
-    @objc func selectRangeCentered(_ range: NSRange) {
-        let length = min(range.length, max(0, (textView.text as NSString).length - range.location))
-        guard length > 0 else { return }
+        let nsText = textView.text as NSString
+        guard range.location != NSNotFound, range.location <= nsText.length else { return }
+        let length = min(range.length, nsText.length - range.location)
         let target = NSRange(location: range.location, length: length)
         textView.selectedRange = target
+        textView.scrollRangeToVisible(target)
+    }
+
+    /// Previous / Next 共用的唯一搜索定位路径。
+    ///
+    /// 修复两个独立问题：
+    /// 1. Runestone 对远距离 range 会懒布局，第一次 firstRect(for:) 不能作为
+    ///    文档绝对 y 直接赋给 contentOffset；旧实现因此会跳到 100/200/300
+    ///    行等无关位置，等相关区域布局过一次后才“看起来正常”。
+    /// 2. 连续快速点 ↑/↓ 时，多次 animated setContentOffset 会重叠，旧动画/
+    ///    延迟 layout 可能在新 match 选中后继续改 offset。
+    ///
+    /// 现在先让 Runestone 自己 scrollRangeToVisible 物化目标布局，再在下一轮
+    /// 主线程用 UITextInput 契约返回的 rect 转到 window 坐标；按真实 keyboard
+    /// + inputAccessoryView 遮挡计算 effective viewport，只做 delta 校正。
+    @objc func selectRangeCentered(_ range: NSRange) {
+        let nsText = textView.text as NSString
+        guard range.location != NSNotFound,
+              range.location <= nsText.length,
+              range.length > 0 else { return }
+
+        let length = min(range.length, nsText.length - range.location)
+        guard length > 0 else { return }
+        let target = NSRange(location: range.location, length: length)
+
+        searchNavigationGeneration &+= 1
+        let generation = searchNavigationGeneration
+
+        // 终止上一项还在进行的 UIScrollView 动画，避免 Previous/Next 快速交替时
+        // 旧动画在新选择之后继续落地。
+        textView.setContentOffset(textView.contentOffset, animated: false)
+        textView.selectedRange = target
+
+        // 第一步只负责让 Runestone 建立远距离目标的 layout fragment。
+        textView.scrollRangeToVisible(target)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.correctSearchSelectionViewport(target,
+                                                 generation: generation,
+                                                 remainingPasses: 2)
+        }
+    }
+
+    private func correctSearchSelectionViewport(_ target: NSRange,
+                                                generation: UInt64,
+                                                remainingPasses: Int) {
+        guard generation == searchNavigationGeneration,
+              NSEqualRanges(textView.selectedRange, target),
+              let window = textView.window else { return }
+
+        textView.layoutIfNeeded()
         guard
-            let start = textView.position(from: textView.beginningOfDocument, offset: target.location),
-            let end = textView.position(from: textView.beginningOfDocument, offset: NSMaxRange(target)),
+            let start = textView.position(from: textView.beginningOfDocument,
+                                          offset: target.location),
+            let end = textView.position(from: textView.beginningOfDocument,
+                                        offset: NSMaxRange(target)),
             let uiRange = textView.textRange(from: start, to: end)
         else {
             textView.scrollRangeToVisible(target)
             return
         }
-        let rect = textView.firstRect(for: uiRange)
-        if rect.isNull || rect.height == 0 {
-            textView.scrollRangeToVisible(target)
+
+        let localRect = textView.firstRect(for: uiRange)
+        guard !localRect.isNull, !localRect.isInfinite,
+              localRect.height > 0 else {
+            if remainingPasses > 0 {
+                textView.scrollRangeToVisible(target)
+                DispatchQueue.main.async { [weak self] in
+                    self?.correctSearchSelectionViewport(target,
+                                                         generation: generation,
+                                                         remainingPasses: remainingPasses - 1)
+                }
+            }
             return
         }
-        // 可见区 = bounds - 实测键盘（含查找工具条）高度。
-        // Runestone 不维护 contentInset.bottom（已读源码确认，
-        // KeyboardObserver 只做自动滚光标），不能用 inset 估算。
-        let visibleHeight = max(200, textView.bounds.height - keyboardHeight)
-        // 锚点：可见区底部往上 ~120pt —— 命中行出现在查找工具条上方，不被挡。
-        let anchorY = max(120, visibleHeight - 120)
-        let targetY = rect.midY - anchorY
-        let maxY = max(0, textView.contentSize.height +
-            textView.contentInset.top + textView.contentInset.bottom - textView.bounds.height)
-        let clampedY = min(max(0, targetY), maxY)
-        textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: clampedY),
-                                  animated: true)
+
+        let matchFrame = textView.convert(localRect, to: window)
+        var visibleFrame = textView.convert(textView.bounds, to: window)
+            .intersection(window.bounds)
+        guard !visibleFrame.isNull, visibleFrame.height > 1 else { return }
+
+        // keyboardFrameEndUserInfoKey 是 screen coordinate space；转换到当前 window。
+        if !keyboardEndFrameInScreen.isNull {
+            let keyboardFrame = window.convert(keyboardEndFrameInScreen,
+                                               from: window.screen.coordinateSpace)
+            if keyboardFrame.intersects(visibleFrame) {
+                visibleFrame.size.height = max(0, keyboardFrame.minY - visibleFrame.minY)
+            }
+        }
+
+        // 某些 iOS 版本 keyboard notification 的 frame 不含自定义 accessory；
+        // 直接读取实际 findBar/accessory 的 window frame 再收一次底边。
+        if let accessory = textView.inputAccessoryView,
+           accessory.window === window {
+            let accessoryFrame = accessory.convert(accessory.bounds, to: window)
+            if accessoryFrame.intersects(visibleFrame) {
+                visibleFrame.size.height = max(0, accessoryFrame.minY - visibleFrame.minY)
+            }
+        }
+
+        // 太小的 viewport 不做强制居中，但仍保留上面的系统 scrollRangeToVisible。
+        guard visibleFrame.height >= 80 else { return }
+
+        // 当前命中放在实际可见正文的 42% 高度，略偏上，Prev/Next 完全同路。
+        let desiredY = visibleFrame.minY + visibleFrame.height * 0.42
+        let deltaY = matchFrame.midY - desiredY
+        guard abs(deltaY) > 1 else { return }
+
+        let insets = textView.adjustedContentInset
+        let minY = -insets.top
+        let maxY = max(minY,
+            textView.contentSize.height - textView.bounds.height + insets.bottom)
+        let proposedY = textView.contentOffset.y + deltaY
+        let clampedY = min(max(proposedY, minY), maxY)
+
+        // 搜索导航要求确定性，禁用动画；快速连点不会累积动画状态。
+        textView.setContentOffset(
+            CGPoint(x: textView.contentOffset.x, y: clampedY), animated: false)
+
+        // 自动换行 / lazy layout 在第一次校正后 contentSize/rect 可能细微变化。
+        // 同 generation 最多再验一次；一旦用户点到另一项，generation 立即失效。
+        if remainingPasses > 0 {
+            DispatchQueue.main.async { [weak self] in
+                self?.correctSearchSelectionViewport(target,
+                                                     generation: generation,
+                                                     remainingPasses: remainingPasses - 1)
+            }
+        }
     }
 
-    /// 高亮一批查找命中。
     @objc func setSearchHighlights(_ ranges: [NSValue]) {
         textView.highlightedRanges = ranges.map {
-            HighlightedRange(range: $0.rangeValue, color: UIColor.systemYellow.withAlphaComponent(0.3), cornerRadius: 2)
+            HighlightedRange(range: $0.rangeValue,
+                             color: UIColor.systemYellow.withAlphaComponent(0.3),
+                             cornerRadius: 2)
         }
     }
 
@@ -317,7 +400,6 @@ final class FFCodeEditorView: UIView {
         textView.highlightedRanges = []
     }
 
-    /// 批量替换（单次 undo）。ranges 基于当前文本。
     @objc func applyReplacements(_ ranges: [NSValue], texts: [String]) {
         var replacements: [BatchReplaceSet.Replacement] = []
         for (index, value) in ranges.enumerated() {
@@ -326,20 +408,14 @@ final class FFCodeEditorView: UIView {
             replacements.append(BatchReplaceSet.Replacement(range: range, text: replacementText))
         }
         if !replacements.isEmpty {
-            // 逆序应用会破坏相对 range（BatchReplaceSet 需要相对于当前文本
-            // 的 range）；Runestone 在一次批处理内部按倒序替换，因此这里
-            // 直接按其约定传入即可（见 TextView.replaceText(in:)）。
             textView.replaceText(in: BatchReplaceSet(replacements: replacements))
         }
     }
 
-    /// 当前文本（查找用）。
     @objc func currentText() -> String {
         textView.text
     }
 }
-
-// MARK: - TextViewDelegate 桥接（Swift 侧）
 
 extension FFCodeEditorView: TextViewDelegate {
     func textViewDidChange(_ textView: TextView) {
