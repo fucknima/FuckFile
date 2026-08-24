@@ -113,7 +113,7 @@ static const unsigned long kFFIPSMaxCompressionRatio = 256;
     if ([customHeaders isKindOfClass:NSDictionary.class]) {
         id value = customHeaders[@"compression"];
         if ([value isKindOfClass:NSString.class]) compression = value;
-        if ([value isKindOfClass:NSNumber.class]) compression = value.stringValue;
+        if ([value isKindOfClass:NSNumber.class]) compression = [value stringValue];
     }
     if (!compression.length && [header[@"compression"] isKindOfClass:NSString.class]) {
         compression = header[@"compression"];

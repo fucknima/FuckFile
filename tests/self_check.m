@@ -233,14 +233,8 @@ static void testIPS(void)
     result = [FFIPSParser parseData:garbage];
     CHECK(result.status == FFIPSStatusNotIPS, @"ips-garbage");
 
-    // E. 超高压缩比炸弹：大输入压缩后宣称超大输出。
-    NSMutableData *huge = [NSMutableData dataWithLength:1000 * 1024 * 1024]; // 1GB zeros
-    memset(huge.mutableBytes, 'A', huge.length);
-    memset(huge.mutableBytes, 0, 16 * 1024);
-    NSData *zipPayload = [FFIPSParser parseData:garbage];
-    // 构造 real bomb via FFIPSParser limits: 禁止真正分配 1GB；用 zlib 打满输出。
-    (void)zipPayload;
-    NSData *compressed = CompressZlib([NSData dataWithLength:128 * 1024 * 1024], MAX_WBITS); // high ratio zeros
+    // E. 超高压缩比炸弹：高比率压缩输入 → 解压超过 64MB/256:1 上限。
+    NSData *compressed = CompressZlib([NSMutableData dataWithLength:128 * 1024 * 1024], MAX_WBITS); // high ratio zeros
     NSMutableData *bombIPS = [plain mutableCopy];
     [bombIPS appendData:compressed];
     result = [FFIPSParser parseData:bombIPS];
