@@ -30,6 +30,14 @@ jobs:
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
+      - name: Self-check core logic (probe/codec/IPS)
+        run: |
+          clang -fobjc-arc -framework Foundation -lz -I src \
+            tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
+            src/FFIPSParser.m src/FFRHWNDecoder.m \
+            -o /tmp/ff_selfcheck
+          /tmp/ff_selfcheck
+
       - name: Build app and share extension
         run: |
           export THEOS=/opt/theos
@@ -66,6 +74,7 @@ jobs:
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
 
           xcrun actool Assets.xcassets \
+            third_party/runestone/0.5.2/Theme.xcassets \
             --compile "$APP" \
             --platform iphoneos \
             --minimum-deployment-target 15.0 \
@@ -74,6 +83,8 @@ jobs:
             --output-partial-info-plist "$APP/icon-partial-info.plist"
           test -f "$APP/Assets.car"
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
+          echo "== editor language resources =="
+          test -d "$APP/Languages/c" && ls "$APP/Languages" | head -20
 
           rm -rf "$APP/PlugIns/FuckFileShare.appex"
           mkdir -p "$APP/PlugIns"

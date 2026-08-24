@@ -9,6 +9,7 @@
 #import "FFSQLiteBrowserViewController.h"
 #import "FFArchiveBrowserViewController.h"
 #import "FFIPaInstallerViewController.h"
+#import "FFDiagnosticViewController.h"
 #import "FFPreviewRouter.h"
 #import "FFLogger.h"
 
@@ -155,6 +156,7 @@
         NSArray *specs = @[
             @[@"image",     @"图片浏览器",     @"photo",                 @"PNG/JPG/GIF/HEIC/WEBP/BMP/TIFF/ICO/CAR"],
             @[@"quicklook", @"快速查看",       @"square.on.square.intersection.dashed", @"系统 Quick Look：无专用查看器文件的兜底预览"],
+            @[@"diagnostic", @"系统诊断查看器", @"stethoscope",           @"Apple .ips 诊断文件：Header/压缩 Payload/RHWN 安全解析"],
             @[@"web",       @"Web Viewer",     @"safari",                @"HTML/HTM 本地页面；.url/.webloc 网页快捷方式"],
             @[@"plist",     @"属性表编辑器",   @"list.bullet.rectangle", @"结构化编辑 plist（XML/二进制）"],
             @[@"text",      @"文本编辑器",     @"doc.plaintext",         @"txt/log/md/json/xml/源码等文本；脚本仅按文本打开，不执行"],
@@ -248,6 +250,7 @@ navigationController:(UINavigationController *)nav
     if ([viewerID isEqualToString:@"media"])     return [self mediaViewerAtPath:path];
     if ([viewerID isEqualToString:@"plist"])     return [[FFPlistEditorViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"text"])      return [[FFTextEditorViewController alloc] initWithPath:path];
+    if ([viewerID isEqualToString:@"diagnostic"]) return [[FFDiagnosticViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"pdf"])       return [[FFPdfPreviewViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"quicklook"]) return [[FFQuickLookViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"web"])       return [[FFWebViewerViewController alloc] initWithFilePath:path];

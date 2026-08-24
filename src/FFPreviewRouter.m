@@ -7,6 +7,8 @@
 #import "FFHexEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
+#import "FFContentProbe.h"
+#import "FFTextCodec.h"
 
 #import <objc/runtime.h>
 #import "FFLogger.h"
@@ -65,65 +67,68 @@ navigationController:(UINavigationController *)nav
 
 #pragma mark - Content-detection fallback
 
-// 未命中任何关联时按内容判断：属性表 → 文本（大文件分段只读）→
-// Quick Look → 十六进制编辑器。只采样前 4MB，绝不整读大文件。
+// 未命中任何关联时按内容判断：plist → 文本（大文件只读预览）→
+// Quick Look → 十六进制编辑器。只采样 64 KB，绝不整读大文件；
+// 文本判定 = FFContentProbe（UTF-8/UTF-16 两路），二进制不再误入
+// 文本编辑器（禁止 Latin-1 自动兜底）。
 + (void)presentContentFallback:(FFEntry *)item nav:(UINavigationController *)nav
 {
     unsigned long long fileSize = 0;
     NSDictionary *attrs = [NSFileManager.defaultManager
         attributesOfItemAtPath:item.path error:nil];
     fileSize = [attrs[NSFileSize] unsignedLongLongValue];
-    BOOL large = fileSize > 4 * 1024 * 1024;
-    NSData *data = nil;
-    if (large) {
-        NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:item.path];
-        data = [handle readDataOfLength:4 * 1024 * 1024];
-        [handle closeFile];
-    } else {
-        data = [NSData dataWithContentsOfFile:item.path];
-    }
-    if (!data) {
-        [self alertOnNav:nav title:nil message:@"读取文件失败"];
-        return;
-    }
 
-    // 二进制 plist 嗅探：内容是字典/数组就走结构化编辑器。
-    if (data.length > 0 && !large) {
-        NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
-        id plist = [NSPropertyListSerialization propertyListWithData:data
-            options:NSPropertyListImmutable format:&format error:nil];
-        if ([plist isKindOfClass:NSDictionary.class] ||
-            [plist isKindOfClass:NSArray.class]) {
+    FFContentKind kind = [FFContentProbe contentKindOfFile:item.path];
+
+    // 属性表：二进制 plist / XML plist（可靠嗅探命中才进结构化编辑器；
+    // 只处理小文件，避免整读）。
+    if (kind == FFContentKindPlist) {
+        if (fileSize <= 8 * 1024 * 1024) {
             FFPlistEditorViewController *editor =
                 [[FFPlistEditorViewController alloc] initWithPath:item.path];
             editor.title = item.displayName.length ? item.displayName : item.name;
             [nav pushViewController:editor animated:YES];
             return;
         }
+        // 超大 plist：交给 Quick Look 兜底链。
+        [self fallbackToQuickLookOrHex:item nav:nav];
+        return;
     }
 
-    // 文本嗅探（采样前 4096 字节）。
-    NSString *candidate = [self stringFromData:data];
-    if (candidate && [self looksTextual:candidate]) {
-        if (!large) {
+    // 文本（严格 UTF-8/UTF-16，绝无 Latin-1）或 JSON/XML（结构层已确认是文本）。
+    BOOL textLike = (kind == FFContentKindTextUTF8 ||
+                     kind == FFContentKindTextUTF16 ||
+                     kind == FFContentKindJSON ||
+                     kind == FFContentKindXML);
+    if (textLike) {
+        if (fileSize <= 4 * 1024 * 1024) {
             FFTextEditorViewController *editor =
                 [[FFTextEditorViewController alloc] initWithPath:item.path];
             editor.title = item.displayName.length ? item.displayName : item.name;
             [nav pushViewController:editor animated:YES];
             return;
         }
-        // 大文本：前 1MB 只读预览。
-        NSString *preview = [candidate substringToIndex:
-            MIN(candidate.length, (NSUInteger)1024 * 1024)];
-        preview = [preview stringByAppendingFormat:
-            @"\n\n… 文件较大（%@），仅显示前 1 MB，只读预览。",
-            [NSByteCountFormatter stringFromByteCount:(long long)fileSize
-                countStyle:NSByteCountFormatterCountStyleFile]];
-        [self presentText:item.name body:preview navigationController:nav];
+        // 大文本：前 1 MB 只读预览。
+        NSString *candidate = [self readFirstText:item.path maxBytes:1024 * 1024];
+        if (candidate) {
+            NSString *preview = candidate;
+            preview = [preview stringByAppendingFormat:
+                @"\n\n… 文件较大（%@），仅显示前 1 MB，只读预览。\n要编辑请从「文本编辑器」关联打开（编辑器内为只读模式）。",
+                [NSByteCountFormatter stringFromByteCount:(long long)fileSize
+                    countStyle:NSByteCountFormatterCountStyleFile]];
+            [self presentText:item.name body:preview navigationController:nav];
+            return;
+        }
+        [self fallbackToQuickLookOrHex:item nav:nav];
         return;
     }
 
-    // Quick Look：系统认识但 FuckFile 无专用查看器的格式。
+    // 已确认二进制：绝不进文本编辑器。
+    [self fallbackToQuickLookOrHex:item nav:nav];
+}
+
++ (void)fallbackToQuickLookOrHex:(FFEntry *)item nav:(UINavigationController *)nav
+{
     UIViewController *quickLook =
         [[FFQuickLookViewController alloc] initWithFilePath:item.path];
     if (quickLook) {
@@ -131,8 +136,6 @@ navigationController:(UINavigationController *)nav
         [nav pushViewController:quickLook animated:YES];
         return;
     }
-
-    // 最后兜底：真正的分页十六进制编辑器。
     UIViewController *hex =
         [[FFHexEditorViewController alloc] initWithFilePath:item.path];
     if (hex) {
@@ -144,26 +147,30 @@ navigationController:(UINavigationController *)nav
     [self alertOnNav:nav title:nil message:@"无法预览该文件"];
 }
 
-+ (NSString *)stringFromData:(NSData *)data
+// 以 FFTextCodec 严格解码读取前 maxBytes（UTF-8/UTF-16 自动识别）。
+// 返回 nil 表示该前缀不是合法文本（无法解码）。
++ (NSString *)readFirstText:(NSString *)path maxBytes:(NSUInteger)maxBytes
 {
-    NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (utf8) return utf8;
-    NSString *utf16 = [[NSString alloc] initWithData:data encoding:NSUTF16StringEncoding];
-    if (utf16) return utf16;
-    return [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-}
-
-// 文本识别基于采样：只检查前 4096 字节，不拿整个文件长度比较。
-+ (BOOL)looksTextual:(NSString *)candidate
-{
-    if (candidate.length == 0) return YES;
-    NSUInteger printable = 0;
-    NSUInteger sample = MIN(candidate.length, (NSUInteger)4096);
-    for (NSUInteger i = 0; i < sample; i++) {
-        unichar c = [candidate characterAtIndex:i];
-        if (c >= 0x20 && c != 0x7F) printable++;
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!handle) return nil;
+    NSData *data = [handle readDataOfLength:maxBytes];
+    [handle closeFile];
+    if (data.length == 0) return @"";
+    FFTextEncoding encoding = FFTextEncodingUTF8;
+    BOOL bom = NO;
+    FFLineEnding lineEnding = FFLineEndingLF;
+    NSString *text = [FFTextCodec decodeData:data encoding:&encoding
+                                          bom:&bom lineEnding:&lineEnding];
+    if (!text) {
+        // 单通道失败：如果是 UTF-16 半字符截断，去掉奇数字节重试。
+        if (data.length % 2 == 1) {
+            NSData *trimmed = [data subdataWithRange:
+                NSMakeRange(0, data.length - 1)];
+            text = [FFTextCodec decodeData:trimmed encoding:&encoding
+                                       bom:&bom lineEnding:&lineEnding];
+        }
     }
-    return printable * 10 >= sample * 9;
+    return text;
 }
 
 #pragma mark - Text viewer
