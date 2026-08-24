@@ -4,6 +4,7 @@
 #import "FFImportService.h"
 #import "FFSharedInboxService.h"
 #import "FFShareBridge.h"
+#import "FFSystemAccessManager.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -44,8 +45,6 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
-    // 全 App 统一 Inline 标题（ADR-013）：标题由系统放在顶部导航栏，
-    // 不再出现正文区域的大标题占位。
     navigation.navigationBar.translucent = NO;
     navigation.navigationBar.prefersLargeTitles = NO;
 
@@ -55,26 +54,20 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     navigation.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
-    // MCM is needed for the class-4 Extension Data bridge when a re-signer
-    // strips/denies App Group entitlements. Start it in parallel, then drain
-    // the shared inbox again once leases are available.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"MCM start begin");
-        [[MCMManager sharedManager] start];
-        FFLog(@"MCM start done");
+    // Advanced system access is opt-in. A normal launch must not initialize
+    // the MCM bypass path at all. If enabled, load it in the background and
+    // retry the shared inbox after the leases become available.
+    [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
+        if (!loaded) return;
         [self processSharedInboxShowingResult:NO];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"FFProbeFinished" object:nil];
-        });
-    });
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"FFProbeFinished" object:nil];
+    }];
 
-    // Drain an App Group inbox immediately if one exists. The class-4 bridge
-    // will be retried after MCM start above.
+    // App Group based sharing remains available in normal mode. The MCM-backed
+    // fallback is only retried after advanced system access is loaded above.
     [self processSharedInboxShowingResult:NO];
 
-    // With LSSupportsOpeningDocumentsInPlace=NO (LCSign parity), document-open
-    // deliveries are normally copied into our Inbox and are stable local URLs.
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     if (incoming) {
         FFLogTag(@"Import", @"launchOptions file=%@", incoming.path);
@@ -231,9 +224,6 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     NSString *target = directory.stringByStandardizingPath;
     FFBrowserViewController *existing = nil;
 
-    // Idempotent navigation: an Imported browser is a destination, not a new
-    // screen instance per import. Reuse the existing controller if it is
-    // already anywhere in the stack, otherwise push exactly one.
     for (UIViewController *controller in navigation.viewControllers) {
         if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
         FFBrowserViewController *browser = (FFBrowserViewController *)controller;
