@@ -51,10 +51,6 @@
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
 
-    // UITableView may resize its backgroundView after assignment. The previous
-    // stack had no horizontal width constraint, so a multi-line UILabel could
-    // collapse to a one-character column (Chinese text rendered vertically).
-    // Build the background with Auto Layout and pin the stack to a safe width.
     self.searchBackdrop = [[UIView alloc] initWithFrame:self.tableView.bounds];
     self.searchBackdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth |
         UIViewAutoresizingFlexibleHeight;
@@ -76,14 +72,20 @@
     stack.spacing = 10;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.searchBackdrop addSubview:stack];
+
+    NSLayoutConstraint *preferredWidth =
+        [stack.widthAnchor constraintEqualToAnchor:self.searchBackdrop.widthAnchor constant:-64];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [stack.centerXAnchor constraintEqualToAnchor:self.searchBackdrop.centerXAnchor],
         [stack.topAnchor constraintEqualToAnchor:self.searchBackdrop.topAnchor constant:60],
         [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.searchBackdrop.leadingAnchor constant:32],
         [stack.trailingAnchor constraintLessThanOrEqualToAnchor:self.searchBackdrop.trailingAnchor constant:-32],
+        preferredWidth,
         [stack.widthAnchor constraintLessThanOrEqualToConstant:420],
         [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
     ]];
+
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"清空历史" style:UIBarButtonItemStylePlain
         target:self action:@selector(clearHistoryTapped)];
@@ -178,17 +180,21 @@
     [[FFSearchService sharedService] startSearch:query
         underRoot:searchRoot
         batch:^(NSArray<FFFoundItem *> *batch) {
-            [weakSelf.results addObjectsFromArray:batch];
-            [weakSelf updateSearchBackground];
-            [weakSelf.tableView reloadData];
+            typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            [self.results addObjectsFromArray:batch];
+            [self updateSearchBackground];
+            [self.tableView reloadData];
         }
         completion:^(BOOL finished) {
-            weakSelf.searching = NO;
-            weakSelf.finished = finished;
-            [weakSelf updateSearchBackground];
-            [weakSelf.tableView reloadData];
+            typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.searching = NO;
+            self.finished = finished;
+            [self updateSearchBackground];
+            [self.tableView reloadData];
             FFLogTag(@"Search", @"done query=%@ finished=%d results=%lu",
-                     query, finished, (unsigned long)weakSelf.results.count);
+                query, finished, (unsigned long)self.results.count);
         }];
 }
 
@@ -201,15 +207,14 @@
 
 #pragma mark - Table view
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section
 {
     if (self.searching || self.results.count > 0 || self.finished)
         return (NSInteger)self.results.count;
     return (NSInteger)self.history.count;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     BOOL showingHistory = !self.searching && self.results.count == 0;
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
@@ -223,9 +228,11 @@
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
     }
+
     FFFoundItem *item = self.results[indexPath.row];
+    NSString *displayName = item.displayName.length ? item.displayName : FFAppDisplayName(item.name);
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = FFAppDisplayName(item.name);
+    config.text = displayName;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.textProperties.adjustsFontForContentSizeCategory = YES;
     config.secondaryText = FFAbbreviatedDisplayPath(item.path);
@@ -250,9 +257,11 @@
         [self beginSearch:query];
         return;
     }
+
     FFFoundItem *item = self.results[indexPath.row];
+    NSString *displayName = item.displayName.length ? item.displayName : item.name;
     __weak typeof(self) weakSelf = self;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:displayName
         message:FFAbbreviatedDisplayPath(item.path)
         preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault
@@ -289,10 +298,11 @@
         [self presentSystemAccessRequired];
         return;
     }
+    NSString *displayName = item.displayName.length ? item.displayName : item.name;
     FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
-    browser.title = item.name;
+    browser.title = displayName;
     __weak typeof(self) weakSelf = self;
-    [browser openItemAtPath:item.path title:item.name
+    [browser openItemAtPath:item.path title:displayName
         navigationController:self.navigationController completion:^(BOOL available) {
         if (!available) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"
