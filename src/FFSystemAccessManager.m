@@ -2,9 +2,48 @@
 #import "MCMManager.h"
 #import "FFLogger.h"
 
+#import <sys/stat.h>
+
 NSNotificationName const FFSystemAccessPreferenceDidChangeNotification =
     @"FFSystemAccessPreferenceDidChangeNotification";
 NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
+
+static NSUInteger FFUsableManagedEntryCount(void)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *root = MCMVirtualRoot();
+    if (!root.length) return 0;
+
+    NSUInteger count = 0;
+    NSString *apps = [root stringByAppendingPathComponent:@"AppData"];
+    for (NSString *name in [fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
+        NSString *path = [apps stringByAppendingPathComponent:name];
+        struct stat linkStatus = {0};
+        struct stat targetStatus = {0};
+        if (lstat(path.fileSystemRepresentation, &linkStatus) == 0 &&
+            S_ISLNK(linkStatus.st_mode) &&
+            stat(path.fileSystemRepresentation, &targetStatus) == 0 &&
+            S_ISDIR(targetStatus.st_mode)) {
+            count++;
+        }
+    }
+
+    // Advanced probes such as the MobileGestalt channel live directly under
+    // the virtual root. They are also proof that the MCM path is operational.
+    for (NSString *name in [fm contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
+        if (![name hasPrefix:@"[MHA-"]) continue;
+        NSString *path = [root stringByAppendingPathComponent:name];
+        struct stat linkStatus = {0};
+        struct stat targetStatus = {0};
+        if (lstat(path.fileSystemRepresentation, &linkStatus) == 0 &&
+            S_ISLNK(linkStatus.st_mode) &&
+            stat(path.fileSystemRepresentation, &targetStatus) == 0 &&
+            S_ISDIR(targetStatus.st_mode)) {
+            count++;
+        }
+    }
+    return count;
+}
 
 @implementation FFSystemAccessManager {
     BOOL _loadedThisSession;
@@ -29,6 +68,10 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
         _pendingCompletions = [NSMutableArray array];
         _state = [NSUserDefaults.standardUserDefaults boolForKey:FFSystemAccessEnabledPreferenceKey]
             ? FFSystemAccessStateIdle : FFSystemAccessStateDisabled;
+
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(mcmLinksUpdated:)
+            name:FFMCMAppLinksUpdatedNotification object:nil];
     }
     return self;
 }
@@ -86,6 +129,54 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
     [self loadNowWithCompletion:completion];
 }
 
+- (void)finishPendingCompletions:(BOOL)loaded
+{
+    NSArray<void (^)(BOOL)> *callbacks = nil;
+    @synchronized (self) {
+        callbacks = [_pendingCompletions copy];
+        [_pendingCompletions removeAllObjects];
+    }
+    for (void (^callback)(BOOL) in callbacks) callback(loaded);
+}
+
+- (void)promoteToReadyIfUsable
+{
+    if (!self.enabled) return;
+    MCMManager *mcm = MCMManager.sharedManager;
+    BOOL identityOK = [NSBundle.mainBundle.bundleIdentifier
+        isEqualToString:@"com.apple.mobile.MobileHouseArrest"];
+    NSUInteger usable = FFUsableManagedEntryCount();
+    if (!identityOK || !mcm.started || usable == 0) return;
+
+    BOOL changed = NO;
+    @synchronized (self) {
+        if (_state != FFSystemAccessStateReady || !_loadedThisSession) {
+            _loadedThisSession = YES;
+            _loadInFlight = NO;
+            _state = FFSystemAccessStateReady;
+            _failureReason = nil;
+            changed = YES;
+        }
+    }
+    if (!changed) return;
+
+    FFLogTag(@"SystemAccess", @"advanced system access promoted ready usable=%lu",
+        (unsigned long)usable);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self finishPendingCompletions:YES];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
+    });
+}
+
+- (void)mcmLinksUpdated:(NSNotification *)note
+{
+    // MCM may add more App Data links after -start returns (LaunchServices
+    // confirmation is asynchronous). A failed/empty first snapshot therefore
+    // must not permanently poison the session state.
+    [self promoteToReadyIfUsable];
+}
+
 - (void)loadNowWithCompletion:(void (^)(BOOL))completion
 {
     if (!self.enabled) {
@@ -117,19 +208,17 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
         MCMManager *mcm = MCMManager.sharedManager;
         [mcm start];
 
-        NSUInteger linked = 0;
-        for (NSDictionary *links in mcm.categoryLinks.allValues)
-            linked += links.count;
         BOOL identityOK = [NSBundle.mainBundle.bundleIdentifier
             isEqualToString:@"com.apple.mobile.MobileHouseArrest"];
-        BOOL loaded = identityOK && mcm.started && linked > 0;
+        NSUInteger usable = FFUsableManagedEntryCount();
+        BOOL loaded = identityOK && mcm.started && usable > 0;
         NSString *failure = nil;
         if (!identityOK)
             failure = @"当前 App 身份不具备高级系统访问所需的 MCM 调用身份。";
         else if (!mcm.started)
             failure = @"高级系统访问组件未能完成初始化。";
-        else if (linked == 0)
-            failure = @"未获得任何可用的 App Data 访问链接。";
+        else if (usable == 0)
+            failure = @"高级系统访问已初始化，但暂未发现可用的受保护入口。";
 
         @synchronized (self) {
             _loadedThisSession = loaded;
@@ -141,20 +230,19 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
                 _state = FFSystemAccessStateReady;
                 _failureReason = nil;
             } else {
-                _state = FFSystemAccessStateFailed;
+                // Do not permanently mark the session failed just because the
+                // async LaunchServices confirmation has not produced links yet.
+                _state = (identityOK && mcm.started)
+                    ? FFSystemAccessStateLoading : FFSystemAccessStateFailed;
                 _failureReason = [failure copy];
             }
         }
-        FFLogTag(@"SystemAccess", @"advanced system access load end loaded=%d linked=%lu reason=%@",
-            loaded, (unsigned long)linked, failure ?: @"(nil)");
+        FFLogTag(@"SystemAccess", @"advanced system access load end loaded=%d usable=%lu state=%ld reason=%@",
+            loaded, (unsigned long)usable, (long)self.state, failure ?: @"(nil)");
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSArray<void (^)(BOOL)> *callbacks = nil;
-            @synchronized (self) {
-                callbacks = [_pendingCompletions copy];
-                [_pendingCompletions removeAllObjects];
-            }
-            for (void (^callback)(BOOL) in callbacks) callback(loaded);
+            if (loaded || self.state == FFSystemAccessStateFailed)
+                [self finishPendingCompletions:loaded];
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
         });
