@@ -91,16 +91,19 @@
         if (outBOM) *outBOM = YES;
         return FFTextEncodingUTF8BOM;
     }
-    // 无 BOM：UTF-16 启发式，否则要求严格 UTF-8。
+    // 无 BOM：UTF-16 启发式（LE/BE 按 NUL 位置对称判断），否则要求严格 UTF-8。
     NSUInteger limit = MIN(data.length / 2, (NSUInteger)4096);
-    if (limit > 0) {
-        NSUInteger nulls = 0;
-        for (NSUInteger u = 0; u < limit; u++) {
-            uint8_t lo = bytes[u * 2];
-            uint8_t hi = bytes[u * 2 + 1];
-            if ((lo != 0 && hi == 0) || (lo == 0 && hi != 0)) nulls++;
-        }
-        if (nulls >= limit / 2) return FFTextEncodingUTF16LE; // ASCII 内容 LE 最常见
+    NSUInteger leNulls = 0;
+    NSUInteger beNulls = 0;
+    for (NSUInteger u = 0; u < limit; u++) {
+        uint8_t lo = bytes[u * 2];
+        uint8_t hi = bytes[u * 2 + 1];
+        if (lo != 0 && hi == 0) leNulls++;   // BE 样式：高位字节 0
+        if (lo == 0 && hi != 0) beNulls++;   // LE 样式：低位字节 0
+    }
+    if (limit > 0 && (leNulls >= limit / 2 || beNulls >= limit / 2)) {
+        if (beNulls > leNulls) return FFTextEncodingUTF16BE; // 高字节在后 → BE 存储
+        return FFTextEncodingUTF16LE;
     }
     // 严格 UTF-8 校验（FFContentProbe 提供采样级有效判定）。
     if ([FFContentProbe isValidUTF8Sample:data]) return FFTextEncodingUTF8;

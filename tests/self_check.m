@@ -95,12 +95,12 @@ static void testProbe(void)
 
 static void testCodec(void)
 {
-    // 检测 + 往返保持。
+    // 检测 + 往返保持：decode 语义 = 原样解码，换行符由 detectLineEnding 报告。
     NSData *utf8 = DataFromText("line1\nline2\r\nline3\rline4", NSUTF8StringEncoding);
     FFTextEncoding enc = FFTextEncodingUTF8; BOOL bom = YES; FFLineEnding le = FFLineEndingLF;
     NSString *text = [FFTextCodec decodeData:utf8 encoding:&enc bom:&bom lineEnding:&le];
-    CHECK([text isEqualToString:@"line1\nline2\nline3\nline4"], @"codec-crlf-normalize");
-    CHECK(le == FFLineEndingCRLF, @"codec-crlf-detect"); // 首个换行是 CRLF（两个混合时取第一组）
+    CHECK([text isEqualToString:@"line1\nline2\r\nline3\rline4"], @"codec-crlf-identity");
+    CHECK(le == FFLineEndingLF, @"codec-crlf-detect"); // 首个换行序列是 LF
     CHECK(enc == FFTextEncodingUTF8 && bom == NO, @"codec-utf8-detect");
 
     // UTF-16 LE 往返。
@@ -134,7 +134,8 @@ static void testCodec(void)
     NSData *crlfData = [FFTextCodec encodeString:@"a\nb\n" encoding:FFTextEncodingUTF8
         bom:NO lineEnding:FFLineEndingCRLF];
     NSString *round = [FFTextCodec decodeData:crlfData encoding:&enc bom:&bom lineEnding:&le];
-    CHECK([round isEqualToString:@"a\nb\n"], @"codec-crlf-encode-roundtrip");
+    CHECK([round isEqualToString:@"a\r\nb\r\n"], @"codec-crlf-encode-roundtrip");
+    CHECK(le == FFLineEndingCRLF, @"codec-crlf-encode-detect");
 
     NSData *bomData = [FFTextCodec encodeString:@"x\n" encoding:FFTextEncodingUTF16LE
         bom:YES lineEnding:FFLineEndingLF];
@@ -252,7 +253,7 @@ static void testIPS(void)
 static void testHeaderScan(void)
 {
     NSData *simple = [@"{\"a\":1}" dataUsingEncoding:NSUTF8StringEncoding];
-    CHECK([FFIPSParser headerJSONEndOffset:simple] == 8, @"ips-scan-simple");
+    CHECK([FFIPSParser headerJSONEndOffset:simple] == 7, @"ips-scan-simple");
     NSData *escaped = [@"{\"x\":\"{\\\"y\\\"}\"}" dataUsingEncoding:NSUTF8StringEncoding];
     CHECK([FFIPSParser headerJSONEndOffset:escaped] == (long long)escaped.length, @"ips-scan-escaped");
     CHECK([FFIPSParser headerJSONEndOffset:[@"not json" dataUsingEncoding:NSUTF8StringEncoding]] == -1, @"ips-scan-reject");
