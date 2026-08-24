@@ -75,6 +75,11 @@ final class FFCodeEditorView: UIView {
     private let textView = TextView()
     private var characterPairList: [CharacterPair] = []
 
+    // 键盘高度（含 inputAccessoryView——keyboardFrameEndUserInfoKey 的
+    // frame 覆盖整个键盘窗口区）。Runestone 的 TextView 不维护任何键盘
+    // contentInset，滚动定位必须用这个实测值计算可见区。
+    private var keyboardHeight: CGFloat = 0
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         setup()
@@ -83,6 +88,10 @@ final class FFCodeEditorView: UIView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func setup() {
@@ -114,6 +123,28 @@ final class FFCodeEditorView: UIView {
         ]
         textView.characterPairs = characterPairList
         textView.editorDelegate = self
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(ffKeyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(ffKeyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(ffKeyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func ffKeyboardFrameChanged(_ notification: Notification) {
+        if let endValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue {
+            let endFrame = endValue.cgRectValue
+            // 屏幕坐标系：键盘顶边 = 屏幕高度 - frame.minY（Home 指示条也被
+            // 计入 frame 高度，minY 即键盘/附件可见顶边）。
+            let screenHeight = UIScreen.main.bounds.height
+            keyboardHeight = max(0, screenHeight - endFrame.minY)
+        } else {
+            keyboardHeight = 0 // 无 frame 信息（hide 场景）
+        }
     }
 
     // MARK: - ObjC-visible surface
@@ -261,10 +292,12 @@ final class FFCodeEditorView: UIView {
             textView.scrollRangeToVisible(target)
             return
         }
-        // 可见视口 = 去掉键盘（contentInset.bottom 由系统/键盘 observer 维护）。
-        let visibleHeight = textView.bounds.height - textView.contentInset.bottom
-        // 锚点：视口底部往上 ~100pt（工具条 92 + 边距），命中行出现在工具条上方。
-        let anchorY = max(100, visibleHeight - 100)
+        // 可见区 = bounds - 实测键盘（含查找工具条）高度。
+        // Runestone 不维护 contentInset.bottom（已读源码确认，
+        // KeyboardObserver 只做自动滚光标），不能用 inset 估算。
+        let visibleHeight = max(200, textView.bounds.height - keyboardHeight)
+        // 锚点：可见区底部往上 ~120pt —— 命中行出现在查找工具条上方，不被挡。
+        let anchorY = max(120, visibleHeight - 120)
         let targetY = rect.midY - anchorY
         let maxY = max(0, textView.contentSize.height +
             textView.contentInset.top + textView.contentInset.bottom - textView.bounds.height)
