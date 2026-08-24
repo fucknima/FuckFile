@@ -206,9 +206,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
     self.accessoryBar = [[FFEditorAccessoryBar alloc] initWithController:self];
     [self configureFindBar];
-    self.editorView.editorInputAccessoryView = self.accessoryBar;
-
-    UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
+    self.editorView.editorInputAccessoryView = self.accessoryBar;    UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
         UIBarButtonSystemItemSave target:self action:@selector(save)];
     save.enabled = NO;
     UIBarButtonItem *menu = [[UIBarButtonItem alloc] initWithTitle:@"⋯"
@@ -702,6 +700,12 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [vstack.leadingAnchor constraintEqualToAnchor:self.findBar.leadingAnchor],
         [vstack.trailingAnchor constraintEqualToAnchor:self.findBar.trailingAnchor],
     ]];
+
+    // 关键：查找栏是「两个输入框自己的 accessory」，谁获得焦点都带着它。
+    // 若是挂在编辑器文本视图上，输入框一接管焦点原 accessory 就被系统丢弃
+    // （表现为点输入框工具栏消失、键盘收起）。
+    self.findField.inputAccessoryView = self.findBar;
+    self.replaceField.inputAccessoryView = self.findBar;
 }
 
 - (UIButton *)findButtonTitle:(NSString *)title symbol:(NSString *)symbol tag:(NSInteger)tag
@@ -723,17 +727,11 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)showFindBar
 {
-    // ① 确保 Runestone 输入视图持有焦点（键盘在/将弹出）。
-    if (!self.editorView.isFirstResponder) {
-        (void)[self.editorView becomeFirstResponder];
-    }
-    // ② 替换 accessory 后对真实输入视图 reload，附件立即生效。
-    self.editorView.editorInputAccessoryView = self.findBar;
-    [self.editorView reloadEditorInputViews];
     self.currentMatchIndex = -1;
     [self refreshFindMatches];
     [self updateFindButtons];
-    // ③ 焦点交给查找框（位于附件内，键盘保持）。
+    // 输入框自己带 accessory（findBar），获得焦点即带出键盘+查找栏；
+    // 编辑器文本视图自动释放焦点，不再有 accessory 被丢弃的问题。
     (void)[self.findField becomeFirstResponder];
 }
 
@@ -741,12 +739,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 {
     (void)[self.findField resignFirstResponder];
     (void)[self.replaceField resignFirstResponder];
-    // 先把编辑焦点还给编辑器，再换回 accessory，避免键盘消失/闪烁。
-    self.editorView.editorInputAccessoryView = self.accessoryBar;
-    [self.editorView reloadEditorInputViews];
-    if (!self.editorView.isFirstResponder) {
-        (void)[self.editorView becomeFirstResponder];
-    }
+    // 焦点还给编辑器：恢复「编辑」accessory 与光标。
+    (void)[self.editorView becomeFirstResponder];
     [self.editorView clearSearchHighlights];
 }
 
