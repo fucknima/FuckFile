@@ -92,7 +92,7 @@ final class FFCodeEditorView: UIView {
         textView.frame = bounds
         textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         textView.theme = DefaultTheme()
-        textView.backgroundColor = UIColor.systemBackgroundColor
+        textView.backgroundColor = UIColor.systemBackground
         textView.autocorrectionType = .no
         textView.autocapitalizationType = .none
         textView.smartQuotesType = .no
