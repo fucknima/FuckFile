@@ -234,13 +234,16 @@ file 3.txt
 - 快速查看（系统 Quick Look，无专用查看器文件的兜底）
 - Web Viewer（html/htm 本地页面；url/webloc 网页快捷方式）
 - 属性表编辑器（plist，XML/二进制）
-- 文本编辑器（txt/log/md/json/xml/源码等；脚本仅按文本打开，不执行）
+- 代码/文本编辑器（Runestone + Tree-sitter：txt/log/md/json/xml/源码等；
+  语法高亮、行号、查找替换、跳转行、编码/换行符保持；脚本仅按文本打开，不执行）
 - SQLite3 编辑器（sqlite/sqlite3/sqlitedb/db：库信息、表、视图、索引、
   schema、分页浏览、SQL 查询）
 - IPA 安装器（解析应用信息与图标；安装能力取决于运行环境并如实反馈）
 - ZIP 浏览器（zip/ipa 包内目录浏览、单文件预览、选中提取、全部解压；
   tar/gz/7z/rar/xz/bz2 当前构建明确提示暂不支持）
 - 十六进制编辑器（分页 OFFSET/HEX/ASCII，支持字节修改、保存、取消）
+- 系统诊断查看器（.ips：JSON Header 元数据、zlib/raw-DEFLATE 解压、
+  RHWN 安全识别与导出，复用文本/Hex 查看器）
 - 媒体播放器（mp3/wav/m4a/aac/aif/aiff/aifc/caf/m4b/m4p/m4r/flac/
   mov/mp4/m4v/3gp/avi/mkv）
 - PDF 阅读器
@@ -279,7 +282,7 @@ file 3.txt
 - plist
 - csv
 
-后期支持代码高亮。
+已支持代码高亮（Runestone + Tree-sitter）。
 
 ### PDF
 
