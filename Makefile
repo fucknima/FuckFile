@@ -149,9 +149,9 @@ include $(THEOS_MAKE_PATH)/appex.mk
 after-stage::
 	@APP="$(THEOS_STAGING_DIR)/Applications/FuckFile.app"; \
 	EXT="$$APP/PlugIns/FuckFileShare.appex"; \
-	if [ -d "$$EXT" ]; then codesign --force -s - "$$EXT"; fi; \
-	codesign --force -s - "$$APP"; \
-	echo "== ad-hoc re-signed FuckFile.app + nested share extension"
+	if [ -d "$$EXT" ]; then codesign --force -s - --entitlements ShareExtension/FuckFileShare.entitlements "$$EXT"; fi; \
+	codesign --force -s - --entitlements FuckFile.entitlements "$$APP"; \
+	echo "== ad-hoc re-signed FuckFile.app + nested share extension with App Group entitlements"
 
 after-stage::
 	@APP="$(THEOS_STAGING_DIR)/Applications/FuckFile.app"; \
