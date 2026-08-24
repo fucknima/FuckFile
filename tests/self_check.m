@@ -9,6 +9,7 @@
 
 #import "FFContentProbe.h"
 #import "FFTextCodec.h"
+#import "FFSearchSession.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -146,11 +147,117 @@ static void testCodec(void)
 }
 
 
+#pragma mark - SearchSession（Prev/Next 镜像一致性）
+
+static FFSearchSession *MakeSearch(NSString *text, NSString *query, BOOL regex, BOOL cs)
+{
+    FFSearchSession *session = [[FFSearchSession alloc] initWithInitialText:text];
+    [session setQuery:query regexEnabled:regex caseSensitive:cs];
+    [session refreshNow];
+    return session;
+}
+
+static BOOL SessionHasRanges(FFSearchSession *session, NSUInteger *locs, NSUInteger count)
+{
+    if (session.matchCount != count) return NO;
+    for (NSUInteger i = 0; i < count; i++) {
+        NSRange r = [session.matches[i] rangeValue];
+        if (r.location != locs[i]) return NO;
+    }
+    return YES;
+}
+
+static void testSearchSessionMirror(void)
+{
+    // matches = [A, B]（"aa bb aa"：0-2 与 6-8）。
+    FFSearchSession *s = MakeSearch(@"aa bb aa", @"aa", NO, YES);
+    NSUInteger two[2] = {0, 6};
+    CHECK(SessionHasRanges(s, two, 2), @"session-two-matches");
+
+    // Next: A → B → A → B
+    [s navigateNext];
+    CHECK(s.currentRange.location == 0 && s.currentIndex == 0, @"next-A");
+    [s navigateNext];
+    CHECK(s.currentRange.location == 6 && s.currentIndex == 1, @"next-B");
+    [s navigateNext];
+    CHECK(s.currentRange.location == 0 && s.currentIndex == 0, @"next-wrap-A");
+    [s navigateNext];
+    CHECK(s.currentRange.location == 6 && s.currentIndex == 1, @"next-wrap-B");
+
+    // Previous: B → A → B → A（从未选中开始：直接到最后一个）
+    FFSearchSession *p = MakeSearch(@"aa bb aa", @"aa", NO, YES);
+    [p navigatePrevious];
+    CHECK(p.currentRange.location == 6 && p.currentIndex == 1, @"prev-初始-最后");
+    [p navigatePrevious];
+    CHECK(p.currentRange.location == 0 && p.currentIndex == 0, @"prev-A");
+    [p navigatePrevious];
+    CHECK(p.currentRange.location == 6 && p.currentIndex == 1, @"prev-wrap-B");
+    [p navigatePrevious];
+    CHECK(p.currentRange.location == 0 && p.currentIndex == 0, @"prev-wrap-A");
+
+    // 交叉：A →next B →prev A →prev B →next A（fresh session）
+    FFSearchSession *x = MakeSearch(@"aa bb aa", @"aa", NO, YES);
+    [x navigateNext];                       // A
+    [x navigateNext];                       // B
+    [x navigatePrevious];                   // A
+    [x navigatePrevious];                   // B (wrap)
+    [x navigateNext];                       // A (wrap)
+    CHECK(x.currentRange.location == 0 && x.currentIndex == 0, @"cross-final-A");
+
+    // 1 个结果：Next/Previous 永远停留同一结果。
+    FFSearchSession *one = MakeSearch(@"xx yy", @"xx", NO, YES);
+    [one navigateNext];
+    [one navigateNext];
+    CHECK(one.currentRange.location == 0, @"single-stay");
+    [one navigatePrevious];
+    CHECK(one.currentRange.location == 0, @"single-stay-prev");
+
+    // 3 个结果：Next A B C A；Previous（fresh）→ C B A C。
+    FFSearchSession *three = MakeSearch(@"a b a b a b", @"a", NO, YES);
+    NSUInteger threeLocs[3] = {0, 4, 8};
+    CHECK(SessionHasRanges(three, threeLocs, 3), @"three-matches");
+    [three navigateNext]; CHECK(three.currentIndex == 0 && three.currentRange.location == 0, @"3-next-A");
+    [three navigateNext]; CHECK(three.currentIndex == 1 && three.currentRange.location == 4, @"3-next-B");
+    [three navigateNext]; CHECK(three.currentIndex == 2 && three.currentRange.location == 8, @"3-next-C");
+    [three navigateNext]; CHECK(three.currentIndex == 0 && three.currentRange.location == 0, @"3-next-wrap-A");
+    FFSearchSession *threeP = MakeSearch(@"a b a b a b", @"a", NO, YES);
+    [threeP navigatePrevious]; CHECK(threeP.currentIndex == 2 && threeP.currentRange.location == 8, @"3-prev-init-C");
+    [threeP navigatePrevious]; CHECK(threeP.currentIndex == 1 && threeP.currentRange.location == 4, @"3-prev-B");
+    [threeP navigatePrevious]; CHECK(threeP.currentIndex == 0 && threeP.currentRange.location == 0, @"3-prev-A");
+
+    // 快速交替：Next Next Previous Next Previous Previous → index/range 恒一致。
+    FFSearchSession *rapid = MakeSearch(@"a b a b a b", @"a", NO, YES);
+    NSInteger sequence[] = {1, 1, -1, 1, -1, -1};
+    for (NSUInteger i = 0; i < 6; i++) {
+        if (sequence[i] > 0) [rapid navigateNext]; else [rapid navigatePrevious];
+        CHECK(rapid.currentIndex >= 0 && rapid.currentIndex < (NSInteger)rapid.matchCount &&
+              NSEqualRanges(rapid.currentRange, [rapid.matches[rapid.currentIndex] rangeValue]),
+              @"rapid-consistency");
+    }
+
+    // 无命中：导航 no-op，不越界。
+    FFSearchSession *empty = MakeSearch(@"abc", @"zzz", NO, YES);
+    CHECK(empty.state == FFSearchSessionStateEmpty && empty.matchCount == 0, @"empty-state");
+    [empty navigateNext];
+    CHECK(empty.currentIndex == -1, @"empty-next-noop");
+    [empty navigatePrevious];
+    CHECK(empty.currentIndex == -1, @"empty-prev-noop");
+
+    // 索引修复：正文变化后按旧 currentRange 就近修复（不再沿用旧下标）。
+    FFSearchSession *repair = MakeSearch(@"aaa bbb ccc", @"aaa", NO, YES);
+    [repair navigateNext]; // index 0 (loc 0)
+    [repair setSearchText:@"bbb ccc aaa"];
+    [repair refreshNow];
+    CHECK(repair.matchCount == 1 && repair.currentRange.location == 8 &&
+          repair.currentIndex == 0, @"repair-nearest");
+}
+
 int main(void)
 {
     @autoreleasepool {
         testProbe();
         testCodec();
+        testSearchSessionMirror();
     }
     fprintf(stderr, "\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

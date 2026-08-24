@@ -6,6 +6,7 @@
 #import "FFBrowserViewController.h"
 #import "FFFileInfoViewController.h"
 #import "FuckFile-Swift.h"
+#import "FFSearchSession.h"
 
 // 大文件策略（见 docs/ARCHITECTURE.md「文本编辑器」）：
 //   ≤ FFEditorHighlightLimitBytes：完整编辑 + 语法高亮（tree-sitter 全文件解析）
@@ -64,8 +65,10 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 @property(nonatomic, strong) UIButton *findRegexButton;
 @property(nonatomic) BOOL caseSensitive;
 @property(nonatomic) BOOL regexEnabled;
-@property(nonatomic, strong) NSArray<NSValue *> *matchRanges;
-@property(nonatomic) NSInteger currentMatchIndex;
+@property(nonatomic, strong) FFSearchSession *searchSession;
+@property(nonatomic, strong) UILabel *findCountLabel;
+@property(nonatomic, strong) NSArray<UIView *> *findRowButtons;
+@property(nonatomic) BOOL findBarVisible;
 @end
 
 @implementation FFEditorAccessoryBar
@@ -168,7 +171,6 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         _invisibleEnabled = NO;
         _indentUsesTabs = NO;
         _indentWidth = 4;
-        _currentMatchIndex = -1;
     }
     return self;
 }
@@ -671,9 +673,21 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     UIButton *replaceAllButton = [self findButtonTitle:@"全部替换" symbol:nil tag:27];
     self.findCaseButton = caseButton;
     self.findRegexButton = regexButton;
+    self.findRowButtons = @[caseButton, regexButton, prevButton, nextButton,
+                            closeButton, replaceButton, replaceAllButton];
+
+    UILabel *countLabel = [[UILabel alloc] init];
+    countLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    countLabel.textColor = UIColor.secondaryLabelColor;
+    countLabel.text = @"0/0";
+    [countLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh
+        forAxis:UILayoutConstraintAxisHorizontal];
+    countLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.findCountLabel = countLabel;
 
     UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[
-        search, caseButton, regexButton, prevButton, nextButton, closeButton]];
+        search, countLabel, caseButton,
+        regexButton, prevButton, nextButton, closeButton]];
     row1.axis = UILayoutConstraintAxisHorizontal;
     row1.spacing = 6;
     row1.distribution = UIStackViewDistributionFill;
@@ -709,6 +723,18 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     //    first responder（UIKit 拒绝给不在窗口中的控件焦点）。
     self.findField.inputAccessoryView = self.findBar;
     self.replaceField.inputAccessoryView = self.findBar;
+
+    // 唯一权威搜索会话（immutable snapshot + generation）。
+    FFSearchSession *session = [[FFSearchSession alloc]
+        initWithInitialText:[self.editorView currentText] ?: @""];
+    __weak typeof(self) weakSelf = self;
+    session.onChanged = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        BOOL scroll = strongSelf.searchSession.scrollPendingNavigation;
+        strongSelf.searchSession.scrollPendingNavigation = NO;
+        [strongSelf searchSessionDidChange:scroll];
+    };
+    self.searchSession = session;
 }
 
 - (UIButton *)findButtonTitle:(NSString *)title symbol:(NSString *)symbol tag:(NSInteger)tag
@@ -740,9 +766,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     //    responder 的资格（UIKit 拒绝授予「不在窗口」的控件焦点）。
     self.editorView.editorInputAccessoryView = self.findBar;
     [self.editorView reloadEditorInputViews];
-    self.currentMatchIndex = -1;
-    [self refreshFindMatches];
-    [self updateFindButtons];
+    self.findBarVisible = YES;
+    [self scheduleSearchRefresh];
     // 3. 焦点交给查找框：该输入框自己的 accessory 就是同一根 findBar，
     //    焦点交接后 bar 由 field 侧继续持有，不会消失。
     (void)[self.findField becomeFirstResponder];
@@ -752,6 +777,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 {
     (void)[self.findField resignFirstResponder];
     (void)[self.replaceField resignFirstResponder];
+    self.findBarVisible = NO;
     [self.editorView clearSearchHighlights];
     // 焦点归还编辑器前先把「编辑」accessory 挂回去，避免键盘带回查找栏。
     self.editorView.editorInputAccessoryView = self.accessoryBar;
@@ -763,8 +789,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)findTextChanged:(__unused UITextField *)field
 {
-    self.currentMatchIndex = -1;
-    [self refreshFindMatches];
+    [self scheduleSearchRefresh];
 }
 
 - (void)findButtonTapped:(UIButton *)button
@@ -775,24 +800,61 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
             self.regexEnabled = !self.regexEnabled;
             if (self.regexEnabled) self.caseSensitive = NO;
             break;
-        case 23: [self findPrevious]; return;
-        case 24: [self findNext]; return;
+        case 23: [self.searchSession navigatePrevious]; return;
+        case 24: [self.searchSession navigateNext]; return;
         case 25: [self hideFindBar]; return;
         case 26: [self replaceCurrent]; return;
         default: [self replaceAll]; return; // 27
     }
-    self.currentMatchIndex = -1;
-    [self refreshFindMatches];
-    [self updateFindButtons];
+    [self scheduleSearchRefresh];
 }
 
 - (void)updateFindButtons
 {
     self.findCaseButton.alpha = self.caseSensitive ? 1.0 : 0.35;
     self.findRegexButton.alpha = self.regexEnabled ? 1.0 : 0.35;
+    // Prev/Next 只在「稳定 snapshot ready」时可点（搜索未完成前禁用）。
+    BOOL ready = self.searchSession.state == FFSearchSessionStateReady;
+    for (UIView *view in self.findRowButtons) {
+        if ([view isKindOfClass:UIButton.class]) {
+            UIButton *button = (UIButton *)view;
+            if (button.tag == 23 || button.tag == 24) button.enabled = ready;
+        }
+    }
+    if (self.findCountLabel) {
+        switch (self.searchSession.state) {
+            case FFSearchSessionStateSearching:
+                self.findCountLabel.text = @"…";
+                break;
+            case FFSearchSessionStateReady:
+                self.findCountLabel.text = [NSString stringWithFormat:@"%ld/%lu",
+                    (long)(self.searchSession.currentIndex + 1),
+                    (unsigned long)self.searchSession.matchCount];
+                break;
+            case FFSearchSessionStateEmpty:
+            case FFSearchSessionStateIdle:
+                self.findCountLabel.text = @"0/0";
+                break;
+        }
+    }
 }
 
-- (NSRegularExpression *)currentRegex
+
+
+// 唯一搜索会话接线：查 query/options/正文 → generation → 后台扫描 →
+// 原子发布 → onChanged 统一刷 highlight、计数、可点性、滚动。
+- (void)scheduleSearchRefresh
+{
+    if (!self.searchSession) return;
+    [self.searchSession setQuery:self.findField.text ?: @""
+                    regexEnabled:self.regexEnabled
+                   caseSensitive:self.caseSensitive];
+    [self.searchSession setSearchText:[self.editorView currentText] ?: @""];
+    [self.searchSession scheduleRefresh];
+    [self updateFindButtons];
+}
+
+- (NSRegularExpression *)replacementRegex
 {
     NSString *pattern = self.findField.text ?: @"";
     if (pattern.length == 0) return nil;
@@ -801,74 +863,45 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     }
     NSRegularExpressionOptions options = NSRegularExpressionAnchorsMatchLines;
     if (!self.caseSensitive) options |= NSRegularExpressionCaseInsensitive;
-    NSError *error = nil;
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
-        options:options error:&error];
-    if (error) return nil;
-    return regex;
+    return [NSRegularExpression regularExpressionWithPattern:pattern options:options error:nil];
 }
 
-- (void)refreshFindMatches
+// onChanged（主线程）：同一调用点处理高亮 / 计数 / 可点性 / 滚动。
+- (void)searchSessionDidChange:(BOOL)scrollToCurrent
 {
-    NSRegularExpression *regex = [self currentRegex];
-    NSString *text = [self.editorView currentText];
-    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
-    if (regex && text.length) {
-        [regex enumerateMatchesInString:text options:0
-            range:NSMakeRange(0, text.length)
-            usingBlock:^(NSTextCheckingResult *result, __unused NSMatchingFlags flags,
-                          __unused BOOL *stop) {
-                [ranges addObject:[NSValue valueWithRange:result.range]];
-            }];
+    [self.editorView setSearchHighlights:self.searchSession.matches];
+    [self updateFindButtons];
+    if (scrollToCurrent && self.searchSession.currentRange.location != NSNotFound) {
+        [self.editorView selectRangeCentered:self.searchSession.currentRange];
     }
-    self.matchRanges = ranges;
-    [self.editorView setSearchHighlights:ranges];
-}
-
-- (void)findNext
-{
-    [self stepMatch:1];
-}
-
-- (void)findPrevious
-{
-    [self stepMatch:-1];
-}
-
-- (void)stepMatch:(NSInteger)step
-{
-    if (self.matchRanges.count == 0) return;
-    self.currentMatchIndex = (self.currentMatchIndex + step + (NSInteger)self.matchRanges.count)
-        % (NSInteger)self.matchRanges.count;
-    NSValue *value = self.matchRanges[(NSUInteger)self.currentMatchIndex];
-    // 命中行滚动到视口中部，避免结果躲在底部/顶部边缘。
-    [self.editorView selectRangeCentered:value.rangeValue];
 }
 
 - (void)replaceCurrent
 {
-    if (self.currentMatchIndex < 0 || (NSUInteger)self.currentMatchIndex >= self.matchRanges.count) {
-        [self findNext];
+    NSRange range = self.searchSession.currentRange;
+    if (range.location == NSNotFound) {
+        [self.searchSession navigateNext];
         return;
     }
-    NSRange range = self.matchRanges[(NSUInteger)self.currentMatchIndex].rangeValue;
     NSString *replacement = [self replacementForRange:range];
     [self.editorView applyReplacements:@[[NSValue valueWithRange:range]]
                                   texts:@[replacement]];
     self.changed = YES;
     [self setSaveEnabled:YES];
-    [self refreshFindMatches];
+    // Replace 改变了 matches：重建 snapshot（就近修复索引）。
+    [self scheduleSearchRefresh];
 }
 
 - (void)replaceAll
 {
-    if (self.matchRanges.count == 0) return;
-    NSRegularExpression *regex = [self currentRegex];
+    NSArray<NSValue *> *snapshot = self.searchSession.matches;
+    if (snapshot.count == 0) return;
+    NSRegularExpression *regex = [self replacementRegex];
     NSString *text = [self.editorView currentText];
     NSString *pattern = self.replaceField.text ?: @"";
     NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
     NSMutableArray<NSString *> *texts = [NSMutableArray array];
-    for (NSValue *value in self.matchRanges) {
+    for (NSValue *value in snapshot) {
         NSRange range = value.rangeValue;
         NSString *replacement = pattern;
         if (self.regexEnabled && regex) {
@@ -882,17 +915,16 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [texts addObject:replacement];
     }
     [self.editorView applyReplacements:ranges texts:texts];
-    self.currentMatchIndex = -1;
     self.changed = YES;
     [self setSaveEnabled:YES];
-    [self refreshFindMatches];
+    [self scheduleSearchRefresh];
 }
 
 - (NSString *)replacementForRange:(NSRange)range
 {
     NSString *pattern = self.replaceField.text ?: @"";
     if (!self.regexEnabled) return pattern;
-    NSRegularExpression *regex = [self currentRegex];
+    NSRegularExpression *regex = [self replacementRegex];
     NSString *text = [self.editorView currentText];
     NSTextCheckingResult *result = regex ? [regex firstMatchInString:text options:0 range:range] : nil;
     if (result) {
