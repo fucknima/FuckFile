@@ -118,6 +118,9 @@ static const unsigned long kFFIPSMaxCompressionRatio = 256;
     if (!compression.length && [header[@"compression"] isKindOfClass:NSString.class]) {
         compression = header[@"compression"];
     }
+    if (!compression.length && [header[@"compression"] isKindOfClass:NSNumber.class]) {
+        compression = [header[@"compression"] stringValue];
+    }
     if ([compression isEqualToString:@"zlib"]) {
         result.declaredCompression = FFIPSCompressionZlib;
     } else if (compression.length == 0 || [compression isEqualToString:@"none"]) {

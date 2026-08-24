@@ -70,7 +70,7 @@ static BOOL FFIsReadableByte(uint8_t byte)
             memcmp(bytes, "\xFF\xD8\xFF", 3) == 0 ||
             memcmp(bytes, "GIF8", 4) == 0 ||
             memcmp(bytes, "RIFF", 4) == 0 ||
-            memcmp(bytes, "\x00\x00\x00\x14ftyp", 8) == 0 ||
+            memcmp(bytes, "\x00\x00\x00\x14" "ftyp", 8) == 0 ||
             memcmp(bytes, "\x00\x01\x00\x00", 4) == 0) {
             return FFContentKindBinary;
         }
