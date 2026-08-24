@@ -233,7 +233,12 @@ static NSUInteger FFUsableManagedEntryCount(void)
             [self finalizeLoadingGeneration:generation];
         });
 
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // Let the settings transition finish before MCM enumeration starts, and
+    // run the expensive discovery at utility QoS. The scan is important but
+    // must never compete with scrolling/animation on the main UI.
+    dispatch_queue_t scanQueue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
+        scanQueue, ^{
         FFLogTag(@"SystemAccess", @"advanced system access load begin");
         MCMManager *mcm = MCMManager.sharedManager;
         [mcm start];
