@@ -2,9 +2,12 @@
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
+#import "FFAppNames.h"
+#import "FFBrowserViewController.h"
 
 #import <dirent.h>
 #import <limits.h>
+#import <objc/runtime.h>
 #import <string.h>
 #import <sys/stat.h>
 
@@ -82,6 +85,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     if (!directory) return YES;
 
     BOOL advancedReady = FFSystemAccessManager.sharedManager.ready;
+    BOOL showHidden = [NSUserDefaults.standardUserDefaults boolForKey:@"FFSettingsShowHiddenFiles"];
     NSMutableArray<FFFoundItem *> *pending = [NSMutableArray array];
     NSMutableArray<NSString *> *subdirectories = [NSMutableArray array];
     struct dirent *entry = NULL;
@@ -90,14 +94,20 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         NSString *name = [NSFileManager.defaultManager
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
-        if (!name || [name hasPrefix:@"."]) continue;
+        if (!name || (!showHidden && [name hasPrefix:@"."])) continue;
         NSString *child = [path stringByAppendingPathComponent:name];
         if (!advancedReady && FFPathRequiresSystemAccess(child)) continue;
 
         struct stat status = {0};
         if (stat(child.fileSystemRepresentation, &status) != 0) continue;
         BOOL isDirectory = S_ISDIR(status.st_mode);
-        BOOL matches = [name.lowercaseString containsString:needle];
+
+        // AppData entries are stored as bundle identifiers. Search both the
+        // on-disk name and the human-facing App name so "中国移动" can match
+        // cn.10086.app just as the browser row itself does.
+        NSString *displayName = FFAppDisplayName(name);
+        BOOL matches = [name.lowercaseString containsString:needle] ||
+            (displayName.length && [displayName.lowercaseString containsString:needle]);
         if (matches) {
             FFFoundItem *item = [FFFoundItem new];
             item.name = name;
@@ -161,6 +171,118 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 - (void)clearHistory
 {
     [NSUserDefaults.standardUserDefaults removeObjectForKey:kFFSearchHistoryKey];
+}
+
+@end
+
+#pragma mark - Browser recursive search adapter
+
+// The browser used to interpret its search field as an in-memory filter over
+// the current directory's already loaded rows. The product wording says
+// "在当前文件夹搜索", which users reasonably interpret as current folder +
+// descendants. Keep the browser's existing empty-query/filter behaviour, but
+// replace non-empty queries with an isolated FFSearchService rooted at the
+// browser's currentPath. A per-browser service prevents interference with the
+// home/global search session.
+static const void *kFFBrowserFolderSearchServiceKey = &kFFBrowserFolderSearchServiceKey;
+static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearchGenerationKey;
+
+@interface FFBrowserViewController (FFRecursiveSearchPrivate)
+- (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
+- (void)refreshVisibleContent;
+@end
+
+@implementation FFBrowserViewController (FFRecursiveSearchPrivate)
+
++ (void)load
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Method original = class_getInstanceMethod(self,
+            @selector(updateSearchResultsForSearchController:));
+        Method replacement = class_getInstanceMethod(self,
+            @selector(ff_recursive_updateSearchResultsForSearchController:));
+        if (original && replacement) method_exchangeImplementations(original, replacement);
+    });
+}
+
+- (FFSearchService *)ff_folderSearchService
+{
+    FFSearchService *service = objc_getAssociatedObject(self, kFFBrowserFolderSearchServiceKey);
+    if (!service) {
+        service = [FFSearchService new];
+        objc_setAssociatedObject(self, kFFBrowserFolderSearchServiceKey,
+            service, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return service;
+}
+
+- (NSUInteger)ff_nextFolderSearchGeneration
+{
+    NSNumber *old = objc_getAssociatedObject(self, kFFBrowserFolderSearchGenerationKey);
+    NSUInteger next = old.unsignedIntegerValue + 1;
+    objc_setAssociatedObject(self, kFFBrowserFolderSearchGenerationKey,
+        @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return next;
+}
+
+- (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    NSString *query = [searchController.searchBar.text stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (query.length == 0) {
+        [[self ff_folderSearchService] cancel];
+        [self ff_nextFolderSearchGeneration];
+        // After swizzling this selector invokes the browser's original local
+        // filter implementation, restoring normal rows/filter state.
+        [self ff_recursive_updateSearchResultsForSearchController:searchController];
+        return;
+    }
+
+    NSUInteger generation = [self ff_nextFolderSearchGeneration];
+    FFSearchService *service = [self ff_folderSearchService];
+    [service cancel];
+    [self setValue:query forKey:@"searchText"];
+    [self setValue:@[] forKey:@"filteredEntries"];
+    [self refreshVisibleContent];
+
+    NSString *root = self.currentPath;
+    __weak typeof(self) weakSelf = self;
+    [service startSearch:query underRoot:root
+        batch:^(NSArray<FFFoundItem *> *batch) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSNumber *current = objc_getAssociatedObject(strongSelf,
+                kFFBrowserFolderSearchGenerationKey);
+            if (current.unsignedIntegerValue != generation) return;
+
+            NSMutableArray<FFEntry *> *rows = [[strongSelf valueForKey:@"filteredEntries"] mutableCopy]
+                ?: [NSMutableArray array];
+            for (FFFoundItem *found in batch) {
+                FFEntry *entry = [FFEntry new];
+                entry.name = found.name;
+                entry.displayName = FFAppDisplayName(found.name);
+                entry.path = found.path;
+                entry.isDirectory = found.isDirectory;
+                entry.size = found.size;
+                NSString *relative = [found.path hasPrefix:root]
+                    ? [found.path substringFromIndex:MIN(root.length + 1, found.path.length)]
+                    : found.path;
+                entry.detail = relative.stringByDeletingLastPathComponent.length
+                    ? relative.stringByDeletingLastPathComponent : @"当前文件夹";
+                [rows addObject:entry];
+            }
+            [strongSelf setValue:rows forKey:@"filteredEntries"];
+            [strongSelf refreshVisibleContent];
+        }
+        completion:^(__unused BOOL finished) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSNumber *current = objc_getAssociatedObject(strongSelf,
+                kFFBrowserFolderSearchGenerationKey);
+            if (current.unsignedIntegerValue == generation)
+                [strongSelf refreshVisibleContent];
+        }];
 }
 
 @end
