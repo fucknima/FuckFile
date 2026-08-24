@@ -3,6 +3,7 @@
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
+#import "FFPdfReaderViewController.h"
 #import "FFQuickLookViewController.h"
 #import "FFWebViewerViewController.h"
 #import "FFHexEditorViewController.h"
@@ -163,7 +164,7 @@
             @[@"archive",   @"ZIP 浏览器",     @"archivebox",            @"ZIP/IPA 包内浏览与提取。部分支持：TAR/GZ/7z/RAR/XZ/BZ2 当前构建无法解析，仅明确提示"],
             @[@"hex",       @"十六进制编辑器", @"waveform.path.ecg",     @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
             @[@"media",     @"媒体播放器",     @"play.circle",           @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）"],
-            @[@"pdf",       @"PDF 阅读器",     @"doc.richtext",          @"PDFKit 连续滚动、缩略图侧栏、分享"],
+            @[@"pdf",       @"PDF 阅读器",     @"doc.richtext",          @"PDFKit 阅读、搜索、目录、页面网格与缩放"],
         ];
         NSMutableArray<FFViewerInfo *> *built = [NSMutableArray array];
         for (NSArray *spec in specs) {
@@ -248,7 +249,7 @@ navigationController:(UINavigationController *)nav
     if ([viewerID isEqualToString:@"media"])     return [self mediaViewerAtPath:path];
     if ([viewerID isEqualToString:@"plist"])     return [[FFPlistEditorViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"text"])      return [[FFTextEditorViewController alloc] initWithPath:path];
-    if ([viewerID isEqualToString:@"pdf"])       return [[FFPdfPreviewViewController alloc] initWithPath:path];
+    if ([viewerID isEqualToString:@"pdf"])       return [[FFPdfReaderViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"quicklook"]) return [[FFQuickLookViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"web"])       return [[FFWebViewerViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"sqlite"])    return [[FFSQLiteBrowserViewController alloc] initWithDatabasePath:path];
