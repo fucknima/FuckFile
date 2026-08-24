@@ -5,13 +5,17 @@ on:
     branches:
       - '**'
       - '!build-counter'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# 全仓库统一串行分配“成功构建号”。失败不会写回 build-counter，
-# 下一次仍复用该候选号；只有完整构建、签名、打包、上传均成功才 +1。
+# Push/manual builds serialize globally so the next number is unique. PR runs
+# are validation-only: they build/package but neither upload a numbered artifact
+# nor advance the successful-build counter.
 concurrency:
   group: fuckfile-successful-build-counter
   cancel-in-progress: false
@@ -84,8 +88,8 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
-          echo "Branch: ${GITHUB_REF_NAME}"
-          echo "Build: ${BUILD_NUMBER}"
+          echo "Branch: ${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          echo "Candidate build: ${BUILD_NUMBER}"
 
           APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
           EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
@@ -146,21 +150,20 @@ jobs:
           mkdir -p Payload
           ditto "$APP" Payload/FuckFile.app
           zip -qry "$IPA_NAME" Payload
-
           test -f "$IPA_NAME"
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
           echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
       - name: Upload build ${{ env.BUILD_NUMBER }}
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: FuckFile-build-${{ env.BUILD_NUMBER }}
           path: ${{ env.IPA_NAME }}
           if-no-files-found: error
 
-      # 只有上面所有步骤成功才执行。提交只发生在 build-counter 分支，
-      # 该分支被 workflow trigger 排除，因此不会形成自触发循环。
       - name: Commit successful build number
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
