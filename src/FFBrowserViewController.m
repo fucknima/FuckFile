@@ -89,13 +89,8 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
-// 顶部布局：breadcrumb 锚定 view.topAnchor，动态常量 = 导航栏当前
-// frame 下缘（每帧从系统 frame 读取，不依赖 safeArea 的结算结果）。
-@property(nonatomic, strong) NSLayoutConstraint *breadcrumbTopInsetConstraint;
-// KVO 监听导航栏高度（搜索条顶置/深底集成切换时导航栏只有自身会触发
-// layout，本 VC 感知不到；监听 bounds 保证任何高度变化都及时改 topInset）。
-@property(nonatomic) BOOL navBarObserved;
-// 底部悬浮搜索条的真实高度：从 systemSearchBar 的 frame 实测换算。
+// 底部悬浮搜索条的真实覆盖高度（含搜索条自身）：从系统 searchBar 的
+// window frame 实测「搜索条顶部 → 屏幕底」。
 @property(nonatomic) CGFloat bottomChrome;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
 @property(nonatomic) BOOL pendingAutoReload;
@@ -151,17 +146,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.tableView.allowsMultipleSelectionDuringEditing = YES;
     [self.view addSubview:self.tableView];
 
-    // 顶级布局：breadcrumb 锚定 view.topAnchor + 动态常量（每帧跟随导航栏
-    // 下缘，见 viewDidLayoutSubviews）。不再锚定 safeArea/navigationBar：
-    // safeArea 在 iOS 27 底部集成搜索时残留搜索条高度出现空白；
-    // navigationBar 跨层约束在 push 转场期间抛 NSISEngine（真机 SIGABRT）。
+    // 顶级布局：breadcrumb 锚定 self.view.topAnchor。
+    // AppDelegate 已设置 navigationBar.translucent = NO：UINavigation
+    // Controller 会把子 VC 的 view 布局到导航栏下方，view 顶部即导航栏
+    // 下缘（安全区此时为 0）。绝不再跨层锚定 navigationBar（push 转场
+    // 期间抛 NSISEngine）或动态跟随其 frame（搜索条顶置/底部集成迁移
+    // 时冻结在过渡值）。根目录 breadcrumb 高度 0，非根为固定 32。
     self.breadcrumbHeightConstraint =
         [self.breadcrumbView.heightAnchor constraintEqualToConstant:32];
-    self.breadcrumbTopInsetConstraint =
-        [self.breadcrumbView.topAnchor constraintEqualToAnchor:self.view.topAnchor
-                                                      constant:self.view.safeAreaInsets.top];
     [NSLayoutConstraint activateConstraints:@[
-        self.breadcrumbTopInsetConstraint,
+        [self.breadcrumbView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.breadcrumbView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
@@ -175,8 +169,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self updateBreadcrumbVisibility];
     [self.tableView reloadData];
     // 底部悬浮搜索条是 iOS 26+ 系统 chrome（Liquid Glass 悬浮层），
-    // 不会自动为内容预留空间。余量在 viewDidLayoutSubviews 每帧从系统
-    // searchBar 实测；这里给首发帧一个合理缺省，实测值随后覆盖。
+    // 不会自动为内容预留空间。余量在 viewDidLayoutSubviews 从系统
+    // searchBar 实测「顶部→屏幕底」；这里给首发帧一个合理缺省。
     self.bottomChrome = 64;
     [self applySearchChromeInsets];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
@@ -273,6 +267,13 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     // 常驻导航栏下：不参与滚动隐藏（iOS 26 把隐藏态渲染成底部悬浮条，
     // 会盖住列表内容；Files 同款常驻搜索，无此问题）。
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    // iOS 26+：显式钉住 Integrated 放置，避免 automatic 在 push 转场中
+    // 重新计算（搜索条顶置⇄底部集成往返）导致导航标题瞬间下沉。
+    // 以当前 SDK API 为准：若编译 SDk 无此枚举值，本行随编译器报告回退。
+    if (@available(iOS 26.0, *)) {
+        self.navigationItem.preferredSearchBarPlacement =
+            UINavigationItemSearchBarPlacementIntegrated;
+    }
     self.definesPresentationContext = YES;
 
     self.moreItem = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"ellipsis.circle" tint:nil]
@@ -307,22 +308,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     [super viewWillDisappear:animated];
     self.navigationController.toolbarHidden = YES;
-    [self stopObservingNavigationBar];
 }
 
-- (void)dealloc
-{
-    [self stopObservingNavigationBar];
-}
-
-// 布局结算后同步两个动态值（均为运行时实测，不猜常量）：
-// 1) 顶部：breadcrumb 距屏幕顶 = 导航栏 frame 下缘（系统里唯一权威值）；
-// 2) 底部：悬浮搜索条高度 = 系统 searchBar 的 window frame 实测换算。
+// 布局结算后同步底部浮动条余量：从系统 searchBar 实测换算。
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    [self updateTopInsetFromNavigationBar];
-
     if (!self.editing) {
         CGFloat pad = [self measuredBottomChrome];
         if (pad > 0 && fabs(pad - self.bottomChrome) > 0.5) {
@@ -333,50 +324,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self applySearchChromeInsets];
 }
 
-// 顶部动态常量：navigationBar.frame 的下缘。KVO 监听 bounds，
-// 搜索条顶置/底部集成切换时导航栏高度变化会第一时间对齐内容。
-- (void)updateTopInsetFromNavigationBar
-{
-    UINavigationController *nav = self.navigationController;
-    if (!nav || !nav.navigationBar) return;
-    if (!self.navBarObserved) {
-        self.navBarObserved = YES;
-        [nav.navigationBar addObserver:self forKeyPath:@"bounds"
-            options:0 context:NULL];
-    }
-    CGRect barFrame = nav.navigationBar.frame;
-    CGFloat barBottom = CGRectGetMaxY(barFrame);
-    // 转场进行中 frame 不可信（<20 或异常高）：保持上一值。
-    if (barBottom < 20 || barBottom > 400) return;
-    if (fabs(self.breadcrumbTopInsetConstraint.constant - barBottom) > 0.5) {
-        self.breadcrumbTopInsetConstraint.constant = barBottom;
-        FFLogTag(@"LayoutDiag", @"topInset=%.1f navBarMaxY=%.1f",
-            barBottom, barBottom);
-    }
-}
-
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
-    change:(NSDictionary *)change context:(void *)context
-{
-    UINavigationBar *observed = self.navigationController.navigationBar;
-    if (object == observed && [keyPath isEqualToString:@"bounds"]) {
-        [self updateTopInsetFromNavigationBar];
-        return;
-    }
-    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
-}
-
-- (void)stopObservingNavigationBar
-{
-    UINavigationController *nav = self.navigationController;
-    if (nav && nav.navigationBar && self.navBarObserved) {
-        [nav.navigationBar removeObserver:self forKeyPath:@"bounds"];
-        self.navBarObserved = NO;
-    }
-}
-
-// 从系统 searchBar 的窗口坐标实测悬浮条高度（含底部留白）。
-// 搜索条不在底部（隐藏/转场中/激活时）返回上一次测量值或 0。
+// 从系统 searchBar 的窗口坐标实测悬浮条**覆盖高度**：
+// overlay = 搜索条顶部 → 屏幕底（包含搜索条自身高度 + 下方留白）。
+// 搜索条不在底部（隐藏/转场中/激活时）返回上一次测量值。
 - (CGFloat)measuredBottomChrome
 {
     UISearchBar *bar = self.searchController.searchBar;
@@ -387,15 +337,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     // 仅在搜索条真实位于下半屏时按底部测算（顶部阶段忽略）。
     if (CGRectGetMidY(inWindow) < screenHeight * 0.4)
         return self.bottomChrome;
-    CGFloat pad = screenHeight - CGRectGetMaxY(inWindow);
-    return MAX(pad + 12, 24);
+    CGFloat overlay = screenHeight - CGRectGetMinY(inWindow);
+    return MAX(overlay, 24);
 }
 
-// 转场完成后把面包屑顶部改锚导航栏下缘：不再使用（viewDidLayoutSubviews
-// 每帧读取导航栏 frame 已覆盖全部形态）。
-- (void)viewDidAppear:(BOOL)animated
+- (void)dealloc
 {
-    [super viewDidAppear:animated];
 }
 
 #pragma mark - Clipboard state
