@@ -105,7 +105,8 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/markdown/src/scanner.c \
 	third_party/tree-sitter-languages/markdown_inline/src/parser.c \
 	third_party/tree-sitter-languages/markdown_inline/src/scanner.c \
-	third_party/tree-sitter-languages/sql/src/parser.c
+	third_party/tree-sitter-languages/sql/src/parser.c \
+	third_party/tree-sitter-languages/sql/src/scanner.c
 
 # Vendored Runestone 全量 Swift 源（同模块编译）。
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
