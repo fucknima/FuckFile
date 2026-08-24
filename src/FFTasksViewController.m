@@ -46,76 +46,82 @@
     NSMutableArray<FFFileTask *> *active = [NSMutableArray array];
     NSMutableArray<FFFileTask *> *history = [NSMutableArray array];
     for (FFFileTask *task in self.tasks) {
-        if (task.state == FFFileTaskStateRunning ||
-            task.state == FFFileTaskStateQueued)
+        if (task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued)
             [active addObject:task];
         else
             [history addObject:task];
     }
     self.activeTasks = active;
     self.historyTasks = history;
+    self.navigationItem.rightBarButtonItem.enabled = history.count > 0;
     [self updateEmptyState];
     [self.tableView reloadData];
 }
 
 - (void)clearCompletedTapped
 {
+    if (self.historyTasks.count == 0) return;
     [[FFFileTaskManager sharedManager] removeTasks:self.historyTasks];
 }
 
 - (void)updateEmptyState
 {
-    if (self.activeTasks.count == 0 && self.historyTasks.count == 0) {
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0,
-            self.view.bounds.size.width - 80, 80)];
-        label.textAlignment = NSTextAlignmentCenter;
-        label.numberOfLines = 0;
-        label.textColor = [UIColor secondaryLabelColor];
-        label.text = @"还没有任务\n复制、移动、解压等操作会显示在这里";
-        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        label.adjustsFontForContentSizeCategory = YES;
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
-            self.view.bounds.size.width, self.view.bounds.size.height)];
-        label.center = container.center;
-        [container addSubview:label];
-        self.tableView.backgroundView = container;
-    } else {
+    BOOL empty = self.activeTasks.count == 0 && self.historyTasks.count == 0;
+    if (!empty) {
         self.tableView.backgroundView = nil;
+        if (@available(iOS 17.0, *)) self.contentUnavailableConfiguration = nil;
+        return;
     }
+
+    if (@available(iOS 17.0, *)) {
+        UIContentUnavailableConfiguration *config = [UIContentUnavailableConfiguration emptyConfiguration];
+        config.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
+        config.text = @"还没有任务";
+        config.secondaryText = @"复制、移动、压缩、解压等操作会显示在这里";
+        self.contentUnavailableConfiguration = config;
+        self.tableView.backgroundView = nil;
+        return;
+    }
+
+    UIView *container = [UIView new];
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    label.textColor = UIColor.secondaryLabelColor;
+    label.text = @"还没有任务\n复制、移动、压缩、解压等操作会显示在这里";
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    label.adjustsFontForContentSizeCategory = YES;
+    [container addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor constant:-40],
+        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor constant:32],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-32],
+    ]];
+    self.tableView.backgroundView = container;
 }
 
 #pragma mark - Table view
 
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
+
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return 2;
+    return section == 0 ? (NSInteger)self.activeTasks.count : (NSInteger)self.historyTasks.count;
 }
 
-- (NSInteger)tableView:(__unused UITableView *)tableView
-    numberOfRowsInSection:(NSInteger)section
-{
-    return section == 0 ? (NSInteger)self.activeTasks.count
-                        : (NSInteger)self.historyTasks.count;
-}
-
-- (NSString *)tableView:(__unused UITableView *)tableView
-    titleForHeaderInSection:(NSInteger)section
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (section == 0) return self.activeTasks.count ? @"进行中" : nil;
     return self.historyTasks.count ? @"历史" : nil;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Task"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:@"Task"];
-    }
-    FFFileTask *task = indexPath.section == 0 ?
-        self.activeTasks[(NSUInteger)indexPath.row] :
-        self.historyTasks[(NSUInteger)indexPath.row];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Task"];
+    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
     cell.accessoryView = nil;
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = task.displayName;
@@ -123,46 +129,34 @@
     config.textProperties.adjustsFontForContentSizeCategory = YES;
     config.textProperties.numberOfLines = 1;
 
-    // 层级：标题=任务名；副标题第一行=当前文件/结果摘要，
-    // 第二行=进度明细。不再拼一条超长 secondary 字符串。
     NSMutableString *detail = [NSMutableString string];
-    if (task.state == FFFileTaskStateRunning) {
-        [detail appendString:(task.detailName.length ? task.detailName : @"…")];
-    } else if (task.state == FFFileTaskStateCompleted) {
-        [detail appendFormat:@"已完成 · 成功 %lu 失败 %lu 跳过 %lu",
-            (unsigned long)task.succeededCount, (unsigned long)task.failedCount,
-            (unsigned long)task.skippedCount];
-    } else if (task.state == FFFileTaskStateFailed) {
-        [detail appendString:task.error.localizedDescription ?: @"失败"];
-    } else {
-        [detail appendString:task.stateText];
-    }
+    if (task.state == FFFileTaskStateRunning) [detail appendString:(task.detailName.length ? task.detailName : @"…")];
+    else if (task.state == FFFileTaskStateCompleted)
+        [detail appendFormat:@"已完成 · 成功 %lu 失败 %lu 跳过 %lu", (unsigned long)task.succeededCount,
+            (unsigned long)task.failedCount, (unsigned long)task.skippedCount];
+    else if (task.state == FFFileTaskStateFailed) [detail appendString:task.error.localizedDescription ?: @"失败"];
+    else [detail appendString:task.stateText];
 
     NSMutableString *metrics = [NSMutableString stringWithFormat:@"%@", task.kindText];
     if (task.state == FFFileTaskStateRunning) {
         if (task.totalBytes > 0)
-            [metrics appendFormat:@" · %@ / %@",
-                [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
+            [metrics appendFormat:@" · %@ / %@", [self formatSize:task.completedBytes], [self formatSize:task.totalBytes]];
         if (task.averageBytesPerSecond > 0) {
-            [metrics appendFormat:@" · %@/s",
-                [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
+            [metrics appendFormat:@" · %@/s", [self formatSize:(unsigned long long)task.averageBytesPerSecond]];
             NSTimeInterval seconds = task.estimatedRemainingSeconds;
             if (seconds > 0)
                 [metrics appendFormat:seconds < 60 ? @" · 剩余 %d 秒" : @" · 剩余 %d 分",
                     seconds < 60 ? (int)seconds : (int)(seconds / 60)];
         }
     }
-    config.secondaryText = metrics.length ?
-        [NSString stringWithFormat:@"%@\n%@", detail, metrics] : detail;
-    config.secondaryTextProperties.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    config.secondaryText = metrics.length ? [NSString stringWithFormat:@"%@\n%@", detail, metrics] : detail;
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
     config.secondaryTextProperties.numberOfLines = 2;
     cell.contentConfiguration = config;
 
     BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;
-    cell.selectionStyle = active ? UITableViewCellSelectionStyleNone
-                                 : UITableViewCellSelectionStyleDefault;
+    cell.selectionStyle = active ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
     if (active) {
         UIProgressView *progress = (UIProgressView *)[cell.contentView viewWithTag:77];
         if (!progress) {
@@ -182,7 +176,6 @@
     } else {
         UIProgressView *progress = (UIProgressView *)[cell.contentView viewWithTag:77];
         progress.hidden = YES;
-        cell.accessoryView = nil;
     }
     return cell;
 }
@@ -192,8 +185,7 @@
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = CGRectMake(0, 0, 44, 32);
     [button setTitle:@"取消" forState:UIControlStateNormal];
-    [button addTarget:self action:@selector(cancelTapped:)
-      forControlEvents:UIControlEventTouchUpInside];
+    [button addTarget:self action:@selector(cancelTapped:) forControlEvents:UIControlEventTouchUpInside];
     objc_setAssociatedObject(button, "ff.task", task, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return button;
 }
@@ -204,49 +196,36 @@
     if (task) [[FFFileTaskManager sharedManager] cancelTask:task];
 }
 
-- (void)tableView:(UITableView *)tableView
-    commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
-    forRowAtIndexPath:(NSIndexPath *)indexPath
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
-    FFFileTask *task = indexPath.section == 0 ?
-        self.activeTasks[(NSUInteger)indexPath.row] :
-        self.historyTasks[(NSUInteger)indexPath.row];
+    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
     [[FFFileTaskManager sharedManager] removeTask:task];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    FFFileTask *task = indexPath.section == 0 ?
-        self.activeTasks[(NSUInteger)indexPath.row] :
-        self.historyTasks[(NSUInteger)indexPath.row];
+    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
     return task.state != FFFileTaskStateRunning && task.state != FFFileTaskStateQueued;
 }
 
-- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
-    leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    FFFileTask *task = indexPath.section == 0 ?
-        self.activeTasks[(NSUInteger)indexPath.row] :
-        self.historyTasks[(NSUInteger)indexPath.row];
-    if (task.state != FFFileTaskStateFailed && task.state != FFFileTaskStateCancelled)
-        return nil;
-    UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:
-        UIContextualActionStyleNormal title:@"重试"
-        handler:^(__unused UIContextualAction *action, __unused UIView *sourceView,
-            void (^completionHandler)(BOOL)) {
+    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
+    if (task.state != FFFileTaskStateFailed && task.state != FFFileTaskStateCancelled) return nil;
+    UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:@"重试"
+        handler:^(__unused UIContextualAction *action, __unused UIView *sourceView, void (^completionHandler)(BOOL)) {
             [[FFFileTaskManager sharedManager] retryTask:task];
             completionHandler(YES);
         }];
     retry.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-    retry.backgroundColor = [UIColor systemBlueColor];
+    retry.backgroundColor = UIColor.systemBlueColor;
     return [UISwipeActionsConfiguration configurationWithActions:@[retry]];
 }
 
 - (NSString *)formatSize:(unsigned long long)bytes
 {
-    return [NSByteCountFormatter stringFromByteCount:(long long)bytes
-        countStyle:NSByteCountFormatterCountStyleFile];
+    return [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile];
 }
 
 @end
