@@ -125,7 +125,22 @@ jobs:
             --output-partial-info-plist "$APP/icon-partial-info.plist"
           test -f "$APP/Assets.car"
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
-          test -d "$APP/Languages/c"
+
+          # `make` builds obj bundles but does not guarantee Theos after-stage
+          # resources are copied into the obj bundle used by this custom IPA
+          # packager. Copy the editor queries here deterministically.
+          mkdir -p "$APP/Languages"
+          for d in c cpp objc swift python javascript typescript tsx json html css bash yaml xml markdown sql; do
+            SRC="third_party/tree-sitter-languages/$d/queries/highlights.scm"
+            if [ ! -f "$SRC" ]; then
+              SRC="third_party/tree-sitter-languages/typescript/$d/queries/highlights.scm"
+            fi
+            if [ -f "$SRC" ]; then
+              mkdir -p "$APP/Languages/$d"
+              cp "$SRC" "$APP/Languages/$d/highlights.scm"
+            fi
+          done
+          test -f "$APP/Languages/c/highlights.scm"
 
           rm -rf "$APP/PlugIns/FuckFileShare.appex"
           mkdir -p "$APP/PlugIns"
