@@ -53,9 +53,9 @@ static NSString *FFIPAMainAppRoot(NSArray<FFArchiveEntry *> *entries)
             [NSCharacterSet characterSetWithCharactersInString:@"/"]];
         NSArray<NSString *> *parts = path.pathComponents;
         if (parts.count != 3) continue;
-        if (![parts[0] caseInsensitiveCompare:@"Payload"] == NSOrderedSame) continue;
-        if (![parts[1].pathExtension caseInsensitiveCompare:@"app"] == NSOrderedSame) continue;
-        if (![parts[2] caseInsensitiveCompare:@"Info.plist"] == NSOrderedSame) continue;
+        if ([parts[0] caseInsensitiveCompare:@"Payload"] != NSOrderedSame) continue;
+        if ([parts[1].pathExtension caseInsensitiveCompare:@"app"] != NSOrderedSame) continue;
+        if ([parts[2] caseInsensitiveCompare:@"Info.plist"] != NSOrderedSame) continue;
         NSString *candidate = [NSString pathWithComponents:@[parts[0], parts[1]]];
         if (!best || [candidate compare:best options:NSCaseInsensitiveSearch] == NSOrderedAscending)
             best = candidate;
@@ -69,8 +69,8 @@ static NSString *FFIPAMainAppRoot(NSArray<FFArchiveEntry *> *entries)
                 [NSCharacterSet characterSetWithCharactersInString:@"/"]];
             NSArray<NSString *> *parts = trimmed.pathComponents;
             if (parts.count != 2) continue;
-            if (![parts[0] caseInsensitiveCompare:@"Payload"] == NSOrderedSame) continue;
-            if (![parts[1].pathExtension caseInsensitiveCompare:@"app"] == NSOrderedSame) continue;
+            if ([parts[0] caseInsensitiveCompare:@"Payload"] != NSOrderedSame) continue;
+            if ([parts[1].pathExtension caseInsensitiveCompare:@"app"] != NSOrderedSame) continue;
             best = trimmed;
             break;
         }
