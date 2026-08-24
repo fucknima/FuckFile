@@ -32,6 +32,7 @@
 @property(nonatomic, copy) NSString *xattrText;
 @property(nonatomic, copy) NSString *sha256Text;
 @property(nonatomic, strong) FFIPAMetadata *ipaMetadata;
+@property(nonatomic, copy) NSString *ipaError;
 @end
 
 @implementation FFFileInfoViewController
@@ -127,10 +128,10 @@
         __weak typeof(self) weakSelf = self;
         [[FFIPAMetadataService sharedService] metadataForIPAAtPath:self.entry.path
             completion:^(FFIPAMetadata *metadata, NSError *error) {
-                (void)error;
                 typeof(weakSelf) self = weakSelf;
-                if (!self || !metadata) return;
+                if (!self) return;
                 self.ipaMetadata = metadata;
+                self.ipaError = metadata ? nil : (error.localizedDescription ?: @"无法解析 IPA");
                 if (metadata.icon) {
                     self.icon = metadata.icon;
                     self.headerIconView.image = metadata.icon;
@@ -182,14 +183,14 @@
     });
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView
 {
     return [self isIPA] ? 5 : 4;
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    if ([self isIPA] && section == 1) return 5;
+    if ([self isIPA] && section == 1) return self.ipaError.length ? 1 : 5;
     NSInteger s = [self logicalSection:section];
     switch (s) {
         case 0: return 5;
@@ -206,7 +207,7 @@
     return section;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     if ([self isIPA] && section == 1) return @"应用信息";
     switch ([self logicalSection:section]) {
@@ -230,6 +231,13 @@
     cell.detailTextLabel.numberOfLines = 1;
 
     if ([self isIPA] && indexPath.section == 1) {
+        if (self.ipaError.length) {
+            cell.textLabel.text = @"解析失败";
+            cell.detailTextLabel.text = self.ipaError;
+            cell.detailTextLabel.numberOfLines = 0;
+            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            return cell;
+        }
         FFIPAMetadata *m = self.ipaMetadata;
         NSArray *titles = @[@"应用名称", @"Bundle ID", @"版本", @"Build", @"最低系统"];
         NSArray *values = @[
@@ -239,7 +247,8 @@
         cell.textLabel.text = titles[indexPath.row];
         cell.detailTextLabel.text = values[indexPath.row];
         cell.detailTextLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
-        if (indexPath.row == 1 && m.bundleIdentifier.length) cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        if (indexPath.row == 1 && m.bundleIdentifier.length)
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
     }
 
