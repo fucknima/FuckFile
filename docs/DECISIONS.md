@@ -572,10 +572,12 @@ Swift 源）＋ **tree-sitter v0.24.7（MIT）C 运行库**＋ 16 个语言 gram
 - Theos 官方支持 Swift 应用目标（theos docs Swift: ObjC ↔ Swift 通过
   `<instance>-Swift.h` / `<instance>-Bridging-Header.h` 互通）；ObjC 侧
   与 Swift 侧通过唯一的适配层 **FFCodeEditorView.swift** 通信，第三方
-  API 不散落到项目其余位置。C 侧 bridging： TreeSitter 模块 map
-  （third_party/tree-sitter/module.modulemap）+ 自带 grammar extern 声明
-  （grammars.h），Swift 编译经 `FuckFile_SWIFTFLAGS = -I third_party/tree-sitter`
-  可达。
+  API 不散落到项目其余位置。C 侧 bridging：FuckFile-Bridging-Header.h
+  （`#include <tree_sitter/api.h>` + `#include grammars.h`）。theos 对
+  Swift 是逐文件编译，module map 方案不可靠（-I 不会在每个文件生效），
+  vendored Runestone 的 `import TreeSitter` 已移除（13 处），改为纯
+  bridging header 暴露 C 声明；SwiftFLAGS 仅需
+  `-I$(PWD)/third_party/tree-sitter/include`。
 - wasm 支持被裁剪：运行时编译 11 个核心 .c（不含 wasm_store）＋
   third_party/tree-sitter/wasm_stub.c 桩（ts_language_is_wasm 恒 false，
   桩函数按 api.h 原型补齐，实际不可达，防止未定义符号）。
