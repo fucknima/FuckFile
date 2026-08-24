@@ -1,17 +1,14 @@
-// Core 逻辑自检：FFContentProbe / FFTextCodec / FFIPSParser / FFRHWNDecoder。
+// Core 逻辑自检：FFContentProbe / FFTextCodec。
 // 在 macOS（CI runner）用系统 clang 编译运行：不需要 UIKit、不需要 theos。
 //
 //   clang -fobjc-arc -framework Foundation -lz -I src \
 //     tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
-//     src/FFIPSParser.m src/FFRHWNDecoder.m \
 //     -o /tmp/ff_selfcheck && /tmp/ff_selfcheck
 #import <Foundation/Foundation.h>
 #import <zlib.h>
 
 #import "FFContentProbe.h"
 #import "FFTextCodec.h"
-#import "FFIPSParser.h"
-#import "FFRHWNDecoder.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -148,124 +145,12 @@ static void testCodec(void)
     CHECK(latinData != nil, @"codec-latin1-encode");
 }
 
-#pragma mark - IPS
-
-static NSData *MakeIPSDictionary(void)
-{
-    NSDictionary *header = @{
-        @"bug_type": @"241",
-        @"os_version": @"iPhone OS 27.0 (21A123)",
-        @"custom_headers": @{
-            @"stalls": @1,
-            @"sender": @"CM-HLS",
-            @"clientName": @"Twitter",
-            @"type": @"ABRTrace",
-            @"version": @"3",
-            @"compression": @"zlib",
-        },
-    };
-    return [NSJSONSerialization dataWithJSONObject:header options:0 error:nil];
-}
-
-static NSData *CompressZlib(NSData *input, int windowBits)
-{
-    z_stream stream;
-    memset(&stream, 0, sizeof(stream));
-    deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY);
-    NSMutableData *out = [NSMutableData dataWithLength:
-        compressBound((uLong)input.length) + input.length + 64];
-    stream.next_in = (Bytef *)(uintptr_t)input.bytes;
-    stream.avail_in = (uInt)input.length;
-    stream.next_out = out.mutableBytes;
-    stream.avail_out = (uInt)out.length;
-    deflate(&stream, Z_FINISH);
-    deflateEnd(&stream);
-    out.length = stream.total_out;
-    return out;
-}
-
-static void testIPS(void)
-{
-    // A. 纯 JSON（无 payload）。
-    NSData *plain = MakeIPSDictionary();
-    FFIPSParseResult *result = [FFIPSParser parseData:plain];
-    CHECK(result.status == FFIPSStatusOK, @"ips-plain-json");
-    CHECK([result.header[@"bug_type"] isEqualToString:@"241"], @"ips-header-bugtype");
-    CHECK(!result.hasPayload, @"ips-no-payload");
-
-    // B. JSON + zlib payload。
-    NSData *payload = [NSData dataWithBytes:"RHWN\x00\x01\x02hello, world! this is the payload content with text."
-                                     length:60];
-    NSMutableData *withZlib = [plain mutableCopy];
-    NSData *zlibPayload = CompressZlib(payload, MAX_WBITS);
-    [withZlib appendData:zlibPayload];
-    result = [FFIPSParser parseData:withZlib];
-    CHECK(result.status == FFIPSStatusOK, @"ips-zlib-ok");
-    CHECK(result.actualCompression == FFIPSCompressionZlib, @"ips-zlib-actual");
-    CHECK(result.isRHWN, @"ips-rhwn-detected");
-    CHECK(result.payload.length == 60, @"ips-payload-size");
-    FFRHWNDecoder *rhwn = [[FFRHWNDecoder alloc] initWithData:result.payload];
-    CHECK(rhwn.isRHWN, @"rhwn-magic");
-    CHECK(rhwn.printableStrings.count >= 1, @"rhwn-strings");
-
-    // C. JSON + RAW DEFLATE payload（元数据声称 zlib，实际 raw）。
-    NSMutableData *withRaw = [plain mutableCopy];
-    NSData *rawPayload = CompressZlib(payload, -MAX_WBITS);
-    [withRaw appendData:rawPayload];
-    result = [FFIPSParser parseData:withRaw];
-    CHECK(result.status == FFIPSStatusOK, @"ips-rawdeflate-ok");
-    CHECK(result.actualCompression == FFIPSCompressionRawDeflate, @"ips-rawdeflate-actual");
-
-    // D. 截断 / 损坏：Header 正确，payload 坏。
-    NSMutableData *corrupt = [withZlib mutableCopy];
-    uint8_t *bytes = corrupt.mutableBytes;
-    bytes[corrupt.length - 10] ^= 0xFF;
-    result = [FFIPSParser parseData:corrupt];
-    CHECK(result.status == FFIPSStatusDecompressFailed ||
-          result.status == FFIPSStatusOK, @"ips-corrupt-handled");
-
-    // Header 存在但根本不可解析。
-    NSData *truncatedHeader = [plain subdataWithRange:NSMakeRange(0, 10)];
-    result = [FFIPSParser parseData:truncatedHeader];
-    CHECK(result.status == FFIPSStatusNotIPS, @"ips-truncated-header");
-
-    // 非 IPS 垃圾。
-    NSData *garbage = [NSData dataWithBytes:"\x00\x01\x02\x03\x04\x05\x06\x07" length:8];
-    result = [FFIPSParser parseData:garbage];
-    CHECK(result.status == FFIPSStatusNotIPS, @"ips-garbage");
-
-    // E. 超高压缩比炸弹：高比率压缩输入 → 解压超过 64MB/256:1 上限。
-    NSData *compressed = CompressZlib([NSMutableData dataWithLength:128 * 1024 * 1024], MAX_WBITS); // high ratio zeros
-    NSMutableData *bombIPS = [plain mutableCopy];
-    [bombIPS appendData:compressed];
-    result = [FFIPSParser parseData:bombIPS];
-    CHECK(result.status == FFIPSStatusOK ||
-          result.status == FFIPSStatusDecompressBomb ||
-          result.status == FFIPSStatusDecompressFailed, @"ips-bomb-never-crashed");
-
-    // header 边界扫描：带转义字符串的 JSON。
-    NSMutableData *tricky = [plain mutableCopy];
-    [tricky appendData:[@"{\"a\":\"}\"}" dataUsingEncoding:NSUTF8StringEncoding]];
-    long long end = [FFIPSParser headerJSONEndOffset:tricky];
-    CHECK(end == (long long)plain.length, @"ips-header-scan-escapes");
-}
-
-static void testHeaderScan(void)
-{
-    NSData *simple = [@"{\"a\":1}" dataUsingEncoding:NSUTF8StringEncoding];
-    CHECK([FFIPSParser headerJSONEndOffset:simple] == 7, @"ips-scan-simple");
-    NSData *escaped = [@"{\"x\":\"{\\\"y\\\"}\"}" dataUsingEncoding:NSUTF8StringEncoding];
-    CHECK([FFIPSParser headerJSONEndOffset:escaped] == (long long)escaped.length, @"ips-scan-escaped");
-    CHECK([FFIPSParser headerJSONEndOffset:[@"not json" dataUsingEncoding:NSUTF8StringEncoding]] == -1, @"ips-scan-reject");
-}
 
 int main(void)
 {
     @autoreleasepool {
         testProbe();
         testCodec();
-        testHeaderScan();
-        testIPS();
     }
     fprintf(stderr, "\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

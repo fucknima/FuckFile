@@ -60,9 +60,6 @@ FuckFile_FILES = \
 	src/FFViewerPickerViewController.m \
 	src/FFContentProbe.m \
 	src/FFTextCodec.m \
-	src/FFIPSParser.m \
-	src/FFRHWNDecoder.m \
-	src/FFDiagnosticViewController.m \
 	src/FFCodeEditorView.swift \
 	third_party/tree-sitter/wasm_stub.c \
 	third_party/tree-sitter/src/alloc.c \

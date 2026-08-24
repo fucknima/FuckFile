@@ -3,7 +3,7 @@
 #import <ctype.h>
 
 // 头窗口采样：文本统计 16 KB 即可稳定，magic/JSON 需要 64 KB 容纳
-// 大部分 payload 之前的内容判断；IPS 头 JSON 通常 < 64 KB。
+// 头窗口采样：文本统计 16 KB 即可稳定，magic/JSON 需要 64 KB 容纳。
 static const NSUInteger kFFProbeSampleLength = 64 * 1024;
 
 static BOOL FFIsNullByte(uint8_t byte) { return byte == 0x00; }
@@ -75,9 +75,6 @@ static BOOL FFIsReadableByte(uint8_t byte)
             return FFContentKindBinary;
         }
     }
-
-    // ---- IPS：JSON Header 特征（bug_type / custom_headers / captureTime） ----
-    if ([self looksLikeIPSDiagnostic:sample]) return FFContentKindIPSDiagnostic;
 
     // ---- 文本：UTF-8 / UTF-16 ----
     if ([self isTextSample:sample]) {
@@ -264,21 +261,6 @@ static BOOL FFIsReadableByte(uint8_t byte)
     return (bytes[0] == 'P' && bytes[1] == 'K' && bytes[2] == '\x03' && bytes[3] == '\x04')
         || (bytes[0] == 'P' && bytes[1] == 'K' && bytes[2] == '\x05' && bytes[3] == '\x06')
         || (bytes[0] == 'P' && bytes[1] == 'K' && bytes[2] == '\x07' && bytes[3] == '\x08');
-}
-
-+ (BOOL)looksLikeIPSDiagnostic:(NSData *)sample
-{
-    if (sample.length < 8) return NO;
-    // 放宽：确定是 ASCII 文本且包含典型 IPS 头 key。
-    NSString *head = [[NSString alloc] initWithData:sample encoding:NSASCIIStringEncoding];
-    if (!head) return NO;
-    NSString *trimmed = [head stringByTrimmingCharactersInSet:
-        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (![trimmed hasPrefix:@"{"]) return NO;
-    return [head containsString:@"\"bug_type\""] ||
-           [head containsString:@"\"custom_headers\""] ||
-           [head containsString:@"\"os_version\""] ||
-           [head containsString:@"\"captureTime\""];
 }
 
 @end

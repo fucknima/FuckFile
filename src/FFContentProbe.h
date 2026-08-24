@@ -18,7 +18,6 @@ typedef NS_ENUM(NSInteger, FFContentKind) {
     FFContentKindPlist,
     FFContentKindSQLite,
     FFContentKindZIP,
-    FFContentKindIPSDiagnostic,
     FFContentKindBinary,
 };
 
@@ -47,9 +46,6 @@ typedef NS_ENUM(NSInteger, FFContentKind) {
 
 // 严格的 UTF-8 有效性校验（供 FFTextCodec / 测试复用）。
 + (BOOL)isValidUTF8Sample:(NSData *)data;
-
-// IPS 识别调用方：header JSON 扫描完成后判定 True Negative 用。
-+ (BOOL)looksLikeIPSDiagnostic:(NSData *)sample;
 
 + (BOOL)isSQLite:(NSData *)sample;
 + (BOOL)isZIP:(NSData *)sample;

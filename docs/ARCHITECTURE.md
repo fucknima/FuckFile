@@ -348,22 +348,10 @@ Debug 时保留详细日志。
 
 Release 避免泄漏敏感路径及账户信息。
 
-## 内容探测 / 文本编解码（2026-08-24，ADR-017）
-
-- `FFContentProbe`：统一内容探测源。采样头部 64 KB；类别 = UTF-8 文本 /
-  UTF-16 文本 / JSON / XML / plist / SQLite / ZIP / IPS / 已知二进制 / 未知二进制。
-  **严禁 Latin-1 作为自动文本判定依据**（2010 年代文件管理器式错误：
-  UTF-8 → UTF-16 → Latin-1 链会把二进制硬解成文本进入编辑器）。
-- `FFTextCodec`：BOM/编码/换行符检测与编解码单点化。自动白名单
-  UTF-8(BOM)/UTF-16 LE/BE；Latin-1 仅用户强制；保存默认保持原编码/BOM/
-  换行符（FFTextEditorViewController 的 save 流）。
-- 编辑器安全能力不变：FFPathPolicy → NSDataWritingAtomic → 失败提供保存副本。
 
 查看器表新增：
 
 | viewer ID | 名称 | 实现 |
-|---|---|---|
-| diagnostic | 系统诊断查看器 | `FFIPSParser` + `FFRHWNDecoder` + `FFDiagnosticViewController`（.ips：JSON Header 元数据、zlib→raw DEFLATE 回退解压、RHWN 保守识别、复用 text/hex 链路） |
 
 ## 代码/文本编辑器（2026-08-24，ADR-017）
 

@@ -30,11 +30,10 @@ jobs:
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
-      - name: Self-check core logic (probe/codec/IPS)
+      - name: Self-check core logic (probe/codec)
         run: |
           clang -fobjc-arc -framework Foundation -lz -I src \
             tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
-            src/FFIPSParser.m src/FFRHWNDecoder.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
 

@@ -241,7 +241,8 @@ final class FFCodeEditorView: UIView {
         textView.scrollRangeToVisible(textView.selectedRange)
     }
 
-    /// 选区定位并把命中行滚动到视口中部（firstRect 为内容坐标）。
+    /// 选区定位并把命中行滚动到搜索工具条上方（不要居中：键盘区域会遮挡）。
+    /// firstRect(for:) 为内容坐标（LayoutManager 用 line.yPosition + inset）。
     @objc func selectRangeCentered(_ range: NSRange) {
         let length = min(range.length, max(0, (textView.text as NSString).length - range.location))
         guard length > 0 else { return }
@@ -260,10 +261,13 @@ final class FFCodeEditorView: UIView {
             textView.scrollRangeToVisible(target)
             return
         }
-        let viewportHeight = textView.bounds.height
-        let targetY = rect.midY - viewportHeight / 2
+        // 可见视口 = 去掉键盘（contentInset.bottom 由系统/键盘 observer 维护）。
+        let visibleHeight = textView.bounds.height - textView.contentInset.bottom
+        // 锚点：视口底部往上 ~100pt（工具条 92 + 边距），命中行出现在工具条上方。
+        let anchorY = max(100, visibleHeight - 100)
+        let targetY = rect.midY - anchorY
         let maxY = max(0, textView.contentSize.height +
-            textView.contentInset.top + textView.contentInset.bottom - viewportHeight)
+            textView.contentInset.top + textView.contentInset.bottom - textView.bounds.height)
         let clampedY = min(max(0, targetY), maxY)
         textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: clampedY),
                                   animated: true)

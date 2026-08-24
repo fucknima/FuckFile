@@ -42,8 +42,6 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"html": @"web", @"htm": @"web", @"url": @"web", @"webloc": @"web",
             // 十六进制编辑器
             @"hex": @"hex", @"dat": @"hex",
-            // Apple .ips 系统诊断查看器
-            @"ips": @"diagnostic",
             // IPA 安装器
             @"ipa": @"installer",
             // ZIP 浏览器（后端不支持的格式由浏览器明确提示，见 FFArchiveService）

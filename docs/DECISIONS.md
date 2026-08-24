@@ -667,3 +667,24 @@ CodeMirror 代码。
 grammar 选择基准：LANGUAGE_VERSION ≤ 14（新于 tree-sitter 0.25 起 runtime 声明的
 LANG_VERSION 15，见 0.25.10 api.h；0.23.x tag 的 parser.c 多为 0.25 CLI 重新生成，
 需 runtime >= 0.25）且各自仓库既有生成好的 parser.c/scanner.c（不自造生成步骤）。
+
+## ADR-018
+
+日期：2026-08-24
+
+决定：
+
+**弃用 Apple .ips 系统诊断查看器，删除全部相关代码。**
+
+删除：FFIPSParser、FFRHWNDecoder、FFDiagnosticViewController、Viewer Registry
+中的 `diagnostic` viewer、文件关联 `ips → diagnostic`、FFContentProbe 的 IPS
+检测分支、tests/self_check.m 的 IPS 用例；docs 同步（PRODUCT/ROADMAP/ARCHITECTURE
+移除、TODO 标注下线）。ADR-017 保留作为历史记录。
+
+原因（产品决策）：.ips 诊断查看实际使用率极低，维持「Header/压缩/RHWN
+安全识别」的成本（zlib/raw DEFLATE 双通道、防炸弹边界、RHWN 不猜字段的
+克制）与其无收益不成比例。弃用后该格式回归 内容探测 fallback 链（文本→
+QuickLook→Hex）。
+
+约束：不恢复任何 .ips 专用分支；后续若重新需要，应以「真实样本验证过的
+完整解析器」为准重新立项。
