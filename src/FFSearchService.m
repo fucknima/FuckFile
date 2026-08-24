@@ -39,14 +39,11 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 - (instancetype)init
 {
     self = [super init];
-    if (self) {
-        _workQueue = dispatch_queue_create("ff.search", DISPATCH_QUEUE_SERIAL);
-    }
+    if (self) _workQueue = dispatch_queue_create("ff.search", DISPATCH_QUEUE_SERIAL);
     return self;
 }
 
-- (void)startSearch:(NSString *)query
-          underRoot:(NSString *)root
+- (void)startSearch:(NSString *)query underRoot:(NSString *)root
               batch:(void (^)(NSArray<FFFoundItem *> *))batch
          completion:(void (^)(BOOL))completion
 {
@@ -61,8 +58,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     NSUInteger gen = self.generation;
     self.visitedRealPaths = [NSMutableSet set];
     dispatch_async(self.workQueue, ^{
-        BOOL finished = [self searchFor:needle underPath:root depth:0
-                                   generation:gen batch:batch];
+        BOOL finished = [self searchFor:needle underPath:root depth:0 generation:gen batch:batch];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion && self.generation == gen) completion(finished);
         });
@@ -75,12 +71,27 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     self.generation++;
 }
 
-- (BOOL)searchFor:(NSString *)needle underPath:(NSString *)path depth:(NSUInteger)depth
-            generation:(NSUInteger)generation
-              batch:(void (^)(NSArray<FFFoundItem *> *))batch
+- (NSString *)displayNameForEntryName:(NSString *)name path:(NSString *)child parent:(NSString *)parent
 {
-    if (self.cancelled || self.generation != generation || depth > kFFSearchMaxDepth)
-        return NO;
+    // AppData top-level links are bundle IDs. Their actual localized name may
+    // only exist in the target container's iTunesMetadata and LS workspace can
+    // be unavailable on newer iOS, so resolve the symlink target exactly as
+    // the browser does instead of relying on bundle-id mappings alone.
+    if ([parent.stringByStandardizingPath isEqualToString:FFAppDataVirtualPath().stringByStandardizingPath]) {
+        char resolved[PATH_MAX] = {0};
+        if (realpath(child.fileSystemRepresentation, resolved)) {
+            NSString *real = [NSString stringWithUTF8String:resolved];
+            NSString *metadataName = FFAppContainerItemName(real);
+            if (metadataName.length) return metadataName;
+        }
+    }
+    return FFAppDisplayName(name);
+}
+
+- (BOOL)searchFor:(NSString *)needle underPath:(NSString *)path depth:(NSUInteger)depth
+        generation:(NSUInteger)generation batch:(void (^)(NSArray<FFFoundItem *> *))batch
+{
+    if (self.cancelled || self.generation != generation || depth > kFFSearchMaxDepth) return NO;
     DIR *directory = opendir(path.fileSystemRepresentation);
     if (!directory) return YES;
 
@@ -101,16 +112,13 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         struct stat status = {0};
         if (stat(child.fileSystemRepresentation, &status) != 0) continue;
         BOOL isDirectory = S_ISDIR(status.st_mode);
-
-        // AppData entries are stored as bundle identifiers. Search both the
-        // on-disk name and the human-facing App name so "中国移动" can match
-        // cn.10086.app just as the browser row itself does.
-        NSString *displayName = FFAppDisplayName(name);
+        NSString *displayName = [self displayNameForEntryName:name path:child parent:path];
         BOOL matches = [name.lowercaseString containsString:needle] ||
             (displayName.length && [displayName.lowercaseString containsString:needle]);
         if (matches) {
             FFFoundItem *item = [FFFoundItem new];
             item.name = name;
+            item.displayName = displayName;
             item.path = child;
             item.isDirectory = isDirectory;
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
@@ -118,7 +126,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         }
         if (isDirectory) [subdirectories addObject:child];
         if (pending.count >= kFFSearchBatchSize) {
-            NSArray *flush = [pending copy];
+            NSArray *flush = pending.copy;
             [pending removeAllObjects];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (batch && self.generation == generation) batch(flush);
@@ -135,13 +143,11 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         NSString *key = [NSString stringWithUTF8String:resolved];
         if ([self.visitedRealPaths containsObject:key]) continue;
         [self.visitedRealPaths addObject:key];
-        [self searchFor:needle underPath:sub depth:depth + 1
-              generation:generation batch:batch];
+        [self searchFor:needle underPath:sub depth:depth + 1 generation:generation batch:batch];
     }
 
     if (pending.count > 0) {
-        NSArray *flush = [pending copy];
-        [pending removeAllObjects];
+        NSArray *flush = pending.copy;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (batch && self.generation == generation) batch(flush);
         });
@@ -151,17 +157,15 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 
 - (NSArray<NSString *> *)history
 {
-    NSArray *history = [NSUserDefaults.standardUserDefaults
-        arrayForKey:kFFSearchHistoryKey];
+    NSArray *history = [NSUserDefaults.standardUserDefaults arrayForKey:kFFSearchHistoryKey];
     return [history isKindOfClass:NSArray.class] ? history : @[];
 }
 
 - (void)addHistory:(NSString *)query
 {
-    query = [query stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    query = [query stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (query.length == 0) return;
-    NSMutableArray *history = [self.history mutableCopy];
+    NSMutableArray *history = self.history.mutableCopy;
     [history removeObject:query];
     [history insertObject:query atIndex:0];
     while (history.count > kFFSearchHistoryLimit) [history removeLastObject];
@@ -177,13 +181,6 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 
 #pragma mark - Browser recursive search adapter
 
-// The browser used to interpret its search field as an in-memory filter over
-// the current directory's already loaded rows. The product wording says
-// "在当前文件夹搜索", which users reasonably interpret as current folder +
-// descendants. Keep the browser's existing empty-query/filter behaviour, but
-// replace non-empty queries with an isolated FFSearchService rooted at the
-// browser's currentPath. A per-browser service prevents interference with the
-// home/global search session.
 static const void *kFFBrowserFolderSearchServiceKey = &kFFBrowserFolderSearchServiceKey;
 static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearchGenerationKey;
 
@@ -198,10 +195,8 @@ static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearch
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Method original = class_getInstanceMethod(self,
-            @selector(updateSearchResultsForSearchController:));
-        Method replacement = class_getInstanceMethod(self,
-            @selector(ff_recursive_updateSearchResultsForSearchController:));
+        Method original = class_getInstanceMethod(self, @selector(updateSearchResultsForSearchController:));
+        Method replacement = class_getInstanceMethod(self, @selector(ff_recursive_updateSearchResultsForSearchController:));
         if (original && replacement) method_exchangeImplementations(original, replacement);
     });
 }
@@ -211,8 +206,7 @@ static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearch
     FFSearchService *service = objc_getAssociatedObject(self, kFFBrowserFolderSearchServiceKey);
     if (!service) {
         service = [FFSearchService new];
-        objc_setAssociatedObject(self, kFFBrowserFolderSearchServiceKey,
-            service, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, kFFBrowserFolderSearchServiceKey, service, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return service;
 }
@@ -221,8 +215,7 @@ static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearch
 {
     NSNumber *old = objc_getAssociatedObject(self, kFFBrowserFolderSearchGenerationKey);
     NSUInteger next = old.unsignedIntegerValue + 1;
-    objc_setAssociatedObject(self, kFFBrowserFolderSearchGenerationKey,
-        @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, kFFBrowserFolderSearchGenerationKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return next;
 }
 
@@ -233,8 +226,6 @@ static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearch
     if (query.length == 0) {
         [[self ff_folderSearchService] cancel];
         [self ff_nextFolderSearchGeneration];
-        // After swizzling this selector invokes the browser's original local
-        // filter implementation, restoring normal rows/filter state.
         [self ff_recursive_updateSearchResultsForSearchController:searchController];
         return;
     }
@@ -248,41 +239,34 @@ static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearch
 
     NSString *root = self.currentPath;
     __weak typeof(self) weakSelf = self;
-    [service startSearch:query underRoot:root
-        batch:^(NSArray<FFFoundItem *> *batch) {
-            typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            NSNumber *current = objc_getAssociatedObject(strongSelf,
-                kFFBrowserFolderSearchGenerationKey);
-            if (current.unsignedIntegerValue != generation) return;
+    [service startSearch:query underRoot:root batch:^(NSArray<FFFoundItem *> *batch) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSNumber *current = objc_getAssociatedObject(strongSelf, kFFBrowserFolderSearchGenerationKey);
+        if (current.unsignedIntegerValue != generation) return;
 
-            NSMutableArray<FFEntry *> *rows = [[strongSelf valueForKey:@"filteredEntries"] mutableCopy]
-                ?: [NSMutableArray array];
-            for (FFFoundItem *found in batch) {
-                FFEntry *entry = [FFEntry new];
-                entry.name = found.name;
-                entry.displayName = FFAppDisplayName(found.name);
-                entry.path = found.path;
-                entry.isDirectory = found.isDirectory;
-                entry.size = found.size;
-                NSString *relative = [found.path hasPrefix:root]
-                    ? [found.path substringFromIndex:MIN(root.length + 1, found.path.length)]
-                    : found.path;
-                entry.detail = relative.stringByDeletingLastPathComponent.length
-                    ? relative.stringByDeletingLastPathComponent : @"当前文件夹";
-                [rows addObject:entry];
-            }
-            [strongSelf setValue:rows forKey:@"filteredEntries"];
-            [strongSelf refreshVisibleContent];
+        NSMutableArray<FFEntry *> *rows = [[strongSelf valueForKey:@"filteredEntries"] mutableCopy] ?: [NSMutableArray array];
+        for (FFFoundItem *found in batch) {
+            FFEntry *entry = [FFEntry new];
+            entry.name = found.name;
+            entry.displayName = found.displayName.length ? found.displayName : found.name;
+            entry.path = found.path;
+            entry.isDirectory = found.isDirectory;
+            entry.size = found.size;
+            NSString *relative = [found.path hasPrefix:root]
+                ? [found.path substringFromIndex:MIN(root.length + 1, found.path.length)] : found.path;
+            NSString *parent = relative.stringByDeletingLastPathComponent;
+            entry.detail = parent.length ? parent : @"当前文件夹";
+            [rows addObject:entry];
         }
-        completion:^(__unused BOOL finished) {
-            typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            NSNumber *current = objc_getAssociatedObject(strongSelf,
-                kFFBrowserFolderSearchGenerationKey);
-            if (current.unsignedIntegerValue == generation)
-                [strongSelf refreshVisibleContent];
-        }];
+        [strongSelf setValue:rows forKey:@"filteredEntries"];
+        [strongSelf refreshVisibleContent];
+    } completion:^(__unused BOOL finished) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSNumber *current = objc_getAssociatedObject(strongSelf, kFFBrowserFolderSearchGenerationKey);
+        if (current.unsignedIntegerValue == generation) [strongSelf refreshVisibleContent];
+    }];
 }
 
 @end
