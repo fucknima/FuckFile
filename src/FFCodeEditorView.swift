@@ -241,6 +241,34 @@ final class FFCodeEditorView: UIView {
         textView.scrollRangeToVisible(textView.selectedRange)
     }
 
+    /// 选区定位并把命中行滚动到视口中部（firstRect 为内容坐标）。
+    @objc func selectRangeCentered(_ range: NSRange) {
+        let length = min(range.length, max(0, (textView.text as NSString).length - range.location))
+        guard length > 0 else { return }
+        let target = NSRange(location: range.location, length: length)
+        textView.selectedRange = target
+        guard
+            let start = textView.position(from: textView.beginningOfDocument, offset: target.location),
+            let end = textView.position(from: textView.beginningOfDocument, offset: NSMaxRange(target)),
+            let uiRange = textView.textRange(from: start, to: end)
+        else {
+            textView.scrollRangeToVisible(target)
+            return
+        }
+        let rect = textView.firstRect(for: uiRange)
+        if rect.isNull || rect.height == 0 {
+            textView.scrollRangeToVisible(target)
+            return
+        }
+        let viewportHeight = textView.bounds.height
+        let targetY = rect.midY - viewportHeight / 2
+        let maxY = max(0, textView.contentSize.height +
+            textView.contentInset.top + textView.contentInset.bottom - viewportHeight)
+        let clampedY = min(max(0, targetY), maxY)
+        textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: clampedY),
+                                  animated: true)
+    }
+
     /// 高亮一批查找命中。
     @objc func setSearchHighlights(_ ranges: [NSValue]) {
         textView.highlightedRanges = ranges.map {

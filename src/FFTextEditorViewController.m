@@ -841,7 +841,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     self.currentMatchIndex = (self.currentMatchIndex + step + (NSInteger)self.matchRanges.count)
         % (NSInteger)self.matchRanges.count;
     NSValue *value = self.matchRanges[(NSUInteger)self.currentMatchIndex];
-    [self.editorView selectRange:value.rangeValue];
+    // 命中行滚动到视口中部，避免结果躲在底部/顶部边缘。
+    [self.editorView selectRangeCentered:value.rangeValue];
 }
 
 - (void)replaceCurrent

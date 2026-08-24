@@ -26,6 +26,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) NSArray<NSString *> *printableStrings;
 @property(nonatomic, readonly) NSString * _Nullable asciiHeadPreview;
 
+// 可读字符串字节占比（0~1）：高于阈值时 payload 主体以文本为主，
+// 「查看解码 Payload」应提供可读文本视图而不是纯 Hex。
+@property(nonatomic, readonly) double printableCoverage;
+
+// 提取的可读字符串文本（每行一条，来自 printableStrings —— 诚实标注为
+// 「提取的可读字符串」，不当作字段解释）。
+- (NSString *)stringsDumpText;
+
 - (instancetype)initWithData:(NSData *)data;
 
 @end

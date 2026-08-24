@@ -362,6 +362,19 @@
         [self flash:@"Payload 无法解码，可使用「查看原文件 Hex」"];
         return;
     }
+
+    // RHWN 且主体以可读文本为主：提供提取的可读字符串视图（诚实标注），
+    // 而不是粗暴 Hex —— 「解码结果能读」优先于「原样显示」。
+    if ([result.payloadFormat isEqualToString:@"RHWN"]) {
+        FFRHWNDecoder *decoder = [[FFRHWNDecoder alloc] initWithData:result.payload];
+        if (decoder.printableCoverage >= 0.35) {
+            [self openDerivedText:decoder.stringsDumpText
+                       baseName:[self.title stringByDeletingPathExtension]
+                      extension:@"txt"];
+            return;
+        }
+    }
+
     NSString *extension = [self extensionForPayloadFormat:result.payloadFormat];
     NSString *folder = [NSSearchPathForDirectoriesInDomains(NSLibraryDirectory,
         NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"IPS Payload"];
@@ -390,6 +403,30 @@
             navigationController:self.navigationController]) {
         [FFPreviewRouter toastOnNav:self.navigationController
             message:@"Payload 无法预览"];
+    }
+}
+
+- (void)openDerivedText:(NSString *)text baseName:(NSString *)baseName
+               extension:(NSString *)extension
+{
+    NSString *folder = [NSSearchPathForDirectoriesInDomains(NSLibraryDirectory,
+        NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"IPS Payload"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:folder
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *name = [NSString stringWithFormat:
+        @"%@-derived-%.0f.%@", baseName, [NSDate date].timeIntervalSince1970 * 1000,
+        extension];
+    NSString *path = [folder stringByAppendingPathComponent:name];
+    if (![[text dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES]) {
+        [self flash:@"写入提取文本失败"];
+        return;
+    }
+    FFEntry *item = [FFEntry new];
+    item.name = name;
+    item.path = path;
+    if (![FFPreviewRouter openItem:item viewerID:@"text"
+            navigationController:self.navigationController]) {
+        [FFPreviewRouter toastOnNav:self.navigationController message:@"提取文本无法预览"];
     }
 }
 

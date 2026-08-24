@@ -21,10 +21,12 @@ static const NSUInteger kFFRHWNPreviewLength = 512;
         const uint8_t *bytes = data.bytes;
         NSUInteger length = data.length;
         NSMutableString *run = [NSMutableString string];
+        unsigned long long printableBytes = 0;
         for (NSUInteger i = 0; i < length; i++) {
             uint8_t c = bytes[i];
             if (c == '\t' || (c >= 0x20 && c < 0x7F)) {
                 [run appendFormat:@"%c", (char)c];
+                printableBytes++;
             } else {
                 if (run.length >= kFFRHWNStringMinLength) [strings addObject:run];
                 [run setString:@""];
@@ -32,6 +34,8 @@ static const NSUInteger kFFRHWNPreviewLength = 512;
         }
         if (run.length >= kFFRHWNStringMinLength) [strings addObject:run];
         _printableStrings = strings;
+        // 覆盖率 = 可打印字节 / 总字节（供“文本优先显示”决策）。
+        _printableCoverage = length > 0 ? (double)printableBytes / (double)length : 0;
         _asciiHeadPreview = [self asciiPreviewBytes:bytes length:length];
 
         // 版本字段没有公开分配：本实现不猜 offset、不猜含义。
@@ -40,6 +44,23 @@ static const NSUInteger kFFRHWNPreviewLength = 512;
         _versionString = nil;
     }
     return self;
+}
+
+- (NSString *)stringsDumpText
+{
+    NSMutableString *out = [NSMutableString string];
+    // 诚实标注：这是提取的可打印字符串，不是字段解释。
+    [out appendFormat:@"# 从 RHWN Payload 提取的可读字符串（共 %lu 条，覆盖率 %.0f%%）\n",
+        (unsigned long)self.printableStrings.count, self.printableCoverage * 100.0];
+    for (NSString *s in self.printableStrings) {
+        [out appendString:s];
+        [out appendString:@"\n"];
+        if (out.length >= 1024 * 1024) {
+            [out appendString:@"…（输出超过 1 MB，已截断）\n"];
+            break;
+        }
+    }
+    return [out copy];
 }
 
 - (NSString *)asciiPreviewBytes:(const uint8_t *)bytes length:(NSUInteger)length
