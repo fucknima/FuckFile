@@ -1,10 +1,9 @@
-/* Minimal wasm stubs: the runtime is built without wasm support.
- * ts_language_is_wasm() always returns false, so these are never reached.
- */
+// Minimal wasm stubs: the runtime is compiled without wasm support.
+// ts_language_is_wasm() always returns false, so these are never reached.
 #include <tree_sitter/api.h>
 #include <stdlib.h>
 
-bool ts_language_is_wasm(const TSLanguage *language) { (void)language; return false; }
+bool ts_language_is_wasm(const TSLanguage *language) { return false; }
 const TSLanguage *ts_wasm_language_retain(const TSLanguage *language) { return language; }
 void ts_wasm_language_release(const TSLanguage *language) { (void)language; }
 TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *error) { (void)engine; (void)error; return NULL; }

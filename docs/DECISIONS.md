@@ -563,7 +563,7 @@ BOM / 编码 / 换行符的检测与编解码单点化：
 ### 3. 正式 Code/Text Editor：Runestone + Tree-sitter
 
 选择 **Runestone 0.5.2（MIT）**（third_party/runestone/0.5.2，完整 vendored
-Swift 源）＋ **tree-sitter v0.24.7（MIT）C 运行库**＋ 16 个语言 grammar
+Swift 源）＋ **tree-sitter v0.25.10（MIT）C 运行库**＋ 16 个语言 grammar
 （独立仓库 tag 固定，见 ADR 附录「第三方版本表」）。理由：
 
 - Runestone 用真实 tree-sitter AST 做高亮/缩进/括号匹配/行号/不可见字符/
@@ -647,7 +647,7 @@ CodeMirror 代码。
 | 组件 | 来源 & tag | commit | License |
 |---|---|---|---|
 | Runestone | simonbs/Runestone 0.5.2 | 592434a103a4d1ab83e14f87ac6eef569dd7a99d | MIT |
-| tree-sitter | tree-sitter/tree-sitter v0.24.7 | ae66034efd63c09622591c75b33f963e8f5af3c4 | MIT |
+| tree-sitter | tree-sitter/tree-sitter v0.25.10 | 208c6cac1453315e979f05ab34b6d4f7cd0340be | MIT |
 | tree-sitter-c | v0.23.6 | ec69f91b23dd8630d68710b911d77127146ff7ef | MIT |
 | tree-sitter-cpp | v0.23.3 | 26edde9453cd06c72910d198acf07c6dd702fe56 | MIT |
 | tree-sitter-objc | tree-sitter-grammars v3.0.0 | 12b85fa6ea3767271adffd7bae86bf83060f7170 | MIT |
@@ -664,5 +664,6 @@ CodeMirror 代码。
 | tree-sitter-markdown | tree-sitter-grammars v0.5.2 | aca7767daa8bbe3daddafc312c34be88383c828b | MIT |
 | tree-sitter-sql | tjdevries/tree-sitter-sql master | c8f50f7660e2e0b72e51eaae68c8f7f9f9a01755 | MIT |
 
-grammar 选择基准：LANGUAGE_VERSION ≤ 14（与 tree-sitter 0.24.7 运行时
-兼容）且各自仓库既有生成好的 parser.c/scanner.c（不自造生成步骤）。
+grammar 选择基准：LANGUAGE_VERSION ≤ 14（新于 tree-sitter 0.25 起 runtime 声明的
+LANG_VERSION 15，见 0.25.10 api.h；0.23.x tag 的 parser.c 多为 0.25 CLI 重新生成，
+需 runtime >= 0.25）且各自仓库既有生成好的 parser.c/scanner.c（不自造生成步骤）。
