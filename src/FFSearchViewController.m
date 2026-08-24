@@ -51,24 +51,38 @@
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
 
-    self.searchBackdrop = [[UIView alloc] init];
+    // UITableView may resize its backgroundView after assignment. The previous
+    // stack had no horizontal width constraint, so a multi-line UILabel could
+    // collapse to a one-character column (Chinese text rendered vertically).
+    // Build the background with Auto Layout and pin the stack to a safe width.
+    self.searchBackdrop = [[UIView alloc] initWithFrame:self.tableView.bounds];
+    self.searchBackdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
     self.spinner = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.hidesWhenStopped = YES;
     self.statusLabel = [UILabel new];
     self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.statusLabel.adjustsFontForContentSizeCategory = YES;
     self.statusLabel.textColor = UIColor.secondaryLabelColor;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
+    self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+
     UIStackView *stack = [[UIStackView alloc]
         initWithArrangedSubviews:@[self.spinner, self.statusLabel]];
     stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentFill;
     stack.spacing = 10;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.searchBackdrop addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.centerXAnchor constraintEqualToAnchor:self.searchBackdrop.centerXAnchor],
         [stack.topAnchor constraintEqualToAnchor:self.searchBackdrop.topAnchor constant:60],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.searchBackdrop.leadingAnchor constant:32],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:self.searchBackdrop.trailingAnchor constant:-32],
+        [stack.widthAnchor constraintLessThanOrEqualToConstant:420],
+        [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
     ]];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"清空历史" style:UIBarButtonItemStylePlain
