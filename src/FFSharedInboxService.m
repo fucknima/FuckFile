@@ -8,6 +8,8 @@
 NSNotificationName const FFSharedInboxDidImportNotification =
     @"FFSharedInboxDidImportNotification";
 
+static const NSTimeInterval kFFShareStreamRecoveryDelay = 180.0;
+
 @implementation FFSharedInboxService
 
 + (dispatch_queue_t)queue
@@ -20,23 +22,26 @@ NSNotificationName const FFSharedInboxDidImportNotification =
     return queue;
 }
 
++ (NSString *)appGroupInboxPath
+{
+    NSURL *groupURL = [NSFileManager.defaultManager
+        containerURLForSecurityApplicationGroupIdentifier:FFShareAppGroupIdentifier];
+    return groupURL.path.length
+        ? [groupURL.path stringByAppendingPathComponent:FFShareInboxDirectoryName] : nil;
+}
+
 + (NSArray<NSString *> *)candidateInboxRoots
 {
     NSMutableOrderedSet<NSString *> *roots = [NSMutableOrderedSet orderedSet];
 
-    NSURL *groupURL = [NSFileManager.defaultManager
-        containerURLForSecurityApplicationGroupIdentifier:FFShareAppGroupIdentifier];
-    if (groupURL.path.length) {
-        NSString *groupInbox = [groupURL.path stringByAppendingPathComponent:
-            FFShareInboxDirectoryName];
+    NSString *groupInbox = [self appGroupInboxPath];
+    if (groupInbox.length) {
         [roots addObject:groupInbox];
         FFLogTag(@"ShareInbox", @"bridge app-group=%@", groupInbox);
     } else {
         FFLogTag(@"ShareInbox", @"app-group unavailable");
     }
 
-    // The class-4 MCM fallback is part of advanced system access. Normal mode
-    // must not touch MCM at all; App Group sharing continues to work normally.
     if (FFSystemAccessManager.sharedManager.enabled &&
         FFSystemAccessManager.sharedManager.loadedThisSession) {
         NSString *mcmError = nil;
@@ -59,6 +64,23 @@ NSNotificationName const FFSharedInboxDidImportNotification =
     return roots.array;
 }
 
++ (BOOL)shouldDeferExtensionRecoveryForMetadata:(NSDictionary *)metadata
+                                          root:(NSString *)root
+                                groupInboxPath:(NSString *)groupInboxPath
+{
+    if (groupInboxPath.length && [root.stringByStandardizingPath
+        isEqualToString:groupInboxPath.stringByStandardizingPath]) return NO;
+
+    NSString *session = [metadata[@"session"] isKindOfClass:NSString.class]
+        ? metadata[@"session"] : nil;
+    NSDate *created = [metadata[@"created"] isKindOfClass:NSDate.class]
+        ? metadata[@"created"] : nil;
+    if (!session.length || !created) return NO;
+
+    NSTimeInterval age = [NSDate.date timeIntervalSinceDate:created];
+    return age >= 0 && age < kFFShareStreamRecoveryDelay;
+}
+
 + (void)processPendingWithCompletion:(void (^)(NSUInteger,
     NSArray<NSString *> *, NSArray<NSError *> *))completion
 {
@@ -74,6 +96,7 @@ NSNotificationName const FFSharedInboxDidImportNotification =
         NSMutableArray<NSString *> *destinations = [NSMutableArray array];
         NSMutableArray<NSError *> *errors = [NSMutableArray array];
         if (mkdirError) [errors addObject:mkdirError];
+        NSString *groupInboxPath = [self appGroupInboxPath];
 
         for (NSString *root in [self candidateInboxRoots]) {
             NSArray<NSString *> *names = [NSFileManager.defaultManager
@@ -83,16 +106,24 @@ NSNotificationName const FFSharedInboxDidImportNotification =
                 NSString *itemDirectory = [root stringByAppendingPathComponent:name];
                 NSString *payloadPath = [itemDirectory stringByAppendingPathComponent:@"payload"];
                 NSString *metadataPath = [itemDirectory stringByAppendingPathComponent:@"metadata.plist"];
-                NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+                NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath] ?: @{};
+
+                if ([self shouldDeferExtensionRecoveryForMetadata:metadata
+                    root:root groupInboxPath:groupInboxPath]) {
+                    FFLogTag(@"ShareInbox", @"defer active stream item=%@ session=%@",
+                        name, metadata[@"session"] ?: @"?");
+                    continue;
+                }
+
                 NSString *originalName = [metadata[@"name"] isKindOfClass:NSString.class]
                     ? metadata[@"name"] : @"imported";
 
                 BOOL isDirectory = NO;
                 if (![NSFileManager.defaultManager fileExistsAtPath:payloadPath
-                    isDirectory:&isDirectory]) {
+                    isDirectory:&isDirectory] || isDirectory) {
                     NSError *error = [NSError errorWithDomain:@"FFSharedInboxErrorDomain"
                         code:1 userInfo:@{NSLocalizedDescriptionKey:
-                            [NSString stringWithFormat:@"共享收件箱缺少 payload：%@", name]}];
+                            [NSString stringWithFormat:@"共享收件箱缺少有效 payload：%@", name]}];
                     [errors addObject:error];
                     FFLogTag(@"ShareInbox", @"invalid item=%@", itemDirectory);
                     continue;
