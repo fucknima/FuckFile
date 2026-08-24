@@ -1,5 +1,7 @@
 #import "FFSearchService.h"
 #import "FFLogger.h"
+#import "FFStorageEnvironment.h"
+#import "FFSystemAccessManager.h"
 
 #import <dirent.h>
 #import <limits.h>
@@ -51,7 +53,6 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         if (completion) completion(NO);
         return;
     }
-    // 每次搜索独立 generation：旧搜索的回调/结果不得污染新搜索。
     self.cancelled = NO;
     self.generation++;
     NSUInteger gen = self.generation;
@@ -68,7 +69,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 - (void)cancel
 {
     self.cancelled = YES;
-    self.generation++;   // 使进行中的旧搜索作废
+    self.generation++;
 }
 
 - (BOOL)searchFor:(NSString *)needle underPath:(NSString *)path depth:(NSUInteger)depth
@@ -80,6 +81,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     DIR *directory = opendir(path.fileSystemRepresentation);
     if (!directory) return YES;
 
+    BOOL advancedReady = FFSystemAccessManager.sharedManager.ready;
     NSMutableArray<FFFoundItem *> *pending = [NSMutableArray array];
     NSMutableArray<NSString *> *subdirectories = [NSMutableArray array];
     struct dirent *entry = NULL;
@@ -90,8 +92,8 @@ static const NSUInteger kFFSearchMaxDepth = 16;
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
         if (!name || [name hasPrefix:@"."]) continue;
         NSString *child = [path stringByAppendingPathComponent:name];
-        // stat() follows symlinks so app-container links are traversed;
-        // realpath dedupe prevents cycles.
+        if (!advancedReady && FFPathRequiresSystemAccess(child)) continue;
+
         struct stat status = {0};
         if (stat(child.fileSystemRepresentation, &status) != 0) continue;
         BOOL isDirectory = S_ISDIR(status.st_mode);
@@ -117,6 +119,7 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 
     for (NSString *sub in subdirectories) {
         if (self.cancelled || self.generation != generation) break;
+        if (!FFSystemAccessManager.sharedManager.ready && FFPathRequiresSystemAccess(sub)) continue;
         char resolved[PATH_MAX] = {0};
         if (!realpath(sub.fileSystemRepresentation, resolved)) continue;
         NSString *key = [NSString stringWithUTF8String:resolved];
