@@ -12,6 +12,7 @@ FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
 	src/FFSystemAccessManager.m \
+	src/FFAppDataScanCoordinator.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
@@ -24,6 +25,7 @@ FuckFile_FILES = \
 	src/FFFileOperationService.m \
 	src/FFImportService.m \
 	src/FFSharedInboxService.m \
+	src/FFLocalShareBridgeServer.m \
 	src/MCMManager+ExtensionData.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
@@ -134,7 +136,9 @@ FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit 
 FuckFile_LIBRARIES = z sqlite3
 FuckFile_INFOPLIST = Info.plist
 
-FuckFileShare_FILES = ShareExtension/FFShareViewController.m
+FuckFileShare_FILES = \
+	ShareExtension/FFShareViewController.m \
+	src/FFLocalShareBridgeClient.m
 FuckFileShare_CFLAGS = -I$(PWD)/src -fobjc-arc -Wno-deprecated-declarations
 FuckFileShare_OBJCFLAGS = $(FuckFileShare_CFLAGS)
 FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
