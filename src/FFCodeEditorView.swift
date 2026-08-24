@@ -68,9 +68,9 @@ private let ffLanguages: [String: FFLanguageSpec] = {
 @objc(FFCodeEditorView)
 final class FFCodeEditorView: UIView {
 
-    public var onTextChanged: (() -> Void)?
-    public var onDidBeginEditing: (() -> Void)?
-    public var onDidEndEditing: (() -> Void)?
+    @objc public var onTextChanged: (() -> Void)?
+    @objc public var onDidBeginEditing: (() -> Void)?
+    @objc public var onDidEndEditing: (() -> Void)?
 
     private let textView = TextView()
     private var characterPairList: [CharacterPair] = []
