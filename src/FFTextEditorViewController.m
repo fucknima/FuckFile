@@ -35,7 +35,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 @property(nonatomic, weak) FFTextEditorViewController *controller;
 @end
 
-@interface FFTextEditorViewController () <FFCodeEditorDelegate, UITextFieldDelegate>
+@interface FFTextEditorViewController () <UITextFieldDelegate>
 - (void)accessoryAction:(FFEditorAccessoryAction)action;
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) FFCodeEditorView *editorView;
@@ -83,15 +83,15 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [self addSubview:blur];
 
         NSArray<NSArray *> *specs = @[
-            @[@(FFEditorAccessoryActionTab), @"keyboard.tabkey", nil, @"Tab"],
-            @[@(FFEditorAccessoryActionIndentOut), @"decrease.indent", nil, @"减少缩进"],
-            @[@(FFEditorAccessoryActionIndentIn), @"increase.indent", nil, @"增加缩进"],
-            @[@(FFEditorAccessoryActionBrace), nil, @"{}", @"花括号"],
-            @[@(FFEditorAccessoryActionParen), nil, @"()", @"圆括号"],
-            @[@(FFEditorAccessoryActionQuote), nil, @"\"\"", @"引号"],
-            @[@(FFEditorAccessoryActionUndo), @"arrow.uturn.backward", nil, @"撤销"],
-            @[@(FFEditorAccessoryActionRedo), @"arrow.uturn.forward", nil, @"重做"],
-            @[@(FFEditorAccessoryActionFind), @"magnifyingglass", nil, @"查找"],
+            @[@(FFEditorAccessoryActionTab), @"keyboard.tabkey", @"", @"Tab"],
+            @[@(FFEditorAccessoryActionIndentOut), @"decrease.indent", @"", @"减少缩进"],
+            @[@(FFEditorAccessoryActionIndentIn), @"increase.indent", @"", @"增加缩进"],
+            @[@(FFEditorAccessoryActionBrace), NSNull.null, @"{}", @"花括号"],
+            @[@(FFEditorAccessoryActionParen), NSNull.null, @"()", @"圆括号"],
+            @[@(FFEditorAccessoryActionQuote), NSNull.null, @"\"\"", @"引号"],
+            @[@(FFEditorAccessoryActionUndo), @"arrow.uturn.backward", @"", @"撤销"],
+            @[@(FFEditorAccessoryActionRedo), @"arrow.uturn.forward", @"", @"重做"],
+            @[@(FFEditorAccessoryActionFind), @"magnifyingglass", @"", @"查找"],
         ];
         NSMutableArray<UIView *> *buttons = [NSMutableArray array];
         for (NSArray *spec in specs) {
@@ -180,7 +180,11 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
     self.editorView = [[FFCodeEditorView alloc] initWithFrame:CGRectZero];
     self.editorView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.editorView.codeDelegate = self;
+    __weak typeof(self) weakEditor = self;
+    self.editorView.onTextChanged = ^{
+        __strong typeof(weakEditor) strongEditor = weakEditor;
+        [strongEditor codeEditorDidChangeText];
+    };
     [self.view addSubview:self.editorView];
     [NSLayoutConstraint activateConstraints:@[
         [self.editorView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
@@ -326,8 +330,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     }
 }
 
-- (void)codeEditorDidBeginEditing {}
-- (void)codeEditorDidEndEditing {}
+
 
 #pragma mark - Back / unsaved
 
@@ -591,7 +594,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
                 [weakSelf flash:@"请输入有效行号"];
                 return;
             }
-            [weakSelf.editorView goToLine:line];
+            (void)[weakSelf.editorView goToLine:line];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }

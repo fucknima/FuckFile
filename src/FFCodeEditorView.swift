@@ -15,12 +15,7 @@ extension Bundle {
     static var module: Bundle { .main }
 }
 
-/// 编辑器回调（ObjC 侧实现）。
-@objc public protocol FFCodeEditorDelegate: NSObjectProtocol {
-    func codeEditorDidChangeText()
-    func codeEditorDidBeginEditing()
-    func codeEditorDidEndEditing()
-}
+/// 编辑器回调（ObjC 侧以 block 注入，跨语言边界稳定）。
 
 /// 可设置的字符对（自动闭合）。
 final class FFSimpleCharacterPair: CharacterPair {
@@ -73,7 +68,9 @@ private let ffLanguages: [String: FFLanguageSpec] = {
 @objc(FFCodeEditorView)
 final class FFCodeEditorView: UIView {
 
-    public weak var codeDelegate: FFCodeEditorDelegate?
+    public var onTextChanged: (() -> Void)?
+    public var onDidBeginEditing: (() -> Void)?
+    public var onDidEndEditing: (() -> Void)?
 
     private let textView = TextView()
     private var characterPairList: [CharacterPair] = []
@@ -279,14 +276,14 @@ final class FFCodeEditorView: UIView {
 
 extension FFCodeEditorView: TextViewDelegate {
     func textViewDidChange(_ textView: TextView) {
-        codeDelegate?.codeEditorDidChangeText()
+        onTextChanged?()
     }
 
     func textViewDidBeginEditing(_ textView: TextView) {
-        codeDelegate?.codeEditorDidBeginEditing()
+        onDidBeginEditing?()
     }
 
     func textViewDidEndEditing(_ textView: TextView) {
-        codeDelegate?.codeEditorDidEndEditing()
+        onDidEndEditing?()
     }
 }
