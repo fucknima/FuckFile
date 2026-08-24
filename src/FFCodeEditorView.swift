@@ -16,7 +16,7 @@ extension Bundle {
 }
 
 /// 编辑器回调（ObjC 侧实现）。
-@objc protocol FFCodeEditorDelegate: AnyObject {
+@objc public protocol FFCodeEditorDelegate: NSObjectProtocol {
     func codeEditorDidChangeText()
     func codeEditorDidBeginEditing()
     func codeEditorDidEndEditing()
@@ -73,7 +73,7 @@ private let ffLanguages: [String: FFLanguageSpec] = {
 @objc(FFCodeEditorView)
 final class FFCodeEditorView: UIView {
 
-    weak var codeDelegate: FFCodeEditorDelegate?
+    public weak var codeDelegate: FFCodeEditorDelegate?
 
     private let textView = TextView()
     private var characterPairList: [CharacterPair] = []

@@ -36,6 +36,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 @end
 
 @interface FFTextEditorViewController () <FFCodeEditorDelegate, UITextFieldDelegate>
+- (void)accessoryAction:(FFEditorAccessoryAction)action;
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) FFCodeEditorView *editorView;
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -98,6 +99,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
             NSString *symbol = spec[1];
             NSString *title = spec[2];
             UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+            symbol = [symbol isKindOfClass:NSNull.class] ? nil : symbol;
             if (symbol.length) {
                 [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
                 if (button.imageView.image == nil) {
@@ -545,11 +547,11 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
     return [UIMenu menuWithTitle:@"" children:@[
         findAction, gotoAction,
-        [UIMenu menuWithTitle:@"" options:UIMenuOptionsDisplayInline
+        [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
                       children:@[wrapAction, invisibleAction]],
-        [UIMenu menuWithTitle:@"" options:UIMenuOptionsDisplayInline
+        [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
                       children:@[indentMenu, encodingMenu, lineEndingMenu]],
-        [UIMenu menuWithTitle:@"" options:UIMenuOptionsDisplayInline
+        [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
                       children:@[infoAction]],
     ]];
 }
@@ -668,7 +670,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     self.findCaseButton = caseButton;
     self.findRegexButton = regexButton;
 
-    UIStackView *row1 = [UIStackView arrangedSubviews:@[
+    UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[
         search, caseButton, regexButton, prevButton, nextButton, closeButton]];
     row1.axis = UILayoutConstraintAxisHorizontal;
     row1.spacing = 6;
@@ -676,14 +678,14 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     [search setContentHuggingPriority:UILayoutPriorityDefaultLow
         forAxis:UILayoutConstraintAxisHorizontal];
 
-    UIStackView *row2 = [UIStackView arrangedSubviews:@[
+    UIStackView *row2 = [[UIStackView alloc] initWithArrangedSubviews:@[
         replaceField, replaceButton, replaceAllButton]];
     row2.axis = UILayoutConstraintAxisHorizontal;
     row2.spacing = 6;
     [replaceField setContentHuggingPriority:UILayoutPriorityDefaultLow
         forAxis:UILayoutConstraintAxisHorizontal];
 
-    UIStackView *vstack = [UIStackView arrangedSubviews:@[row1, row2]];
+    UIStackView *vstack = [[UIStackView alloc] initWithArrangedSubviews:@[row1, row2]];
     vstack.axis = UILayoutConstraintAxisVertical;
     vstack.spacing = 6;
     vstack.distribution = UIStackViewDistributionFillEqually;
@@ -720,8 +722,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 {
     self.editorView.editorInputAccessoryView = self.findBar;
     [self.editorView reloadInputViews];
-    if (!self.editorView.isFirstResponder) [self.editorView becomeFirstResponder];
-    [self.findField becomeFirstResponder];
+    if (!self.editorView.isFirstResponder) (void)[self.editorView becomeFirstResponder];
+    (void)[self.findField becomeFirstResponder];
     [self updateFindButtons];
     [self refreshFindMatches];
 }
@@ -772,8 +774,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     if (!self.regexEnabled) {
         pattern = [NSRegularExpression escapedPatternForString:pattern];
     }
-    NSRegularExpressionOptions options = NSRegularExpressionOptionAnchorsMatchLines;
-    if (!self.caseSensitive) options |= NSRegularExpressionOptionCaseInsensitive;
+    NSRegularExpressionOptions options = NSRegularExpressionAnchorsMatchLines;
+    if (!self.caseSensitive) options |= NSRegularExpressionCaseInsensitive;
     NSError *error = nil;
     NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
         options:options error:&error];
