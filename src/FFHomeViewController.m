@@ -6,6 +6,7 @@
 #import "FFBookmarksViewController.h"
 #import "FFSettingsViewController.h"
 #import "FFSystemAccessManager.h"
+#import "FFAppDataScanCoordinator.h"
 #import "FFStorageEnvironment.h"
 #import "FFPathPolicy.h"
 #import "MCMManager.h"
@@ -36,6 +37,12 @@
     [super viewDidLoad];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
+
+    FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
+    self.scanInProgress = scan.scanning;
+    self.scanProgress = scan.progress;
+    self.scanTotal = scan.total;
+    self.scanLinked = scan.linked;
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
@@ -73,38 +80,56 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
+    self.scanInProgress = scan.scanning;
+    self.scanProgress = scan.progress;
+    self.scanTotal = scan.total;
+    self.scanLinked = scan.linked;
     [self reloadStatus];
 }
 
 - (void)refreshTapped
 {
     FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
-    if (!access.enabled) {
+    FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
+
+    // Refresh is deliberately inert while enabling or scanning. The previous
+    // implementation queued another full rescan while the first async LS pass
+    // was still running, causing duplicate ContainerManager traffic and UI
+    // stalls. There must be at most one discovery pass in flight.
+    if (!access.enabled || !access.ready || access.state == FFSystemAccessStateLoading ||
+        scan.scanning || self.scanInProgress) {
         [self reloadStatus];
         return;
     }
+
+    self.scanInProgress = YES;
+    [self reloadStatus];
     __weak typeof(self) weakSelf = self;
-    [access loadNowWithCompletion:^(BOOL loaded) {
-        if (!loaded) {
-            [weakSelf reloadStatus];
-            return;
-        }
-        [[MCMManager sharedManager] rescanWithCompletion:^{
-            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
-        }];
+    [scan scanWithCompletion:^{
+        [weakSelf reloadStatus];
     }];
 }
 
 - (void)reloadStatus
 {
     FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
     BOOL ready = access.ready;
-    self.navigationItem.rightBarButtonItem = access.enabled
-        ? [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
-            target:self action:@selector(refreshTapped)]
-        : nil;
+    self.scanInProgress = scan.scanning;
 
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (access.enabled) {
+        UIBarButtonItem *refresh = [[UIBarButtonItem alloc]
+            initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
+            target:self action:@selector(refreshTapped)];
+        refresh.enabled = ready && !scan.scanning && access.state != FFSystemAccessStateLoading;
+        refresh.accessibilityHint = refresh.enabled ? @"重新扫描 App Data" : @"扫描进行中";
+        self.navigationItem.rightBarButtonItem = refresh;
+    } else {
+        self.navigationItem.rightBarButtonItem = nil;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSUInteger count = ready
             ? [[NSFileManager.defaultManager contentsOfDirectoryAtPath:FFAppDataVirtualPath() error:nil] count]
             : 0;
@@ -166,11 +191,13 @@
             cell.imageView.tintColor = UIColor.systemBlueColor;
             if (ready) {
                 if (self.scanInProgress) {
-                    NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
-                    cell.detailTextLabel.text = [NSString stringWithFormat:
-                        @"正在扫描 %lu/%lu · 已发现 %lu 个 App",
-                        (unsigned long)done, (unsigned long)self.scanTotal,
-                        (unsigned long)self.scanLinked];
+                    NSUInteger done = self.scanTotal > 0
+                        ? MIN(self.scanTotal, (NSUInteger)(self.scanTotal * self.scanProgress)) : 0;
+                    cell.detailTextLabel.text = self.scanTotal > 0
+                        ? [NSString stringWithFormat:@"高级访问已就绪 · 后台扫描 %lu/%lu · 已发现 %lu 个 App",
+                            (unsigned long)done, (unsigned long)self.scanTotal,
+                            (unsigned long)self.scanLinked]
+                        : @"高级访问已就绪 · 正在后台发现 App Data…";
                 } else {
                     NSMutableString *subtitle = [NSMutableString stringWithFormat:
                         @"本地文件 + %lu 个 App Data", (unsigned long)self.appCount];
@@ -182,7 +209,7 @@
                     cell.detailTextLabel.text = subtitle;
                 }
             } else if (access.state == FFSystemAccessStateLoading) {
-                cell.detailTextLabel.text = @"本地文件可用 · 正在启用高级系统访问…";
+                cell.detailTextLabel.text = @"本地文件可用 · 正在快速启用高级系统访问…";
             } else if (access.state == FFSystemAccessStateFailed) {
                 cell.detailTextLabel.text = @"本地文件可用 · 高级系统访问启用失败";
             } else {
@@ -233,8 +260,6 @@
     UIViewController *next = nil;
     switch (indexPath.section) {
         case 0:
-            // Both modes always enter the same user-visible root. Advanced
-            // access only adds managed entries underneath it.
             next = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
             break;
         case 1:
