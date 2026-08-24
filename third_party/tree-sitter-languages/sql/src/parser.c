@@ -420,7 +420,7 @@ static const char *ts_field_names[] = {
   [field_right] = "right",
 };
 
-static const TSFieldMapSlice ts_field_map_slices[PRODUCTION_ID_COUNT] = {
+static const TSMapSlice ts_field_map_slices[PRODUCTION_ID_COUNT] = {
   [1] = {.index = 0, .length = 2},
   [2] = {.index = 2, .length = 3},
 };
@@ -2364,7 +2364,7 @@ extern const TSLanguage *tree_sitter_sql(void) {
     .parse_actions = ts_parse_actions,
     .symbol_names = ts_symbol_names,
     .field_names = ts_field_names,
-    .field_map_slices = (const TSFieldMapSlice *)ts_field_map_slices,
+    .field_map_slices = (const TSMapSlice *)ts_field_map_slices,
     .field_map_entries = (const TSFieldMapEntry *)ts_field_map_entries,
     .symbol_metadata = ts_symbol_metadata,
     .public_symbol_map = ts_symbol_map,

@@ -4123,7 +4123,7 @@ static const char * const ts_field_names[] = {
   [field_wrapped] = "wrapped",
 };
 
-static const TSFieldMapSlice ts_field_map_slices[PRODUCTION_ID_COUNT] = {
+static const TSMapSlice ts_field_map_slices[PRODUCTION_ID_COUNT] = {
   [1] = {.index = 0, .length = 1},
   [4] = {.index = 1, .length = 1},
   [7] = {.index = 2, .length = 3},
