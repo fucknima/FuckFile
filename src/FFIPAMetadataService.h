@@ -17,12 +17,15 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FFIPAMetadataService : NSObject
 + (instancetype)sharedService;
 
-// 异步解析 IPA。completion 固定回到主线程。
+// Worker-queue API. Do not call from the main thread for large IPAs.
+- (nullable FFIPAMetadata *)metadataForIPAAtPath:(NSString *)path
+                                           error:(NSError **)error;
+
+// UI convenience API. Completion is always delivered on the main queue.
 - (void)metadataForIPAAtPath:(NSString *)path
                   completion:(void (^)(FFIPAMetadata * _Nullable metadata,
                                        NSError * _Nullable error))completion;
 
-// 只取图标的便捷入口，内部复用 metadata cache。
 - (void)iconForIPAAtPath:(NSString *)path
               completion:(void (^)(UIImage * _Nullable icon))completion;
 
