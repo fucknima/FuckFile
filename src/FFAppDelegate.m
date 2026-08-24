@@ -5,6 +5,7 @@
 #import "FFSharedInboxService.h"
 #import "FFShareBridge.h"
 #import "FFSystemAccessManager.h"
+#import "FFStorageEnvironment.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -42,6 +43,14 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [NSBundle.mainBundle.bundleIdentifier
             isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
 
+    // The user-visible file tree is identical in normal and advanced modes.
+    // In a cold normal launch, clear only stale generated MCM symlinks so an
+    // old advanced session cannot leak unusable virtual nodes into the normal
+    // file manager. User-created files are never removed by this cleanup.
+    FFStorageRootPath();
+    if (!FFSystemAccessManager.sharedManager.enabled)
+        FFPrepareStorageRootForNormalMode();
+
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
@@ -54,9 +63,6 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     navigation.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
-    // Advanced system access is opt-in. A normal launch must not initialize
-    // the MCM bypass path at all. If enabled, load it in the background and
-    // retry the shared inbox after the leases become available.
     [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
         if (!loaded) return;
         [self processSharedInboxShowingResult:NO];
@@ -64,8 +70,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
             postNotificationName:@"FFProbeFinished" object:nil];
     }];
 
-    // App Group based sharing remains available in normal mode. The MCM-backed
-    // fallback is only retried after advanced system access is loaded above.
+    // Keep the existing sharing behavior unchanged in this pass.
     [self processSharedInboxShowingResult:NO];
 
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
@@ -136,10 +141,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [self.inFlightImports addObject:key];
     }
 
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *importedDirectory = [[documents stringByAppendingPathComponent:
-        @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
+    NSString *importedDirectory = FFImportedDirectoryPath();
     NSError *mkdirError = nil;
     if (![NSFileManager.defaultManager createDirectoryAtPath:importedDirectory
         withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
