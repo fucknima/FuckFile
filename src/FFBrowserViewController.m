@@ -371,7 +371,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     CGRect viewInWindow = self.view.window ?
         [self.view convertRect:self.view.bounds toView:nil] : CGRectNull;
     UIToolbar *toolbar = self.navigationController.toolbar;
-    NSInteger placement = (NSInteger)self.navigationItem.searchBarPlacement;
+    NSInteger placement = -1;
+    if (@available(iOS 16.0, *)) {
+        placement = (NSInteger)self.navigationItem.searchBarPlacement;
+    }
 
     FFLogTag(@"SearchChrome", @"diag view=%@ safe=%@ toolbar=%@ hidden=%d "
         "placement=%ld searchBarWindow=%@ "
