@@ -13,12 +13,12 @@ on:
 permissions:
   contents: write
 
-# Push/manual builds serialize globally so the next number is unique. PR runs
-# are validation-only: they build/package but neither upload a numbered artifact
-# nor advance the successful-build counter.
+# Push/manual runs share the numbered-build lane. PR validation uses its own
+# lane. New commits cancel stale runs; cancelled/failed runs never advance the
+# successful-build counter.
 concurrency:
-  group: fuckfile-successful-build-counter
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('fuckfile-pr-{0}', github.event.pull_request.number) || 'fuckfile-numbered-build' }}
+  cancel-in-progress: true
 
 jobs:
   build:
