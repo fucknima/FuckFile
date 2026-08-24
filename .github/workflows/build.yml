@@ -111,6 +111,8 @@ jobs:
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_BUILD/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
           plutil -lint "$APP/Info.plist"
           plutil -lint "$EXT_BUILD/Info.plist"
+          plutil -lint FuckFile.entitlements
+          plutil -lint ShareExtension/FuckFileShare.entitlements
 
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
@@ -157,9 +159,18 @@ jobs:
 
           file "$EXT/FuckFileShare"
           otool -l "$EXT/FuckFileShare" | grep -A3 LC_MAIN
-          codesign --force -s - "$EXT"
-          codesign --force -s - "$APP"
+
+          # Preserve the same App Group on the host and nested extension. The
+          # previous plain ad-hoc re-sign stripped these entitlements, forcing
+          # normal-mode shares into the extension-data/MCM fallback.
+          codesign --force -s - --entitlements ShareExtension/FuckFileShare.entitlements "$EXT"
+          codesign --force -s - --entitlements FuckFile.entitlements "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+
+          codesign -d --entitlements :- "$APP" > /tmp/app-entitlements.plist 2>/dev/null
+          codesign -d --entitlements :- "$EXT" > /tmp/share-entitlements.plist 2>/dev/null
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/app-entitlements.plist | grep -Fx 'group.com.apple.mobile.MobileHouseArrest'
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/share-entitlements.plist | grep -Fx 'group.com.apple.mobile.MobileHouseArrest'
 
           rm -rf Payload "$IPA_NAME"
           mkdir -p Payload
