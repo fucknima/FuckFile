@@ -72,30 +72,48 @@
         return;
     }
 
-    if (@available(iOS 17.0, *)) {
-        UIContentUnavailableConfiguration *config = [UIContentUnavailableConfiguration emptyConfiguration];
-        config.image = [UIImage systemImageNamed:@"clock.arrow.circlepath"];
-        config.text = @"还没有任务";
-        config.secondaryText = @"复制、移动、压缩、解压等操作会显示在这里";
-        self.tableView.backgroundView = [[UIContentUnavailableView alloc] initWithConfiguration:config];
-        return;
-    }
-
     UIView *container = [UIView new];
-    UILabel *label = [UILabel new];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.textAlignment = NSTextAlignmentCenter;
-    label.numberOfLines = 0;
-    label.textColor = UIColor.secondaryLabelColor;
-    label.text = @"还没有任务\n复制、移动、压缩、解压等操作会显示在这里";
-    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    label.adjustsFontForContentSizeCategory = YES;
-    [container addSubview:label];
+    container.backgroundColor = UIColor.clearColor;
+
+    UIImageView *imageView = [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"clock.arrow.circlepath"]];
+    imageView.translatesAutoresizingMaskIntoConstraints = NO;
+    imageView.tintColor = UIColor.secondaryLabelColor;
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = @"还没有任务";
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    titleLabel.adjustsFontForContentSizeCategory = YES;
+
+    UILabel *detailLabel = [UILabel new];
+    detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    detailLabel.text = @"复制、移动、压缩、解压等操作会显示在这里";
+    detailLabel.textAlignment = NSTextAlignmentCenter;
+    detailLabel.numberOfLines = 0;
+    detailLabel.textColor = UIColor.secondaryLabelColor;
+    detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    detailLabel.adjustsFontForContentSizeCategory = YES;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        imageView, titleLabel, detailLabel
+    ]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 10;
+    [container addSubview:stack];
+
     [NSLayoutConstraint activateConstraints:@[
-        [label.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
-        [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor constant:-40],
-        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor constant:32],
-        [label.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-32],
+        [imageView.widthAnchor constraintEqualToConstant:44],
+        [imageView.heightAnchor constraintEqualToConstant:44],
+        [detailLabel.widthAnchor constraintLessThanOrEqualToConstant:360],
+        [stack.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:container.centerYAnchor constant:-40],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor constant:32],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-32],
     ]];
     self.tableView.backgroundView = container;
 }
