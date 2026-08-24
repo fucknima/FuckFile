@@ -12,6 +12,7 @@ FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
 	src/FFSystemAccessManager.m \
+	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
