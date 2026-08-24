@@ -89,9 +89,6 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) FFPathBreadcrumbView *breadcrumbView;
 @property(nonatomic, strong) NSLayoutConstraint *breadcrumbHeightConstraint;
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
-// 底部悬浮搜索条的真实覆盖高度（含搜索条自身）：从系统 searchBar 的
-// window frame 实测「搜索条顶部 → 屏幕底」。
-@property(nonatomic) CGFloat bottomChrome;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
 @property(nonatomic) BOOL pendingAutoReload;
 @end
@@ -163,16 +160,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.breadcrumbView.bottomAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.tableView.bottomAnchor constraintEqualToAnchor:
-            self.view.safeAreaLayoutGuide.bottomAnchor],
+        // Full-bleed 到底：系统 Integrated Search 是 floating chrome，
+        // 内容与背景延伸到屏幕最底（Home Indicator 后方），
+        // 由 Automatic adjustedContentInset 负责收尾。
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
     [self updateBreadcrumbVisibility];
     [self.tableView reloadData];
-    // 底部悬浮搜索条是 iOS 26+ 系统 chrome（Liquid Glass 悬浮层），
-    // 不会自动为内容预留空间。余量在 viewDidLayoutSubviews 从系统
-    // searchBar 实测「顶部→屏幕底」；这里给首发帧一个合理缺省。
-    self.bottomChrome = 64;
-    [self applySearchChromeInsets];
+    [self enableAlwaysBounce];
     // 网格视图懒创建：仅网格模式才实例化 UICollectionView。列表模式下
     // 隐藏的网格仍会参与布局提交（横幅/键盘/菜单动画），是长按操作后
     // flowlayout 断言闪退的源头 —— 不创建就彻底消除这一类崩溃。
@@ -310,35 +305,98 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.navigationController.toolbarHidden = YES;
 }
 
-// 布局结算后同步底部浮动条余量：从系统 searchBar 实测换算。
+#pragma mark - Bottom search chrome clearance
+
+// Scroll View full-bleed + UIKit Automatic adjustment 的配合。
+// 原则（不重复加高）：计算「列表可视底边 → 系统搜索条顶部」所需余量，
+// 与 UIKit 已自动提供的 adjustedContentInset 差值比较，只补缺口；
+// 系统自动已经足够时补 0，完全交给系统。
+- (void)applySearchChromeClearance
+{
+    BOOL searchVisible = !self.editing && self.view.window != nil;
+    if (searchVisible) searchVisible = [self searchBarAtBottom];
+    if (!searchVisible) {
+        [self setSearchClearance:0];
+        return;
+    }
+    // 统一 window 坐标计算（规格八），禁止不同坐标系直接相减。
+    UISearchBar *bar = self.searchController.searchBar;
+    CGRect viewInWindow = [self.view convertRect:self.view.bounds toView:nil];
+    CGRect searchInWindow = [bar convertRect:bar.bounds toView:nil];
+    CGFloat required = MAX(0, CGRectGetMaxY(viewInWindow) -
+        CGRectGetMinY(searchInWindow) + 8);
+    [self setSearchClearance:required];
+}
+
+// needed 为「所需总余量」；实际写入 = 只补系统没给的部分。
+// UIKit 提供的 = adjustedContentInset.bottom - 手工 contentInset.bottom
+//（Automatic 模式下手写值会被叠加保留，差值即系统自动部分）。
+- (void)setSearchClearance:(CGFloat)needed
+{
+    CGFloat systemProvided = self.tableView.adjustedContentInset.bottom -
+        self.tableView.contentInset.bottom;
+    CGFloat additional = MAX(0, needed - systemProvided);
+    if (fabs(self.tableView.contentInset.bottom - additional) > 0.5)
+        self.tableView.contentInset = UIEdgeInsetsMake(0, 0, additional, 0);
+    if (self.collectionView) {
+        CGFloat provided = self.collectionView.adjustedContentInset.bottom -
+            self.collectionView.contentInset.bottom;
+        CGFloat add = MAX(0, needed - provided);
+        if (fabs(self.collectionView.contentInset.bottom - add) > 0.5)
+            self.collectionView.contentInset = UIEdgeInsetsMake(0, 0, add, 0);
+    }
+}
+
+// 搜索条是否真实位于屏幕下半屏（底部悬浮形态）。
+- (BOOL)searchBarAtBottom
+{
+    UISearchBar *bar = self.searchController.searchBar;
+    if (!bar.window) return NO;
+    CGRect inWindow = [bar convertRect:bar.bounds toView:nil];
+    if (inWindow.size.height < 8) return NO;
+    return CGRectGetMidY(inWindow) >= self.view.window.bounds.size.height * 0.4;
+}
+
+// 诊断记录（规格二）：一次性/变化时输出关键布局数值，节流 2 秒。
+- (void)logSearchChromeDiagnostics
+{
+    static NSDate *lastLog;
+    NSDate *now = NSDate.date;
+    if (lastLog && [now timeIntervalSinceDate:lastLog] < 2.0) return;
+    lastLog = now;
+
+    UISearchBar *bar = self.searchController.searchBar;
+    CGRect searchInWindow = bar.window ?
+        [bar convertRect:bar.bounds toView:nil] : CGRectNull;
+    CGRect viewInWindow = self.view.window ?
+        [self.view convertRect:self.view.bounds toView:nil] : CGRectNull;
+    UIToolbar *toolbar = self.navigationController.toolbar;
+    NSInteger placement = (NSInteger)self.navigationItem.searchBarPlacement;
+
+    FFLogTag(@"SearchChrome", @"diag view=%@ safe=%@ toolbar=%@ hidden=%d "
+        "placement=%ld searchBarWindow=%@ "
+        "table.frame=%@ inset=%@ adjusted=%@ indicatorV=%@ "
+        "grid.frame=%@ inset=%@ adjusted=%@",
+        NSStringFromCGRect(viewInWindow),
+        NSStringFromUIEdgeInsets(self.view.safeAreaInsets),
+        NSStringFromCGRect(toolbar.frame),
+        toolbar.hidden, (long)placement,
+        NSStringFromCGRect(searchInWindow),
+        NSStringFromCGRect(self.tableView.frame),
+        NSStringFromUIEdgeInsets(self.tableView.contentInset),
+        NSStringFromUIEdgeInsets(self.tableView.adjustedContentInset),
+        NSStringFromUIEdgeInsets(self.tableView.verticalScrollIndicatorInsets),
+        self.collectionView ? NSStringFromCGRect(self.collectionView.frame) : @"(none)",
+        self.collectionView ? NSStringFromUIEdgeInsets(self.collectionView.contentInset) : @"(none)",
+        self.collectionView ? NSStringFromUIEdgeInsets(self.collectionView.adjustedContentInset) : @"(none)");
+}
+
+// 布局结算后调整底部清除区并记录诊断。
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    if (!self.editing) {
-        CGFloat pad = [self measuredBottomChrome];
-        if (pad > 0 && fabs(pad - self.bottomChrome) > 0.5) {
-            self.bottomChrome = pad;
-            FFLogTag(@"LayoutDiag", @"bottomChrome=%.1f", pad);
-        }
-    }
-    [self applySearchChromeInsets];
-}
-
-// 从系统 searchBar 的窗口坐标实测悬浮条**覆盖高度**：
-// overlay = 搜索条顶部 → 屏幕底（包含搜索条自身高度 + 下方留白）。
-// 搜索条不在底部（隐藏/转场中/激活时）返回上一次测量值。
-- (CGFloat)measuredBottomChrome
-{
-    UISearchBar *bar = self.searchController.searchBar;
-    if (!bar.window || bar.window == nil) return self.bottomChrome;
-    CGRect inWindow = [bar convertRect:bar.bounds toView:nil];
-    CGFloat screenHeight = self.view.window.bounds.size.height;
-    if (inWindow.size.height < 10) return self.bottomChrome;
-    // 仅在搜索条真实位于下半屏时按底部测算（顶部阶段忽略）。
-    if (CGRectGetMidY(inWindow) < screenHeight * 0.4)
-        return self.bottomChrome;
-    CGFloat overlay = screenHeight - CGRectGetMinY(inWindow);
-    return MAX(overlay, 24);
+    [self applySearchChromeClearance];
+    [self logSearchChromeDiagnostics];
 }
 
 - (void)dealloc
@@ -384,29 +442,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     return result;
 }
 
-// 底部悬浮 Search Chrome 的余量管理（值为运行实测 bottomChrome）。
-// contentInset + scrollIndicatorInsets（公开 API；SDK 验证过
-// contentScrollAreaInsets 当前 SDK 不存在）。
-// alwaysBounceVertical=YES：内容不满一屏时也可滚动，配合 inset
-// 让最后一行滚出浮条上方（满屏短内容场景的关键）。
-// 多选：底部批量工具栏接管，余量清零避免双重空白。
-- (void)applySearchChromeInsets
+// alwaysBounceVertical=YES：内容不满一屏时也可滚动（配合底部清除区，
+// 让最后一行滚出搜索条上方）。
+- (void)enableAlwaysBounce
 {
-    CGFloat chrome = self.editing ? 0 : self.bottomChrome;
     self.tableView.alwaysBounceVertical = YES;
     if (self.collectionView) self.collectionView.alwaysBounceVertical = YES;
-    UIEdgeInsets inset = UIEdgeInsetsMake(0, 0, chrome, 0);
-    if (!UIEdgeInsetsEqualToEdgeInsets(self.tableView.contentInset, inset) ||
-        !UIEdgeInsetsEqualToEdgeInsets(self.tableView.verticalScrollIndicatorInsets, inset)) {
-        self.tableView.contentInset = inset;
-        self.tableView.verticalScrollIndicatorInsets = inset;
-    }
-    if (self.collectionView &&
-        (!UIEdgeInsetsEqualToEdgeInsets(self.collectionView.contentInset, inset) ||
-         !UIEdgeInsetsEqualToEdgeInsets(self.collectionView.verticalScrollIndicatorInsets, inset))) {
-        self.collectionView.contentInset = inset;
-        self.collectionView.verticalScrollIndicatorInsets = inset;
-    }
 }
 
 #pragma mark - Batch mode (multi-select)
@@ -438,7 +479,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         self.batchToolbarItems = [self buildBatchToolbarItems];
         self.toolbarItems = self.batchToolbarItems;
         self.navigationController.toolbarHidden = NO;
-        [self applySearchChromeInsets];
+        [self applySearchChromeClearance];
         // 工具栏就位后再同步一次：进入多选且无选中时按钮应禁用。
         [self updateBatchActionsEnabled];
     } else {
@@ -1703,9 +1744,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             self.breadcrumbView.bottomAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        // Full-bleed 到底（与列表一致），Automatic inset 收尾。
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
-    [self applySearchChromeInsets];
+    [self enableAlwaysBounce];
+    [self applySearchChromeClearance];
+    [self logSearchChromeDiagnostics];
     [self updateEmptyState];
 }
 
