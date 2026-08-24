@@ -2348,7 +2348,7 @@ extern "C" {
 
 extern const TSLanguage *tree_sitter_sql(void) {
   static TSLanguage language = {
-    .version = LANGUAGE_VERSION,
+    .abi_version = LANGUAGE_VERSION,
     .symbol_count = SYMBOL_COUNT,
     .alias_count = ALIAS_COUNT,
     .token_count = TOKEN_COUNT,

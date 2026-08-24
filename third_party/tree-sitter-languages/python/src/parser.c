@@ -130154,7 +130154,7 @@ void tree_sitter_python_external_scanner_deserialize(void *, const char *, unsig
 
 TS_PUBLIC const TSLanguage *tree_sitter_python(void) {
   static const TSLanguage language = {
-    .version = LANGUAGE_VERSION,
+    .abi_version = LANGUAGE_VERSION,
     .symbol_count = SYMBOL_COUNT,
     .alias_count = ALIAS_COUNT,
     .token_count = TOKEN_COUNT,
