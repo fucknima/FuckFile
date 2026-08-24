@@ -26,7 +26,7 @@ static const NSRange FFNoRange = {NSNotFound, 0};
         _latestGeneration = 0;
         _matches = @[];
         _currentIndex = -1;
-        _lastPublishedState = FFSearchSessionStateIdle;
+        // no-op
     }
     return self;
 }
