@@ -2,11 +2,11 @@
 #import "FFLogViewController.h"
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
+#import "FFSystemAccessManager.h"
 #import "MCMManager.h"
 #import "FFThumbnailService.h"
 #import "FFLogger.h"
 
-// Display preferences, persisted in NSUserDefaults.
 static NSString *const kFFSettingsShowHiddenFiles = @"FFSettingsShowHiddenFiles";
 static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
 static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
@@ -15,6 +15,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic) BOOL gridMode;
 @property(nonatomic) BOOL foldersFirst;
+@property(nonatomic) BOOL systemAccessEnabled;
 @end
 
 @implementation FFSettingsViewController
@@ -37,7 +38,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    // 缓存大小可能变化，每次进入刷新。
+    [self reloadPreferences];
     [self.tableView reloadData];
 }
 
@@ -47,25 +48,26 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.showHiddenFiles = [defaults boolForKey:kFFSettingsShowHiddenFiles];
     self.gridMode = [defaults boolForKey:kFFSettingsGridMode];
     id foldersFirst = [defaults objectForKey:kFFSettingsFoldersFirst];
-    // 历史行为：浏览器一直文件夹优先，未设置时保持开启。
     self.foldersFirst = foldersFirst == nil ? YES : [foldersFirst boolValue];
+    self.systemAccessEnabled = FFSystemAccessManager.sharedManager.enabled;
 }
 
 #pragma mark - Table view
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
 {
-    return 5;
+    return 6;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 3; // 默认视图 / 显示隐藏文件 / 文件夹优先
-        case 1: return 2; // 文件查看
-        case 2: return 2; // 存储与缓存
-        case 3: return 2; // 高级 / 调试
-        case 4: return 1; // 关于
+        case 0: return 3;
+        case 1: return 2;
+        case 2: return 2;
+        case 3: return 1;
+        case 4: return 2;
+        case 5: return 1;
         default: return 0;
     }
 }
@@ -76,24 +78,33 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         case 0: return @"显示";
         case 1: return @"文件查看";
         case 2: return @"存储与缓存";
-        case 3: return @"高级 / 调试";
-        case 4: return @"关于";
+        case 3: return @"系统访问";
+        case 4: return @"高级 / 调试";
+        case 5: return @"关于";
         default: return nil;
     }
 }
 
-// 模块语义色（仅系统色）：浏览蓝、查看青、存储橙/红、诊断灰。
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+{
+    if (section != 3) return nil;
+    return self.systemAccessEnabled
+        ? @"开启后会加载高级系统访问能力。关闭后本次进程已加载的能力不会强行卸载，下次启动将恢复普通文件管理模式。"
+        : @"默认关闭。关闭时不初始化高级系统访问组件，FuckFile 按普通文件管理器运行。";
+}
+
 - (UIColor *)iconTintForIndexPath:(NSIndexPath *)indexPath
 {
     if (indexPath.section == 0)
-        return indexPath.row == 1 ? [UIColor systemTealColor] : [UIColor systemBlueColor];
+        return indexPath.row == 1 ? UIColor.systemTealColor : UIColor.systemBlueColor;
     if (indexPath.section == 1)
-        return indexPath.row == 0 ? [UIColor systemBlueColor] : [UIColor systemIndigoColor];
+        return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemIndigoColor;
     if (indexPath.section == 2)
-        return indexPath.row == 0 ? [UIColor systemOrangeColor] : [UIColor systemRedColor];
-    if (indexPath.section == 3)
-        return indexPath.row == 0 ? [UIColor systemBlueColor] : [UIColor systemGrayColor];
-    return [UIColor systemGrayColor];
+        return indexPath.row == 0 ? UIColor.systemOrangeColor : UIColor.systemRedColor;
+    if (indexPath.section == 3) return UIColor.systemPurpleColor;
+    if (indexPath.section == 4)
+        return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemGrayColor;
+    return UIColor.systemGrayColor;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -103,20 +114,18 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:@"Cell"];
-    // 复用前必须重置全部可变状态：Switch/副标题/选中态都会跨行泄漏。
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.detailTextLabel.text = nil;
     cell.detailTextLabel.numberOfLines = 1;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    // 有限语义色（仅系统色）：图标形状大多单色，用色区分模块层级。
+    cell.textLabel.enabled = YES;
+    cell.detailTextLabel.enabled = YES;
     cell.imageView.tintColor = [self iconTintForIndexPath:indexPath];
 
     switch (indexPath.section) {
         case 0: {
             if (indexPath.row == 0) {
-                // 默认视图只决定新打开目录的初始模式；运行中页面用
-                // 浏览器"更多 → 显示方式"局部切换。
                 cell.textLabel.text = @"默认视图";
                 cell.detailTextLabel.text = self.gridMode ? @"网格" : @"列表";
                 cell.imageView.image = [UIImage systemImageNamed:
@@ -124,7 +133,6 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"显示隐藏文件";
-                cell.detailTextLabel.text = nil;
                 UISwitch *toggle = [UISwitch new];
                 toggle.on = self.showHiddenFiles;
                 [toggle addTarget:self action:@selector(hiddenFilesChanged:)
@@ -146,7 +154,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         case 1: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"支持的文件查看器";
-                cell.detailTextLabel.text = @"图片/文本/plist/SQLite/Hex/Web 等";
+                cell.detailTextLabel.text = @"图片/文本/PDF/plist/SQLite/Hex/Web 等";
                 cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             } else {
@@ -160,7 +168,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         case 2: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"缩略图缓存";
-                unsigned long long size = [[FFThumbnailService sharedService] diskCacheSize];
+                unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
                 cell.detailTextLabel.text = [NSByteCountFormatter
                     stringFromByteCount:(long long)size
                     countStyle:NSByteCountFormatterCountStyleFile];
@@ -175,11 +183,30 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             break;
         }
         case 3: {
+            cell.textLabel.text = @"启用高级系统访问";
+            cell.detailTextLabel.text = self.systemAccessEnabled
+                ? (FFSystemAccessManager.sharedManager.loadedThisSession ? @"本次会话已加载" : @"将在需要时加载")
+                : @"普通文件管理模式";
+            cell.imageView.image = [UIImage systemImageNamed:@"lock.open"];
+            UISwitch *toggle = [UISwitch new];
+            toggle.on = self.systemAccessEnabled;
+            [toggle addTarget:self action:@selector(systemAccessChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            break;
+        }
+        case 4: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"重新扫描 App Data";
-                cell.detailTextLabel.text = nil;
+                cell.detailTextLabel.text = self.systemAccessEnabled ? @"重新发现可访问的 App 数据" : @"需先启用高级系统访问";
                 cell.imageView.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.accessoryType = self.systemAccessEnabled
+                    ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+                cell.selectionStyle = self.systemAccessEnabled
+                    ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+                cell.textLabel.enabled = self.systemAccessEnabled;
+                cell.detailTextLabel.enabled = self.systemAccessEnabled;
             } else {
                 cell.textLabel.text = @"运行日志";
                 cell.detailTextLabel.text = @"查看、分享、导出诊断信息";
@@ -188,7 +215,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             }
             break;
         }
-        case 4: {
+        case 5: {
             cell.textLabel.text = @"FuckFile";
             cell.detailTextLabel.text = [NSString stringWithFormat:
                 @"版本 %@（构建 %@）· iOS %@",
@@ -217,43 +244,38 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         [self.navigationController pushViewController:page animated:YES];
         return;
     }
-    switch (indexPath.section) {
-        case 2: { // 清理缓存
-            unsigned long long size = [[FFThumbnailService sharedService] diskCacheSize];
-            [[FFThumbnailService sharedService] clearCaches];
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"缓存已清理"
-                message:[NSString stringWithFormat:@"释放约 %@。",
-                    [NSByteCountFormatter stringFromByteCount:(long long)size
-                        countStyle:NSByteCountFormatterCountStyleFile]]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好"
-                style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:alert animated:YES completion:nil];
-            [self.tableView reloadData];
-            break;
-        }
-        case 3: {
-            if (indexPath.row == 0) {
+    if (indexPath.section == 2 && indexPath.row == 1) {
+        unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
+        [FFThumbnailService.sharedService clearCaches];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"缓存已清理"
+            message:[NSString stringWithFormat:@"释放约 %@。",
+                [NSByteCountFormatter stringFromByteCount:(long long)size
+                    countStyle:NSByteCountFormatterCountStyleFile]]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        [self.tableView reloadData];
+        return;
+    }
+    if (indexPath.section == 4) {
+        if (indexPath.row == 0) {
+            if (!self.systemAccessEnabled) return;
+            [FFSystemAccessManager.sharedManager loadNowWithCompletion:^(__unused BOOL loaded) {
                 [[MCMManager sharedManager] rescanWithCompletion:^{
                     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"扫描完成"
                         message:@"App 数据已重新扫描。" preferredStyle:UIAlertControllerStyleAlert];
                     [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
                     [self presentViewController:alert animated:YES completion:nil];
                 }];
-            } else {
-                FFLogViewController *log = [FFLogViewController new];
-                [self.navigationController pushViewController:log animated:YES];
-            }
-            break;
+            }];
+        } else {
+            [self.navigationController pushViewController:[FFLogViewController new] animated:YES];
         }
-        default:
-            break;
     }
 }
 
 #pragma mark - Default view picker
 
-// iPad 必须给 popover 锚点，否则直接崩溃。
 - (void)showDefaultViewPicker
 {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"默认视图"
@@ -276,8 +298,6 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.gridMode = grid;
     [NSUserDefaults.standardUserDefaults setBool:grid forKey:kFFSettingsGridMode];
     [self.tableView reloadData];
-    // 不广播 FFSettingsChangedNotification：默认值只影响新打开的目录，
-    // 运行中页面由其"更多 → 显示方式"自行控制。
 }
 
 #pragma mark - Toggles
@@ -285,9 +305,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 - (void)hiddenFilesChanged:(UISwitch *)toggle
 {
     self.showHiddenFiles = toggle.on;
-    [NSUserDefaults.standardUserDefaults setBool:self.showHiddenFiles
-                                           forKey:kFFSettingsShowHiddenFiles];
-    // 已存在的浏览器页面应即时刷新。
+    [NSUserDefaults.standardUserDefaults setBool:self.showHiddenFiles forKey:kFFSettingsShowHiddenFiles];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:@"FFSettingsChangedNotification" object:nil];
 }
@@ -295,10 +313,48 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 - (void)foldersFirstChanged:(UISwitch *)toggle
 {
     self.foldersFirst = toggle.on;
-    [NSUserDefaults.standardUserDefaults setBool:self.foldersFirst
-                                           forKey:kFFSettingsFoldersFirst];
+    [NSUserDefaults.standardUserDefaults setBool:self.foldersFirst forKey:kFFSettingsFoldersFirst];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:@"FFSettingsChangedNotification" object:nil];
+}
+
+- (void)systemAccessChanged:(UISwitch *)toggle
+{
+    if (!toggle.on) {
+        [FFSystemAccessManager.sharedManager setEnabled:NO];
+        self.systemAccessEnabled = NO;
+        [self.tableView reloadData];
+        if (FFSystemAccessManager.sharedManager.loadedThisSession) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"下次启动恢复普通模式"
+                message:@"本次进程已经加载过高级系统访问组件，不强制热卸载。退出并重新打开 FuckFile 后将完全按普通文件管理器运行。"
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+        }
+        return;
+    }
+
+    toggle.on = NO;
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"启用高级系统访问？"
+        message:@"启用后会在本次会话加载系统访问组件，并允许访问 App Data 等受保护位置。普通文件管理功能不依赖此开关。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:@"启用" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            [FFSystemAccessManager.sharedManager setEnabled:YES];
+            weakSelf.systemAccessEnabled = YES;
+            [weakSelf.tableView reloadData];
+            [FFSystemAccessManager.sharedManager loadNowWithCompletion:^(BOOL loaded) {
+                [weakSelf.tableView reloadData];
+                if (!loaded) return;
+                UIAlertController *ready = [UIAlertController alertControllerWithTitle:@"系统访问已启用"
+                    message:@"高级系统访问组件已加载。" preferredStyle:UIAlertControllerStyleAlert];
+                [ready addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+                [weakSelf presentViewController:ready animated:YES completion:nil];
+            }];
+        }]];
+    [self presentViewController:confirm animated:YES completion:nil];
 }
 
 + (BOOL)showsHiddenFilesByDefault
