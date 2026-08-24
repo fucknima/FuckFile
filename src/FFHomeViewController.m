@@ -6,6 +6,7 @@
 #import "FFBookmarksViewController.h"
 #import "FFSettingsViewController.h"
 #import "FFSystemAccessManager.h"
+#import "FFStorageEnvironment.h"
 #import "FFPathPolicy.h"
 #import "MCMManager.h"
 #import "FFFileTaskManager.h"
@@ -75,20 +76,19 @@
     [self reloadStatus];
 }
 
-- (NSString *)localRootPath
-{
-    return NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
-}
-
 - (void)refreshTapped
 {
-    if (!FFSystemAccessManager.sharedManager.enabled) {
+    FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    if (!access.enabled) {
         [self reloadStatus];
         return;
     }
     __weak typeof(self) weakSelf = self;
-    [FFSystemAccessManager.sharedManager loadNowWithCompletion:^(__unused BOOL loaded) {
+    [access loadNowWithCompletion:^(BOOL loaded) {
+        if (!loaded) {
+            [weakSelf reloadStatus];
+            return;
+        }
         [[MCMManager sharedManager] rescanWithCompletion:^{
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
         }];
@@ -97,18 +97,17 @@
 
 - (void)reloadStatus
 {
-    BOOL systemAccess = FFSystemAccessManager.sharedManager.enabled;
-    self.navigationItem.rightBarButtonItem = systemAccess
+    FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    BOOL ready = access.ready;
+    self.navigationItem.rightBarButtonItem = access.enabled
         ? [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
             target:self action:@selector(refreshTapped)]
         : nil;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSUInteger count = 0;
-        if (systemAccess) {
-            NSString *appData = [MCMVirtualRoot() stringByAppendingPathComponent:@"AppData"];
-            count = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:appData error:nil] count];
-        }
+        NSUInteger count = ready
+            ? [[NSFileManager.defaultManager contentsOfDirectoryAtPath:FFAppDataVirtualPath() error:nil] count]
+            : 0;
         NSUInteger active = 0;
         for (FFFileTask *task in FFFileTaskManager.sharedManager.tasks)
             if (task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued)
@@ -158,39 +157,43 @@
     cell.detailTextLabel.numberOfLines = 0;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
-    BOOL systemAccess = FFSystemAccessManager.sharedManager.enabled;
+    FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    BOOL ready = access.ready;
     switch (indexPath.section) {
         case 0: {
-            cell.imageView.image = [UIImage systemImageNamed:systemAccess ? @"internaldrive" : @"folder"];
-            cell.imageView.tintColor = UIColor.systemBlueColor;
-            if (!systemAccess) {
-                cell.textLabel.text = @"本地文件";
-                cell.detailTextLabel.text = @"普通文件管理模式 · 不加载高级系统访问";
-                break;
-            }
             cell.textLabel.text = @"设备存储";
-            if (self.scanInProgress) {
-                NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
-                cell.detailTextLabel.text = [NSString stringWithFormat:
-                    @"正在扫描 %lu/%lu · 已发现 %lu 个 App",
-                    (unsigned long)done, (unsigned long)self.scanTotal,
-                    (unsigned long)self.scanLinked];
-            } else {
-                NSMutableString *subtitle = [NSMutableString stringWithFormat:
-                    @"%lu 个 App", (unsigned long)self.appCount];
-                if (self.lastScanDate) {
-                    NSDateFormatter *formatter = [NSDateFormatter new];
-                    formatter.dateFormat = @"HH:mm";
-                    [subtitle appendFormat:@" · 最近扫描 %@", [formatter stringFromDate:self.lastScanDate]];
+            cell.imageView.image = [UIImage systemImageNamed:ready ? @"internaldrive" : @"folder"];
+            cell.imageView.tintColor = UIColor.systemBlueColor;
+            if (ready) {
+                if (self.scanInProgress) {
+                    NSUInteger done = (NSUInteger)(self.scanTotal * self.scanProgress);
+                    cell.detailTextLabel.text = [NSString stringWithFormat:
+                        @"正在扫描 %lu/%lu · 已发现 %lu 个 App",
+                        (unsigned long)done, (unsigned long)self.scanTotal,
+                        (unsigned long)self.scanLinked];
+                } else {
+                    NSMutableString *subtitle = [NSMutableString stringWithFormat:
+                        @"本地文件 + %lu 个 App Data", (unsigned long)self.appCount];
+                    if (self.lastScanDate) {
+                        NSDateFormatter *formatter = [NSDateFormatter new];
+                        formatter.dateFormat = @"HH:mm";
+                        [subtitle appendFormat:@" · 最近扫描 %@", [formatter stringFromDate:self.lastScanDate]];
+                    }
+                    cell.detailTextLabel.text = subtitle;
                 }
-                cell.detailTextLabel.text = subtitle;
+            } else if (access.state == FFSystemAccessStateLoading) {
+                cell.detailTextLabel.text = @"本地文件可用 · 正在启用高级系统访问…";
+            } else if (access.state == FFSystemAccessStateFailed) {
+                cell.detailTextLabel.text = @"本地文件可用 · 高级系统访问启用失败";
+            } else {
+                cell.detailTextLabel.text = @"普通文件管理模式";
             }
             break;
         }
         case 1: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"搜索";
-                cell.detailTextLabel.text = systemAccess ? @"搜索设备与 App 数据" : @"搜索本地文件";
+                cell.detailTextLabel.text = ready ? @"搜索本地文件与 App Data" : @"搜索本地文件";
                 cell.imageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
                 cell.imageView.tintColor = UIColor.systemBlueColor;
             } else if (indexPath.row == 1) {
@@ -215,9 +218,7 @@
         }
         case 2: {
             cell.textLabel.text = @"设置";
-            cell.detailTextLabel.text = systemAccess
-                ? @"显示、查看器、系统访问与调试"
-                : @"显示、查看器与系统访问";
+            cell.detailTextLabel.text = @"显示、查看器、系统访问与调试";
             cell.imageView.image = [UIImage systemImageNamed:@"gearshape"];
             cell.imageView.tintColor = UIColor.systemGrayColor;
             break;
@@ -230,11 +231,11 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     UIViewController *next = nil;
-    BOOL systemAccess = FFSystemAccessManager.sharedManager.enabled;
     switch (indexPath.section) {
         case 0:
-            next = [[FFBrowserViewController alloc] initWithPath:
-                systemAccess ? MCMVirtualRoot() : [self localRootPath]];
+            // Both modes always enter the same user-visible root. Advanced
+            // access only adds managed entries underneath it.
+            next = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
             break;
         case 1:
             if (indexPath.row == 0) next = [FFSearchViewController new];
