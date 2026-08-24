@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) uid_t uid;
 @property(nonatomic) gid_t gid;
 @property(nonatomic, strong) UIImage *thumbnail;
+// App 数据容器（UUID 容器目录 / bundle-id 符号链接）：AppData 专有展示层级。
+@property(nonatomic) BOOL isAppContainer;
+@property(nonatomic, copy) NSString *containerIdentifier;
 @end
 
 // UIViewController + 自管 tableView：网格模式需要 tableView 与

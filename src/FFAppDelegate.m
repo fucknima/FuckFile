@@ -44,8 +44,10 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
+    // 全 App 统一 Inline 标题（ADR-013）：标题由系统放在顶部导航栏，
+    // 不再出现正文区域的大标题占位。
     navigation.navigationBar.translucent = NO;
-    navigation.navigationBar.prefersLargeTitles = YES;
+    navigation.navigationBar.prefersLargeTitles = NO;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.backgroundColor = UIColor.systemBackgroundColor;

@@ -8,13 +8,14 @@
 
 ## 能力
 
-- 设备存储虚拟根：App Data / App Groups / Extension Data / VPN / Service / System Data / System Groups / Protected
+- 设备存储虚拟根：App Data（含 FuckFile 自身沙盒；范围为 App Data，其他容器类已从 MCM 扫描移除）
 - LaunchServices 数据库全量扫描发现第三方 App（iOS 26 隐藏枚举的替代方案）
 - App 显示名解析（iTunesMetadata + 静态表 + LS workspace）
-- 列表浏览、排序（名称/大小/时间/类型 + 升降序）、类型筛选、搜索
-- 多选批量：复制/剪切/删除/分享
-- 文本编辑、结构化 plist 编辑、图片/音视频预览、十六进制查看
-- ZIP/ipa/deb 解压（内置实现）、SHA-256、目录递归大小
+- 列表/网格浏览、面包屑导航、排序（名称/大小/时间/类型 + 升降序）、类型筛选、当前目录搜索
+- 多选批量：复制/移动/分享/更多（压缩）/删除
+- 文本编辑、结构化 plist 编辑、图片/音视频预览、十六进制查看、SQLite 只读浏览、
+  Quick Look 兜底、ZIP 包内浏览与解压（zip/ipa 等 zip 容器家族）
+- ZIP 压缩（store/deflate 自适应）、SHA-256、目录递归大小
 - 运行日志页（分享/清空/手动重扫描）
 
 ## 构建

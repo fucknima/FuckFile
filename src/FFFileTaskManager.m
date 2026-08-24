@@ -101,6 +101,19 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     [self notifyChange];
 }
 
+- (void)removeTasks:(NSArray<FFFileTask *> *)tasks
+{
+    [self.lock lock];
+    for (FFFileTask *task in tasks) {
+        if (task.state == FFFileTaskStateQueued ||
+            task.state == FFFileTaskStateRunning)
+            continue;
+        [self.taskList removeObject:task];
+    }
+    [self.lock unlock];
+    [self notifyChange];
+}
+
 - (void)notifyChange
 {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -204,8 +217,12 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         NSError *error = nil;
         // 复制到同目录临时文件，成功后原子替换目标。
         // 这避免了“先删目标再复制”的窗口，也避免 O_EXCL 与已有目标冲突。
-        NSString *tempDestination = [destination stringByAppendingFormat:@".%d.tmp",
+        // 临时名带 . 前缀（隐藏）：任务期间不出现在浏览列表。
+        NSString *tempName = [NSString stringWithFormat:@".%@.%d.tmp",
+            destination.lastPathComponent,
             (int)getpid() * 31 + (int)(arc4random() % 100000)];
+        NSString *tempDestination = [destination.stringByDeletingLastPathComponent
+            stringByAppendingPathComponent:tempName];
         BOOL copied = [FFCopyEngine copyItemAtPath:source toPath:tempDestination
             progress:^(unsigned long long fileCopied, unsigned long long fileAll) {
                 weakTask.completedBytes = completed + fileCopied;

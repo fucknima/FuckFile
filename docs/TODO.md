@@ -39,7 +39,7 @@
 >   尺寸 floor + 极窄兜底，列表模式不再实例化 UICollectionView
 > - 新增外部入口：Info.plist CFBundleDocumentTypes（public.data/content/
 >   archive），AppDelegate openURL 接收文件拷贝到 Device Storage/Imported/
->   并提供「前往查看」；浏览器「更多」菜单新增「导入文件…」（文件选择器，
+>   并提供「前往查看」；浏览器「＋」菜单新增「导入文件…」（文件选择器，
 >   重名自动加序号，写入经路径安全策略）
 > - 压缩包浏览器加固：中央目录解析失败时回退本地文件头扫描；单条目提取
 >   同样支持兜底路径；空归档/结构无法解析显示明确状态行并记录日志
@@ -74,6 +74,67 @@
 >   授权竞态下也能落盘
 > - App 图标：Assets.xcassets（1024 通用 + 深色变体），CI actool 编译
 >   进包并写入 CFBundleIcons
+>
+> > **UI 第三轮 / SD金修复（2026-08-24，ADR-016）**：
+> - SDX 崩溃修复：面包屑从 navigationBar.bottomAnchor 回退
+>   safeArea（cross-hierarchy 约束激活在 viewDidLoad 抛 NSISEngine）
+> - 底部悬浮搜索：维持系统 automatic placement（官方文档证实
+>   preferredSearchBarPlacement 无 bottom 值，iOS 26+ automatic 由系统
+>   渲染底部 Liquid Glass）；内容/滚动指示条补底部余量（56pt），
+>   多选清零避免双重空白；多选时隐藏搜索
+> - 面包屑去重（祖先链 + 直接父级加粗 + 尾部箭头）；AppData 容器层级
+>   （显示名 + 标识符·时间 + cube 语义图标）；Paste Banner systemMaterial
+>   材质；文件名 medium 权重；Home/设置语义色；Empty/Error 系统模板
+>   （UIContentUnavailableConfiguration，旧系统 fallback）
+> - 待办：真机回归矩阵（见下）、10k 文件性能实测、极端 Dynamic Type 字号验证
+
+**UI/UX 入口重组（2026-08-23，ADR-014）**：
+> - 导航栏固定 `＋（新建文件夹/文件 + 导入文件…）+ …`；普通模式移除底部
+>   工具栏，底部工具栏只属于多选模式
+> - 对象级菜单单一来源：`contextMenuSectionsForEntry:` 分区定义，长按菜单
+>   （displayInline 全平铺）/ Grid 长按 / 左滑「更多」共用；左滑只留 删除+更多
+> - 多选底栏：复制/移动/分享/压缩/删除 全部直接可见；全选只在导航栏
+> - Grid 补齐：长按菜单、缩略图、下拉刷新、空态/加载/错误；统一
+>   `refreshVisibleContent`（List/Grid/空态一起刷新）
+> - Archive 浏览器与 Browser 同语言：`…`（选择/全部解压/分享压缩包）+
+>   选择模式 取消/全选/底栏「提取」
+> - 新增 FFViewerPickerViewController：列表式查看器选择（默认关联打勾，
+>   选中即设覆盖并立即打开），用于 Browser「用其他查看器打开」与
+>   设置页「文件关联」编辑
+> - 任务中心：进行中/历史分段 + 「清除已完成」；收藏/最近空状态文案；
+>   最近记录清空加确认；搜索范围文案与实际一致（全部 App 数据）+
+>   无结果空状态（没有找到"xxx" 尝试缩短关键词）
+> - Settings/属性页 cell 复用重置（Switch/副标题/选中态不再跨行泄漏）；
+>   属性页新增分享
+>
+> **UI 实测反馈第二轮（2026-08-23）**：
+> - 更多菜单：动作全部一级（选择/粘贴/刷新/复制当前路径/文件夹信息），
+>   排序/筛选/显示方式收敛为一个「视图」二级菜单
+> - 搜索框：navigationItem.searchController 在 iOS 26 被渲染到屏幕底部，
+>   改为页面顶部自建搜索条（列表/网格共用），滚动收起、回顶展开、
+>   输入中不收起 —— 与系统设置一致的搜索交互
+> - 压缩：目标名已存在弹「替换 / 保留两者 / 取消」，不再静默覆盖
+> - 长按菜单：分区改 displayInline 全平铺（无箭头二级），iPad 自动双列
+> - 粘贴横幅：粘贴成功/取消/拦截即消失；进入多选前先收起横幅，
+>   退出多选（有剪贴板时）再恢复，不再与底部工具栏叠放
+> - 文件图标差异化：30+ 扩展名专属 SF Symbol + 六类语义色
+>   （文档蓝/代码紫/压缩棕/数据库橙/证书黄/媒体绿，文件夹蓝/链接青）
+> - 待办：真机回归矩阵（见下）、10k 文件性能实测、极端 Dynamic Type 字号验证
+
+**UI/UX 系统级重构（2026-08-23，ADR-013）**：
+> - Navigation：全 App Inline 标题（prefersLargeTitles=NO），正文大标题移除，
+>   首页/目录/设置等标题回到顶部导航栏
+> - Browser：新增 FFPathBreadcrumbView 路径导航（单行、横向滚动、当前加粗、
+>   上级可点）；列表信息降噪（文件夹/文件/符号链接一行式 + 相对时间）；
+>   图标色彩降噪；Dynamic Type 第一批落地
+> - 属性页：FFFileInfoViewController 替代 fullDetail Alert；xattr/递归统计/
+>   SHA-256/MIME 移出扫描主路径，由 FFFileMetadataService 按需后台加载
+> - Grid：自适应列数（2~8 列，保留 floor/极窄兜底/懒创建销毁）；「默认视图」
+>   设置语义 + 浏览器「显示方式」运行时切换
+> - 更多菜单/＋菜单/批量工具栏重组；搜索页统一 UISearchController；结果路径
+>   缩略显示；任务中心排版分层；设置重分组（默认视图/文件夹优先/存储与缓存）
+> - Share Extension 仅状态标签视觉统一，导入逻辑零改动
+> - 待办：真机回归矩阵（见下）、10k 文件性能实测、极端 Dynamic Type 字号验证
 >
 > **外部分享架构重做（2026-08-23，ADR-012）**：
 > - 真机 A/B 已确认“文件类型”不是主变量：微信 PDF 可经 openURL 导入，
@@ -180,7 +241,7 @@
 - [x] 总进度（多文件合计字节比例）
 - [x] Cancel（文件级取消 + 解压条目级取消）
 - [x] 失败任务（failed 状态 + 错误记录）
-- [~] Retry（失败任务可重投递，UI 入口待补）
+- [x] Retry（失败/取消任务可左滑重试，任务中心「历史」段）
 
 ## P1 Preview
 

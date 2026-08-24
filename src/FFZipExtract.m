@@ -138,8 +138,12 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
     }
 
     // ---- 提取到兄弟临时目录，成功后 rename 提交 ----
-    NSString *tempDir = [NSString stringWithFormat:@"%@.%@.tmp", destDir,
-        [[[NSUUID UUID] UUIDString] substringToIndex:8]];
+    // 临时目录名带 . 前缀（隐藏）：任务进行中不出现在浏览列表。
+    NSString *tempDir = [[destDir.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:
+            [NSString stringWithFormat:@".%@.%@.tmp", destDir.lastPathComponent,
+                [[[NSUUID UUID] UUIDString] substringToIndex:8]]]
+        stringByStandardizingPath];
     [[NSFileManager defaultManager] createDirectoryAtPath:tempDir
         withIntermediateDirectories:YES attributes:nil error:nil];
 
