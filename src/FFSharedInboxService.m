@@ -2,6 +2,7 @@
 #import "FFShareBridge.h"
 #import "FFImportService.h"
 #import "FFLogger.h"
+#import "FFSystemAccessManager.h"
 #import "MCMManager+ExtensionData.h"
 
 NSNotificationName const FFSharedInboxDidImportNotification =
@@ -31,21 +32,28 @@ NSNotificationName const FFSharedInboxDidImportNotification =
         [roots addObject:groupInbox];
         FFLogTag(@"ShareInbox", @"bridge app-group=%@", groupInbox);
     } else {
-        FFLogTag(@"ShareInbox", @"app-group unavailable; using class-4 fallback");
+        FFLogTag(@"ShareInbox", @"app-group unavailable");
     }
 
-    NSString *mcmError = nil;
-    NSString *extensionRoot = [[MCMManager sharedManager]
-        extensionContainerPathForIdentifier:FFShareExtensionBundleIdentifier
-        error:&mcmError];
-    if (extensionRoot.length) {
-        NSString *extensionInbox = [[extensionRoot stringByAppendingPathComponent:@"Documents"]
-            stringByAppendingPathComponent:FFShareInboxDirectoryName];
-        [roots addObject:extensionInbox];
-        FFLogTag(@"ShareInbox", @"bridge extension-data=%@", extensionInbox);
+    // The class-4 MCM fallback is part of advanced system access. Normal mode
+    // must not touch MCM at all; App Group sharing continues to work normally.
+    if (FFSystemAccessManager.sharedManager.enabled &&
+        FFSystemAccessManager.sharedManager.loadedThisSession) {
+        NSString *mcmError = nil;
+        NSString *extensionRoot = [[MCMManager sharedManager]
+            extensionContainerPathForIdentifier:FFShareExtensionBundleIdentifier
+            error:&mcmError];
+        if (extensionRoot.length) {
+            NSString *extensionInbox = [[extensionRoot stringByAppendingPathComponent:@"Documents"]
+                stringByAppendingPathComponent:FFShareInboxDirectoryName];
+            [roots addObject:extensionInbox];
+            FFLogTag(@"ShareInbox", @"bridge extension-data=%@", extensionInbox);
+        } else {
+            FFLogTag(@"ShareInbox", @"class-4 bridge unavailable detail=%@",
+                mcmError ?: @"(nil)");
+        }
     } else {
-        FFLogTag(@"ShareInbox", @"class-4 bridge unavailable detail=%@",
-            mcmError ?: @"(nil)");
+        FFLogTag(@"ShareInbox", @"class-4 bridge skipped (advanced access disabled/not loaded)");
     }
 
     return roots.array;
