@@ -80,7 +80,7 @@ private extension TSInputEncoding {
         switch self {
         case TSInputEncodingUTF8:
             return .utf8
-        case TSInputEncodingUTF16:
+        case TSInputEncodingUTF16LE, TSInputEncodingUTF16BE:
             return String.preferredUTF16Encoding
         default:
             return nil
