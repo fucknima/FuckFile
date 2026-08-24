@@ -662,7 +662,7 @@ CodeMirror 代码。
 | tree-sitter-yaml | tree-sitter-grammars v0.7.2 | 7708026449bed86239b1cd5bce6e3c34dbca6415 | MIT |
 | tree-sitter-xml | tree-sitter-grammars v0.7.0 | 4b64dd3a03ec002258d6268d712fd93716d6ab57 | MIT |
 | tree-sitter-markdown | tree-sitter-grammars v0.5.2 | aca7767daa8bbe3daddafc312c34be88383c828b | MIT |
-| tree-sitter-sql | tjdevries/tree-sitter-sql master | c8f50f7660e2e0b72e51eaae68c8f7f9f9a01755 | MIT |
+| tree-sitter-sql | gortexhq/tree-sitter-sql main（LANG 15，支持 scanner） | 5fb86e3b9a6762c2bc86adb6811e602d347bbc08 | MIT |
 
 grammar 选择基准：LANGUAGE_VERSION ≤ 14（新于 tree-sitter 0.25 起 runtime 声明的
 LANG_VERSION 15，见 0.25.10 api.h；0.23.x tag 的 parser.c 多为 0.25 CLI 重新生成，
