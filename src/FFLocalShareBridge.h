@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 FOUNDATION_EXPORT BOOL FFLocalShareBridgeSendInbox(NSString *inboxPath,
+                                                   NSString *sessionID,
                                                    NSString *token,
                                                    NSUInteger * _Nullable sentCount,
                                                    NSError * _Nullable * _Nullable error);
