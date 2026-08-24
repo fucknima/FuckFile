@@ -6,15 +6,13 @@
 #import "FFLogger.h"
 
 #import <limits.h>
+#import <objc/message.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
     @"FFAppDataScanStateDidChangeNotification";
 
-// These selectors already exist in MCMManager.m. Keep the expensive scan
-// orchestration outside MCMManager so advanced access can become ready without
-// waiting for a full LaunchServices pass.
 @interface MCMManager (FFScanCoordinatorPrivate)
 - (nullable NSString *)activate:(uint64_t)containerClass
                      identifier:(NSString *)identifier
@@ -58,6 +56,16 @@ NSNotificationName const FFAppDataScanStateDidChangeNotification =
     return self;
 }
 
+static BOOL FFSafeIdentifier(NSString *identifier)
+{
+    if (identifier.length < 3 || identifier.length > 255) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
+        ![identifier hasPrefix:@"."] && ![identifier hasSuffix:@"."] &&
+        ![identifier containsString:@".."] && [identifier containsString:@"."];
+}
+
 static BOOL FFValidLinkedDirectory(NSString *path)
 {
     struct stat linkStatus = {0};
@@ -84,13 +92,72 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
             }
             unlink(link.fileSystemRepresentation);
         } else {
-            // Never replace a user-created real file/folder.
             return NO;
         }
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
         return NO;
     return FFValidLinkedDirectory(link);
+}
+
+static NSArray<NSString *> *FFWorkspaceApplicationIdentifiers(void)
+{
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return @[];
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
+    SEL allSelector = NSSelectorFromString(@"allApplications");
+    NSArray *applications = workspace && [workspace respondsToSelector:allSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(workspace, allSelector) : @[];
+    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+    for (id proxy in applications ?: @[]) {
+        NSString *identifier = nil;
+        SEL appIDSelector = NSSelectorFromString(@"applicationIdentifier");
+        SEL bundleIDSelector = NSSelectorFromString(@"bundleIdentifier");
+        if ([proxy respondsToSelector:appIDSelector])
+            identifier = ((id (*)(id, SEL))objc_msgSend)(proxy, appIDSelector);
+        if (!FFSafeIdentifier(identifier) && [proxy respondsToSelector:bundleIDSelector])
+            identifier = ((id (*)(id, SEL))objc_msgSend)(proxy, bundleIDSelector);
+        if (FFSafeIdentifier(identifier)) [result addObject:identifier];
+        if (result.count >= 1024) break;
+    }
+    return result.array;
+}
+
+static NSArray<NSString *> *FFResearchIdentifiers(void)
+{
+    return @[
+        @"com.apple.mobilesafari", @"com.apple.mobilenotes", @"com.apple.Maps",
+        @"com.apple.facetime", @"com.apple.iBooks", @"com.apple.podcasts",
+        @"com.apple.PosterBoard", @"com.apple.mobilemail", @"com.apple.weather",
+        @"com.apple.camera", @"com.apple.Health", @"com.apple.Fitness",
+        @"com.apple.tips", @"com.apple.Passbook", @"com.apple.reminders",
+        @"com.apple.stocks", @"com.apple.news", @"com.apple.Home", @"com.apple.tv",
+        @"com.apple.shortcuts", @"com.apple.freeform", @"com.apple.calculator",
+        @"com.apple.MobileSMS", @"com.apple.InCallService", @"com.apple.Preferences",
+        @"com.apple.springboard", @"com.apple.Photos", @"com.apple.AppStore",
+        @"com.apple.Music", @"com.apple.Bridge", @"com.apple.Clock",
+        @"com.apple.VoiceMemos", @"com.apple.Translate", @"com.apple.measure",
+        @"com.apple.compass", @"com.apple.Magnifier", @"com.apple.DocumentsApp",
+    ];
+}
+
+static NSArray<NSString *> *FFCustomIdentifiers(void)
+{
+    NSString *documents = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *customPath = [documents stringByAppendingPathComponent:@"MCMIdentifiers.plist"];
+    NSString *bundlePath = [NSBundle.mainBundle pathForResource:@"MCMIdentifiers" ofType:@"plist"];
+    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+    for (NSString *path in @[bundlePath ?: @"", customPath]) {
+        NSDictionary *dictionary = [NSDictionary dictionaryWithContentsOfFile:path];
+        NSArray *values = [dictionary[@"AppData"] isKindOfClass:NSArray.class]
+            ? dictionary[@"AppData"] : @[];
+        for (id value in values)
+            if ([value isKindOfClass:NSString.class] && FFSafeIdentifier(value))
+                [result addObject:value];
+    }
+    return result.array;
 }
 
 - (void)publishScanning:(BOOL)scanning progress:(double)progress
@@ -103,41 +170,20 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
         _total = total;
     }
     NSDictionary *info = @{
-        @"Scanning": @(scanning),
-        @"Progress": @(progress),
-        @"Linked": @(linked),
-        @"Total": @(total),
+        @"Scanning": @(scanning), @"Progress": @(progress),
+        @"Linked": @(linked), @"Total": @(total),
     };
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
             postNotificationName:FFAppDataScanStateDidChangeNotification
                           object:self userInfo:info];
-        // Preserve the existing home-screen observer contract.
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:FFMCMAppLinksUpdatedNotification
-                          object:self userInfo:info];
     });
 }
 
-- (BOOL)isScanning
-{
-    @synchronized (self) { return _scanning; }
-}
-
-- (double)progress
-{
-    @synchronized (self) { return _progress; }
-}
-
-- (NSUInteger)total
-{
-    @synchronized (self) { return _total; }
-}
-
-- (NSUInteger)linked
-{
-    @synchronized (self) { return _linked; }
-}
+- (BOOL)isScanning { @synchronized (self) { return _scanning; } }
+- (double)progress { @synchronized (self) { return _progress; } }
+- (NSUInteger)total { @synchronized (self) { return _total; } }
+- (NSUInteger)linked { @synchronized (self) { return _linked; } }
 
 - (void)bootstrapWithCompletion:(void (^)(BOOL, NSString * _Nullable))completion
 {
@@ -160,7 +206,6 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
         [NSFileManager.defaultManager createDirectoryAtPath:apps
             withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-        // Existing live link is the cheapest possible capability proof.
         for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
             if (FFValidLinkedDirectory([apps stringByAppendingPathComponent:name])) {
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
@@ -169,17 +214,12 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
         }
 
         MCMManager *mcm = MCMManager.sharedManager;
-        NSArray<NSString *> *fastTargets = @[
-            @"com.apple.mobilesafari",
-            @"com.apple.mobilenotes",
-            @"com.apple.Maps",
-            @"com.apple.mobilemail",
-        ];
         NSString *lastError = nil;
-        for (NSString *identifier in fastTargets) {
+        for (NSString *identifier in @[@"com.apple.mobilesafari", @"com.apple.mobilenotes",
+                                        @"com.apple.Maps", @"com.apple.mobilemail"]) {
             NSString *target = [mcm activateClass2WithMatrix:identifier error:&lastError];
             if (target.length && FFInstallAppDataLink(apps, identifier, target)) {
-                FFLogTag(@"SystemAccess", @"fast bootstrap OK id=%@ root=%@", identifier, target);
+                FFLogTag(@"SystemAccess", @"fast bootstrap OK id=%@", identifier);
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
                 return;
             }
@@ -189,27 +229,6 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
             : @"快速能力探测没有获得可用 App Data 容器。";
         dispatch_async(dispatch_get_main_queue(), ^{ completion(NO, reason); });
     });
-}
-
-static BOOL FFLooksLikeApplicationIdentifier(NSString *identifier)
-{
-    if (identifier.length < 5 || identifier.length > 180) return NO;
-    if ([identifier hasPrefix:@"group."] ||
-        [identifier hasPrefix:@"systemgroup."] ||
-        [identifier hasPrefix:@"com.apple.private."] ||
-        [identifier hasPrefix:@"com.apple.security."] ||
-        [identifier hasPrefix:@"com.apple.developer."])
-        return NO;
-    if ([identifier hasSuffix:@".plist"] ||
-        [identifier hasSuffix:@".framework"] ||
-        [identifier hasSuffix:@".dylib"] ||
-        [identifier hasSuffix:@".xpc"] ||
-        [identifier hasSuffix:@".appex"])
-        return NO;
-    NSUInteger dots = 0;
-    for (NSUInteger i = 0; i < identifier.length; i++)
-        if ([identifier characterAtIndex:i] == '.') dots++;
-    return dots >= 2;
 }
 
 - (void)scanWithCompletion:(void (^)(void))completion
@@ -228,38 +247,41 @@ static BOOL FFLooksLikeApplicationIdentifier(NSString *identifier)
         [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
             attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-        // Remove only broken generated symlinks. Real user files are untouched.
         for (NSString *name in [fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
             NSString *path = [apps stringByAppendingPathComponent:name];
             struct stat st = {0};
-            if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode) &&
-                !FFValidLinkedDirectory(path))
+            if (lstat(path.fileSystemRepresentation, &st) == 0 &&
+                S_ISLNK(st.st_mode) && !FFValidLinkedDirectory(path))
                 unlink(path.fileSystemRepresentation);
         }
 
+        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+        NSString *enumerationError = nil;
+        NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
+        for (NSString *identifier in dynamic ?: @[])
+            if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+        [candidates addObjectsFromArray:FFWorkspaceApplicationIdentifiers()];
+        [candidates addObjectsFromArray:FFResearchIdentifiers()];
+        [candidates addObjectsFromArray:FFCustomIdentifiers()];
+
         MCMManager *mcm = MCMManager.sharedManager;
         NSString *lsdError = nil;
-        NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd"
-            group:NO error:&lsdError];
-        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSetWithArray:@[
-            @"com.apple.mobilesafari", @"com.apple.mobilenotes", @"com.apple.Maps",
-            @"com.apple.mobilemail", @"com.apple.Photos", @"com.apple.AppStore",
-            @"com.apple.Music", @"com.apple.MobileSMS", @"com.apple.Preferences",
-        ]];
-
+        NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
         if (lsdRoot.length) {
-            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 12000);
+            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
             for (NSString *identifier in raw)
-                if (FFLooksLikeApplicationIdentifier(identifier)) [candidates addObject:identifier];
+                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
         } else {
-            FFLogTag(@"MCM", @"LS discovery unavailable during optimized scan: %@",
-                lsdError ?: @"(nil)");
+            FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
 
         NSUInteger total = candidates.count;
         NSUInteger linked = 0;
         NSUInteger index = 0;
         [self publishScanning:YES progress:0 linked:0 total:total];
+        FFLogTag(@"MCM", @"full discovery candidates=%lu dynamic=%lu detail=%@",
+            (unsigned long)total, (unsigned long)dynamic.count,
+            enumerationError ?: @"(nil)");
 
         for (NSString *identifier in candidates) {
             index++;
@@ -272,18 +294,14 @@ static BOOL FFLooksLikeApplicationIdentifier(NSString *identifier)
                 if (target.length && FFInstallAppDataLink(apps, identifier, target)) linked++;
             }
 
-            if (index % 20 == 0 || index == total) {
+            if (index % 25 == 0 || index == total) {
                 [self publishScanning:YES
                     progress:total ? (double)index / (double)total : 1.0
                     linked:linked total:total];
-                // Yield between batches. ContainerManager is a system service;
-                // hammering it continuously causes visible UI stalls even from
-                // a background thread.
-                usleep(6000);
+                usleep(2500);
             }
         }
 
-        // Non-critical probes are deliberately after App Data discovery.
         [mcm runMobileGestaltProbe:root];
         [mcm writeAccessMap:root];
 
