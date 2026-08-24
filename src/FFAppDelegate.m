@@ -15,6 +15,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 @interface FFAppDelegate ()
 @property(nonatomic, strong) NSMutableSet<NSString *> *inFlightImports;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *recentImports;
+@property(nonatomic) BOOL shareStreamInProgress;
 @end
 
 @implementation FFAppDelegate
@@ -27,6 +28,12 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         _recentImports = [NSMutableDictionary dictionary];
     }
     return self;
+}
+
+- (BOOL)isShareStreamURL:(NSURL *)url
+{
+    return [[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]] &&
+        [[url.host lowercaseString] isEqualToString:@"share-stream"];
 }
 
 - (BOOL)application:(UIApplication *)application
@@ -48,6 +55,9 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     if (!FFSystemAccessManager.sharedManager.enabled)
         FFPrepareStorageRootForNormalMode();
 
+    NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
+    self.shareStreamInProgress = [self isShareStreamURL:incoming];
+
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
@@ -60,18 +70,23 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     navigation.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
+    __weak typeof(self) weakSelf = self;
     [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
         if (!loaded) return;
-        [self processSharedInboxShowingResult:NO];
+        if (!weakSelf.shareStreamInProgress)
+            [weakSelf processSharedInboxShowingResult:NO];
         [[NSNotificationCenter defaultCenter]
             postNotificationName:@"FFProbeFinished" object:nil];
     }];
 
-    [self processSharedInboxShowingResult:NO];
+    // Do not race a freshly launched loopback transfer with class-4 recovery.
+    // The old ordering drained Extension Data before the share-stream listener
+    // was even created, which imported the same large file twice.
+    if (!self.shareStreamInProgress)
+        [self processSharedInboxShowingResult:NO];
 
-    NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     if (incoming) {
-        FFLogTag(@"Import", @"launchOptions file=%@", incoming.path);
+        FFLogTag(@"Import", @"launchOptions url=%@", incoming.absoluteString);
         if ([[incoming.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]])
             [self handleShareWakeURL:incoming];
         else
@@ -82,7 +97,8 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    [self processSharedInboxShowingResult:NO];
+    if (!self.shareStreamInProgress)
+        [self processSharedInboxShowingResult:NO];
 }
 
 #pragma mark - Incoming URLs
@@ -110,7 +126,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 - (void)handleShareWakeURL:(NSURL *)url
 {
-    if ([[url.host lowercaseString] isEqualToString:@"share-stream"]) {
+    if ([self isShareStreamURL:url]) {
         NSURLComponents *components = [NSURLComponents componentsWithURL:url
             resolvingAgainstBaseURL:NO];
         NSString *token = nil;
@@ -120,15 +136,19 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
             else if ([item.name isEqualToString:@"count"]) count = (NSUInteger)item.value.integerValue;
         }
         if (!token.length) {
+            self.shareStreamInProgress = NO;
             FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString);
             return;
         }
+
+        self.shareStreamInProgress = YES;
         FFLogTag(@"ShareBridge", @"prepare loopback token=%@ count=%lu",
             token, (unsigned long)count);
         __weak typeof(self) weakSelf = self;
         [[FFLocalShareBridgeServer sharedServer] prepareForToken:token expectedCount:count
             completion:^(NSUInteger imported, NSArray<NSString *> *destinations,
                          NSArray<NSError *> *errors) {
+                weakSelf.shareStreamInProgress = NO;
                 [weakSelf presentSharedBridgeResultImported:imported
                     destinations:destinations errors:errors];
             }];
@@ -206,6 +226,10 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 - (void)processSharedInboxShowingResult:(BOOL)showResult
 {
+    if (self.shareStreamInProgress) {
+        FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active");
+        return;
+    }
     [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported,
         NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
         if (imported == 0 && errors.count == 0) return;
