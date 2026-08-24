@@ -184,22 +184,19 @@ static NSString *FFNormalizeLineEndings(NSString *text, FFLineEnding target)
 
 + (FFLineEnding)detectLineEndingOfString:(NSString *)string
 {
-    NSUInteger crlf = 0, lfOnly = 0, crOnly = 0;
+    // 语义：返回文件中「第一个」换行序列的类型（与 common-sense 检查器一致）。
     NSUInteger length = string.length;
     NSUInteger i = 0;
     while (i < length) {
         unichar c = [string characterAtIndex:i];
         if (c == '\r') {
-            if (i + 1 < length && [string characterAtIndex:i + 1] == '\n') { crlf++; i += 2; }
-            else { crOnly++; i += 1; }
-        } else if (c == '\n') {
-            lfOnly++; i += 1;
-        } else {
-            i += 1;
+            if (i + 1 < length && [string characterAtIndex:i + 1] == '\n')
+                return FFLineEndingCRLF;
+            return FFLineEndingCR;
         }
+        if (c == '\n') return FFLineEndingLF;
+        i += 1;
     }
-    if (crlf >= lfOnly && crlf >= crOnly && crlf > 0) return FFLineEndingCRLF;
-    if (crOnly > lfOnly && crOnly > 0) return FFLineEndingCR;
     return FFLineEndingLF;
 }
 
