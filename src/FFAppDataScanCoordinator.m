@@ -8,11 +8,15 @@
 #import "FFAppDataLeaseManager.h"
 #import "FFAppNames.h"
 
+#import <errno.h>
 #import <objc/message.h>
 #import <unistd.h>
 
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
     @"FFAppDataScanStateDidChangeNotification";
+
+static NSString *const kFFAppDataLSFingerprintKey =
+    @"FFAppDataLastLaunchServicesFingerprintV1";
 
 @interface MCMManager (FFScanCoordinatorPrivate)
 - (nullable NSString *)activate:(uint64_t)containerClass
@@ -33,6 +37,7 @@ NSNotificationName const FFAppDataScanStateDidChangeNotification =
 @implementation FFAppDataScanCoordinator {
     dispatch_queue_t _queue;
     NSMutableArray<void (^)(void)> *_pendingScanCompletions;
+    NSTimeInterval _lastFingerprintCheck;
 }
 
 + (instancetype)sharedCoordinator
@@ -199,6 +204,53 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
     });
 }
 
+- (void)checkForInstalledAppChanges
+{
+    dispatch_async(_queue, ^{
+        NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
+        if (now - self->_lastFingerprintCheck < 2.0) return;
+        self->_lastFingerprintCheck = now;
+
+        // A full scan already queued/running will refresh the fingerprint itself.
+        if (self.scanning) return;
+
+        NSString *lsdError = nil;
+        NSString *lsdRoot = [MCMManager.sharedManager activate:10
+            identifier:@"com.apple.lsd" group:NO error:&lsdError];
+        if (!lsdRoot.length) {
+            FFLogTag(@"AppDataSync", @"change check skipped: lsd unavailable detail=%@",
+                lsdError ?: @"(nil)");
+            return;
+        }
+
+        NSString *current = FFLSStoreFingerprint(lsdRoot);
+        if (!current.length) {
+            FFLogTag(@"AppDataSync", @"change check skipped: no LS fingerprint");
+            return;
+        }
+
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        NSString *previous = [defaults stringForKey:kFFAppDataLSFingerprintKey];
+        if (!previous.length) {
+            // Upgrade/migration path: an existing registry is already useful and
+            // should not force one surprise 20k scan merely because this build is
+            // the first one that knows about fingerprints. Establish a baseline;
+            // subsequent install/uninstall changes will trigger reconciliation.
+            [defaults setObject:current forKey:kFFAppDataLSFingerprintKey];
+            FFLogTag(@"AppDataSync", @"established LS fingerprint baseline known=%lu",
+                (unsigned long)FFAppDataRegistry.sharedRegistry.identifiers.count);
+            return;
+        }
+        if ([previous isEqualToString:current]) {
+            FFLogTag(@"AppDataSync", @"LS fingerprint unchanged; no rescan");
+            return;
+        }
+
+        FFLogTag(@"AppDataSync", @"LS fingerprint changed; schedule reconciliation");
+        [self scanWithCompletion:nil];
+    });
+}
+
 - (void)scanWithCompletion:(void (^)(void))completion
 {
     @synchronized (self) {
@@ -207,30 +259,46 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         _scanning = YES;
     }
 
-    [self publishScanning:YES progress:0 linked:FFAppDataRegistry.sharedRegistry.identifiers.count total:0];
+    FFAppDataRegistry *sharedRegistry = FFAppDataRegistry.sharedRegistry;
+    [self publishScanning:YES progress:0 linked:sharedRegistry.identifiers.count total:0];
     dispatch_async(_queue, ^{
         NSString *root = FFStorageRootPath();
         FFAppDataRegistry *registry = FFAppDataRegistry.sharedRegistry;
         [registry prepareVirtualRootAndMigrateLegacyLinks];
+        NSArray<NSString *> *registryBefore = registry.identifiers;
+        NSSet<NSString *> *registryBeforeSet = [NSSet setWithArray:registryBefore];
 
         NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
-        [candidates addObjectsFromArray:registry.identifiers];
+        [candidates addObjectsFromArray:registryBefore];
+        NSMutableSet<NSString *> *presentLowercase = [NSMutableSet set];
 
         NSString *enumerationError = nil;
         NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
-        for (NSString *identifier in dynamic ?: @[])
-            if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
-        [candidates addObjectsFromArray:FFWorkspaceApplicationIdentifiers()];
+        for (NSString *identifier in dynamic ?: @[]) {
+            if (!FFSafeIdentifier(identifier)) continue;
+            [candidates addObject:identifier];
+            [presentLowercase addObject:identifier.lowercaseString];
+        }
+
+        NSArray<NSString *> *workspace = FFWorkspaceApplicationIdentifiers();
+        for (NSString *identifier in workspace) {
+            [candidates addObject:identifier];
+            [presentLowercase addObject:identifier.lowercaseString];
+        }
         [candidates addObjectsFromArray:FFResearchIdentifiers()];
         [candidates addObjectsFromArray:FFCustomIdentifiers()];
 
         MCMManager *mcm = MCMManager.sharedManager;
         NSString *lsdError = nil;
         NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
+        NSArray<NSString *> *raw = @[];
         if (lsdRoot.length) {
-            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
-            for (NSString *identifier in raw)
-                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+            raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
+            for (NSString *identifier in raw) {
+                if (!FFSafeIdentifier(identifier)) continue;
+                [candidates addObject:identifier];
+                [presentLowercase addObject:identifier.lowercaseString];
+            }
         } else {
             FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
@@ -246,6 +314,7 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         __block NSUInteger nextIndex = 0;
         __block NSUInteger processed = 0;
         __block NSUInteger accessibleThisPass = 0;
+        NSMutableSet<NSString *> *definitiveMissing = [NSMutableSet set];
         dispatch_group_t workers = dispatch_group_create();
         dispatch_queue_t workerQueue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
         NSUInteger workerCount = MIN((NSUInteger)4, MAX((NSUInteger)1, total));
@@ -266,6 +335,11 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                         NSString *name = FFAppContainerItemName(target);
                         if (!name.length) name = FFAppDisplayName(identifier);
                         [registry registerIdentifier:identifier displayName:name];
+                    } else if (error.code == ENOENT &&
+                               [registryBeforeSet containsObject:identifier]) {
+                        @synchronized (stateLock) {
+                            [definitiveMissing addObject:identifier];
+                        }
                     }
 
                     NSUInteger snapshot = 0;
@@ -286,9 +360,34 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         }
         dispatch_group_wait(workers, DISPATCH_TIME_FOREVER);
 
-        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu",
+        // Removal is intentionally conservative. A registry entry is evicted
+        // only when direct MCM lookup says ENOENT AND the current LaunchServices
+        // / dynamic / workspace sources no longer advertise the identifier.
+        // Permission/token failures never remove a known App.
+        NSMutableArray<NSString *> *toRemove = [NSMutableArray array];
+        BOOL canReconcileRemovals = lsdRoot.length > 0 && raw.count > 0;
+        if (canReconcileRemovals) {
+            for (NSString *identifier in registryBefore) {
+                if (![definitiveMissing containsObject:identifier]) continue;
+                if ([presentLowercase containsObject:identifier.lowercaseString]) continue;
+                [toRemove addObject:identifier];
+            }
+        }
+        NSUInteger removedCount = [registry removeIdentifiers:toRemove];
+
+        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu removed=%lu",
             (unsigned long)processed, (unsigned long)accessibleThisPass,
-            (unsigned long)registry.identifiers.count);
+            (unsigned long)registry.identifiers.count, (unsigned long)removedCount);
+
+        // The scan reconciled the world represented by this LaunchServices
+        // generation. Save a fresh fingerprint only after the pass completes;
+        // failed/aborted LS access leaves the previous baseline untouched so a
+        // later foreground event can retry.
+        NSString *finalFingerprint = lsdRoot.length ? FFLSStoreFingerprint(lsdRoot) : nil;
+        if (finalFingerprint.length) {
+            [NSUserDefaults.standardUserDefaults setObject:finalFingerprint
+                forKey:kFFAppDataLSFingerprintKey];
+        }
 
         [mcm runMobileGestaltProbe:root];
         [mcm writeAccessMap:root];
