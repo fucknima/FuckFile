@@ -17,8 +17,13 @@ FOUNDATION_EXPORT NSNotificationName const FFAppDataScanStateDidChangeNotificati
 // as soon as one known App Data container can be activated and linked.
 - (void)bootstrapWithCompletion:(void (^)(BOOL ready, NSString * _Nullable failureReason))completion;
 
-// Starts a coalesced, low-priority full discovery pass. If a scan is already
-// running, the completion is joined to that pass instead of scheduling another.
+// Cheap foreground/cold-launch check. Only stats the LaunchServices store; a
+// full reconciliation is started when its metadata fingerprint changed.
+- (void)checkForInstalledAppChanges;
+
+// Starts a coalesced, low-priority full discovery/reconciliation pass. New App
+// containers are registered; registry entries that are positively confirmed
+// removed are evicted. If a scan is already running, completion joins it.
 - (void)scanWithCompletion:(void (^ _Nullable)(void))completion;
 
 @end
