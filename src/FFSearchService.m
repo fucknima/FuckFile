@@ -3,11 +3,9 @@
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppNames.h"
-#import "FFBrowserViewController.h"
 
 #import <dirent.h>
 #import <limits.h>
-#import <objc/runtime.h>
 #import <string.h>
 #import <sys/stat.h>
 
@@ -175,104 +173,6 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 - (void)clearHistory
 {
     [NSUserDefaults.standardUserDefaults removeObjectForKey:kFFSearchHistoryKey];
-}
-
-@end
-
-#pragma mark - Browser recursive search adapter
-
-static const void *kFFBrowserFolderSearchServiceKey = &kFFBrowserFolderSearchServiceKey;
-static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearchGenerationKey;
-
-// refreshVisibleContent is implemented by FFBrowserViewController itself. Keep
-// that private declaration separate from the category implemented below so
-// -Wincomplete-implementation does not require us to re-implement it here.
-@interface FFBrowserViewController (FFRecursiveSearchHostPrivate)
-- (void)refreshVisibleContent;
-@end
-
-@interface FFBrowserViewController (FFRecursiveSearchPrivate)
-- (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
-@end
-
-@implementation FFBrowserViewController (FFRecursiveSearchPrivate)
-
-+ (void)load
-{
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Method original = class_getInstanceMethod(self, @selector(updateSearchResultsForSearchController:));
-        Method replacement = class_getInstanceMethod(self, @selector(ff_recursive_updateSearchResultsForSearchController:));
-        if (original && replacement) method_exchangeImplementations(original, replacement);
-    });
-}
-
-- (FFSearchService *)ff_folderSearchService
-{
-    FFSearchService *service = objc_getAssociatedObject(self, kFFBrowserFolderSearchServiceKey);
-    if (!service) {
-        service = [FFSearchService new];
-        objc_setAssociatedObject(self, kFFBrowserFolderSearchServiceKey, service, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    return service;
-}
-
-- (NSUInteger)ff_nextFolderSearchGeneration
-{
-    NSNumber *old = objc_getAssociatedObject(self, kFFBrowserFolderSearchGenerationKey);
-    NSUInteger next = old.unsignedIntegerValue + 1;
-    objc_setAssociatedObject(self, kFFBrowserFolderSearchGenerationKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return next;
-}
-
-- (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController
-{
-    NSString *query = [searchController.searchBar.text stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (query.length == 0) {
-        [[self ff_folderSearchService] cancel];
-        [self ff_nextFolderSearchGeneration];
-        [self ff_recursive_updateSearchResultsForSearchController:searchController];
-        return;
-    }
-
-    NSUInteger generation = [self ff_nextFolderSearchGeneration];
-    FFSearchService *service = [self ff_folderSearchService];
-    [service cancel];
-    [self setValue:query forKey:@"searchText"];
-    [self setValue:@[] forKey:@"filteredEntries"];
-    [self refreshVisibleContent];
-
-    NSString *root = self.currentPath;
-    __weak typeof(self) weakSelf = self;
-    [service startSearch:query underRoot:root batch:^(NSArray<FFFoundItem *> *batch) {
-        typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        NSNumber *current = objc_getAssociatedObject(strongSelf, kFFBrowserFolderSearchGenerationKey);
-        if (current.unsignedIntegerValue != generation) return;
-
-        NSMutableArray<FFEntry *> *rows = [[strongSelf valueForKey:@"filteredEntries"] mutableCopy] ?: [NSMutableArray array];
-        for (FFFoundItem *found in batch) {
-            FFEntry *entry = [FFEntry new];
-            entry.name = found.name;
-            entry.displayName = found.displayName.length ? found.displayName : found.name;
-            entry.path = found.path;
-            entry.isDirectory = found.isDirectory;
-            entry.size = found.size;
-            NSString *relative = [found.path hasPrefix:root]
-                ? [found.path substringFromIndex:MIN(root.length + 1, found.path.length)] : found.path;
-            NSString *parent = relative.stringByDeletingLastPathComponent;
-            entry.detail = parent.length ? parent : @"当前文件夹";
-            [rows addObject:entry];
-        }
-        [strongSelf setValue:rows forKey:@"filteredEntries"];
-        [strongSelf refreshVisibleContent];
-    } completion:^(__unused BOOL finished) {
-        typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        NSNumber *current = objc_getAssociatedObject(strongSelf, kFFBrowserFolderSearchGenerationKey);
-        if (current.unsignedIntegerValue == generation) [strongSelf refreshVisibleContent];
-    }];
 }
 
 @end
