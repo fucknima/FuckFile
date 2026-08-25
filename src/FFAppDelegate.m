@@ -11,11 +11,16 @@
 #import "FFLogger.h"
 
 static const NSTimeInterval kFFImportDedupTTL = 5.0;
+static const NSTimeInterval kFFSharedInboxResultTTL = 8.0;
 
 @interface FFAppDelegate ()
 @property(nonatomic, strong) NSMutableSet<NSString *> *inFlightImports;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *recentImports;
 @property(nonatomic) BOOL shareStreamInProgress;
+@property(nonatomic, strong) NSDate *recentSharedInboxDate;
+@property(nonatomic, copy) NSArray<NSString *> *recentSharedInboxDestinations;
+@property(nonatomic) NSUInteger recentSharedInboxImportedCount;
+@property(nonatomic, copy) NSArray<NSError *> *recentSharedInboxErrors;
 @end
 
 @implementation FFAppDelegate
@@ -224,19 +229,78 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 #pragma mark - Shared extension inbox
 
+- (BOOL)hasFreshSharedInboxSuccess
+{
+    return self.recentSharedInboxImportedCount > 0 &&
+        self.recentSharedInboxDate &&
+        [NSDate.date timeIntervalSinceDate:self.recentSharedInboxDate] < kFFSharedInboxResultTTL;
+}
+
+- (void)cacheSharedInboxSuccessCount:(NSUInteger)imported
+                        destinations:(NSArray<NSString *> *)destinations
+                              errors:(NSArray<NSError *> *)errors
+{
+    if (imported == 0) return;
+    self.recentSharedInboxDate = NSDate.date;
+    self.recentSharedInboxImportedCount = imported;
+    self.recentSharedInboxDestinations = destinations.copy ?: @[];
+    self.recentSharedInboxErrors = errors.copy ?: @[];
+}
+
+- (void)clearSharedInboxSuccessCache
+{
+    self.recentSharedInboxDate = nil;
+    self.recentSharedInboxImportedCount = 0;
+    self.recentSharedInboxDestinations = nil;
+    self.recentSharedInboxErrors = nil;
+}
+
 - (void)processSharedInboxShowingResult:(BOOL)showResult
 {
     if (self.shareStreamInProgress) {
         FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active");
         return;
     }
+
     [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported,
         NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
-        if (imported == 0 && errors.count == 0) return;
-        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu",
-            (unsigned long)imported, (unsigned long)errors.count);
-        if (!showResult && imported == 0) return;
-        [self presentSharedBridgeResultImported:imported destinations:destinations errors:errors];
+        if (imported > 0 || errors.count > 0) {
+            FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu show=%d",
+                (unsigned long)imported, (unsigned long)errors.count, showResult);
+        }
+
+        // A cold launch can run several recovery drains before the explicit
+        // wake URL arrives. Cache a successful drain so the wake can reuse the
+        // correct result instead of treating a later timeout as a new failure.
+        if (imported > 0)
+            [self cacheSharedInboxSuccessCount:imported
+                destinations:destinations errors:errors];
+
+        // Lifecycle recovery is transport-only. It must never display an alert.
+        if (!showResult) return;
+
+        NSUInteger effectiveImported = imported;
+        NSArray<NSString *> *effectiveDestinations = destinations ?: @[];
+        NSArray<NSError *> *effectiveErrors = errors ?: @[];
+        BOOL replayedRecentSuccess = NO;
+
+        if (effectiveImported == 0 && [self hasFreshSharedInboxSuccess]) {
+            effectiveImported = self.recentSharedInboxImportedCount;
+            effectiveDestinations = self.recentSharedInboxDestinations ?: @[];
+            effectiveErrors = self.recentSharedInboxErrors ?: @[];
+            replayedRecentSuccess = YES;
+            FFLogTag(@"ShareInbox",
+                @"reuse recent success imported=%lu; suppress current errors=%lu",
+                (unsigned long)effectiveImported, (unsigned long)errors.count);
+        }
+
+        if (effectiveImported == 0 && effectiveErrors.count == 0) return;
+
+        [self presentSharedBridgeResultImported:effectiveImported
+            destinations:effectiveDestinations errors:effectiveErrors];
+
+        if (replayedRecentSuccess || effectiveImported > 0)
+            [self clearSharedInboxSuccessCache];
     }];
 }
 
