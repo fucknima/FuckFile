@@ -2,6 +2,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Cheap metadata-only fingerprint of the device-local LaunchServices csstore.
+// It does not read the store contents: filename, size, modification time and
+// inode are combined so foreground/cold-launch checks can tell whether app
+// installation state may have changed before starting an expensive deep scan.
+nullable NSString *FFLSStoreFingerprint(NSString *lsdContainerRoot);
+
 // Scans the device-local LaunchServices store inside the given lsd service
 // container root and returns candidate installed-app bundle identifiers.
 //
@@ -12,7 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 // caller.
 //
 // Results are cached in <Documents>/LSIdentifierCache.plist keyed by the
-// store's byte size; a rescan happens only when the store changed.
+// metadata fingerprint above; a rescan happens only when the store changed.
 NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
                                                       NSUInteger maxCandidates);
 
@@ -20,6 +26,5 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
 // so the caller can confirm them with class-7 lookups. Cached separately.
 NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
                                                   NSUInteger maxCandidates);
-
 
 NS_ASSUME_NONNULL_END
