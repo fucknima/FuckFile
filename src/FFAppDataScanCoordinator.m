@@ -4,10 +4,11 @@
 #import "MCMManager.h"
 #import "MCMBridge.h"
 #import "FFLogger.h"
+#import "FFAppDataRegistry.h"
+#import "FFAppDataLeaseManager.h"
+#import "FFAppNames.h"
 
-#import <limits.h>
 #import <objc/message.h>
-#import <sys/stat.h>
 #import <unistd.h>
 
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
@@ -18,8 +19,6 @@ NSNotificationName const FFAppDataScanStateDidChangeNotification =
                      identifier:(NSString *)identifier
                           group:(BOOL)group
                           error:(NSString * _Nullable * _Nullable)error;
-- (nullable NSString *)activateClass2WithMatrix:(NSString *)identifier
-                                           error:(NSString * _Nullable * _Nullable)error;
 - (void)runMobileGestaltProbe:(NSString *)root;
 - (void)writeAccessMap:(NSString *)root;
 @end
@@ -64,40 +63,6 @@ static BOOL FFSafeIdentifier(NSString *identifier)
     return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
         ![identifier hasPrefix:@"."] && ![identifier hasSuffix:@"."] &&
         ![identifier containsString:@".."] && [identifier containsString:@"."];
-}
-
-static BOOL FFValidLinkedDirectory(NSString *path)
-{
-    struct stat linkStatus = {0};
-    struct stat targetStatus = {0};
-    return lstat(path.fileSystemRepresentation, &linkStatus) == 0 &&
-        S_ISLNK(linkStatus.st_mode) &&
-        stat(path.fileSystemRepresentation, &targetStatus) == 0 &&
-        S_ISDIR(targetStatus.st_mode);
-}
-
-static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString *target)
-{
-    if (!apps.length || !identifier.length || !target.length) return NO;
-    NSString *link = [apps stringByAppendingPathComponent:identifier];
-    struct stat st = {0};
-    if (lstat(link.fileSystemRepresentation, &st) == 0) {
-        if (S_ISLNK(st.st_mode)) {
-            char current[PATH_MAX] = {0};
-            ssize_t length = readlink(link.fileSystemRepresentation, current, sizeof(current) - 1);
-            if (length > 0) {
-                current[length] = '\0';
-                NSString *existing = [NSString stringWithUTF8String:current];
-                if ([existing isEqualToString:target] && FFValidLinkedDirectory(link)) return YES;
-            }
-            unlink(link.fileSystemRepresentation);
-        } else {
-            return NO;
-        }
-    }
-    if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        return NO;
-    return FFValidLinkedDirectory(link);
 }
 
 static NSArray<NSString *> *FFWorkspaceApplicationIdentifiers(void)
@@ -174,7 +139,7 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         @"Linked": @(linked), @"Total": @(total),
     };
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter]
+        [NSNotificationCenter.defaultCenter
             postNotificationName:FFAppDataScanStateDidChangeNotification
                           object:self userInfo:info];
     });
@@ -202,30 +167,33 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
             return;
         }
 
-        NSString *apps = FFAppDataVirtualPath();
-        [NSFileManager.defaultManager createDirectoryAtPath:apps
-            withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+        FFAppDataRegistry *registry = FFAppDataRegistry.sharedRegistry;
+        [registry prepareVirtualRootAndMigrateLegacyLinks];
 
-        for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
-            if (FFValidLinkedDirectory([apps stringByAppendingPathComponent:name])) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
-                return;
-            }
+        NSMutableOrderedSet<NSString *> *probes = [NSMutableOrderedSet orderedSet];
+        NSArray<NSString *> *known = registry.identifiers;
+        NSUInteger knownLimit = MIN((NSUInteger)8, known.count);
+        if (knownLimit) [probes addObjectsFromArray:[known subarrayWithRange:NSMakeRange(0, knownLimit)]];
+        [probes addObjectsFromArray:@[
+            @"com.apple.mobilesafari", @"com.apple.mobilenotes",
+            @"com.apple.Maps", @"com.apple.mobilemail"
+        ]];
+
+        NSError *lastError = nil;
+        for (NSString *identifier in probes) {
+            NSString *target = [FFAppDataLeaseManager.sharedManager
+                acquireIdentifier:identifier error:&lastError];
+            if (!target.length) continue;
+            NSString *name = FFAppContainerItemName(target);
+            if (!name.length) name = FFAppDisplayName(identifier);
+            [registry registerIdentifier:identifier displayName:name];
+            FFLogTag(@"SystemAccess", @"virtual bootstrap OK id=%@", identifier);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
+            return;
         }
 
-        MCMManager *mcm = MCMManager.sharedManager;
-        NSString *lastError = nil;
-        for (NSString *identifier in @[@"com.apple.mobilesafari", @"com.apple.mobilenotes",
-                                        @"com.apple.Maps", @"com.apple.mobilemail"]) {
-            NSString *target = [mcm activateClass2WithMatrix:identifier error:&lastError];
-            if (target.length && FFInstallAppDataLink(apps, identifier, target)) {
-                FFLogTag(@"SystemAccess", @"fast bootstrap OK id=%@", identifier);
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
-                return;
-            }
-        }
-        NSString *reason = lastError.length
-            ? [NSString stringWithFormat:@"快速能力探测失败：%@", lastError]
+        NSString *reason = lastError.localizedDescription.length
+            ? [NSString stringWithFormat:@"快速能力探测失败：%@", lastError.localizedDescription]
             : @"快速能力探测没有获得可用 App Data 容器。";
         dispatch_async(dispatch_get_main_queue(), ^{ completion(NO, reason); });
     });
@@ -239,23 +207,15 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         _scanning = YES;
     }
 
-    [self publishScanning:YES progress:0 linked:0 total:0];
+    [self publishScanning:YES progress:0 linked:FFAppDataRegistry.sharedRegistry.identifiers.count total:0];
     dispatch_async(_queue, ^{
         NSString *root = FFStorageRootPath();
-        NSString *apps = FFAppDataVirtualPath();
-        NSFileManager *fm = NSFileManager.defaultManager;
-        [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
-            attributes:@{NSFilePosixPermissions: @0700} error:nil];
-
-        for (NSString *name in [fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
-            NSString *path = [apps stringByAppendingPathComponent:name];
-            struct stat st = {0};
-            if (lstat(path.fileSystemRepresentation, &st) == 0 &&
-                S_ISLNK(st.st_mode) && !FFValidLinkedDirectory(path))
-                unlink(path.fileSystemRepresentation);
-        }
+        FFAppDataRegistry *registry = FFAppDataRegistry.sharedRegistry;
+        [registry prepareVirtualRootAndMigrateLegacyLinks];
 
         NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+        [candidates addObjectsFromArray:registry.identifiers];
+
         NSString *enumerationError = nil;
         NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
         for (NSString *identifier in dynamic ?: @[])
@@ -275,37 +235,65 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
             FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
 
-        NSUInteger total = candidates.count;
-        NSUInteger linked = 0;
-        NSUInteger index = 0;
-        [self publishScanning:YES progress:0 linked:0 total:total];
-        FFLogTag(@"MCM", @"full discovery candidates=%lu dynamic=%lu detail=%@",
+        NSArray<NSString *> *all = candidates.array;
+        NSUInteger total = all.count;
+        [self publishScanning:YES progress:0 linked:registry.identifiers.count total:total];
+        FFLogTag(@"MCM", @"virtual discovery candidates=%lu dynamic=%lu workers=4 detail=%@",
             (unsigned long)total, (unsigned long)dynamic.count,
             enumerationError ?: @"(nil)");
 
-        for (NSString *identifier in candidates) {
-            index++;
-            NSString *link = [apps stringByAppendingPathComponent:identifier];
-            if (FFValidLinkedDirectory(link)) {
-                linked++;
-            } else {
-                NSString *error = nil;
-                NSString *target = [mcm activateClass2WithMatrix:identifier error:&error];
-                if (target.length && FFInstallAppDataLink(apps, identifier, target)) linked++;
-            }
+        NSObject *stateLock = [NSObject new];
+        __block NSUInteger nextIndex = 0;
+        __block NSUInteger processed = 0;
+        __block NSUInteger accessibleThisPass = 0;
+        dispatch_group_t workers = dispatch_group_create();
+        dispatch_queue_t workerQueue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        NSUInteger workerCount = MIN((NSUInteger)4, MAX((NSUInteger)1, total));
 
-            if (index % 25 == 0 || index == total) {
-                [self publishScanning:YES
-                    progress:total ? (double)index / (double)total : 1.0
-                    linked:linked total:total];
-                usleep(2500);
-            }
+        for (NSUInteger worker = 0; worker < workerCount; worker++) {
+            dispatch_group_async(workers, workerQueue, ^{
+                while (YES) {
+                    NSString *identifier = nil;
+                    @synchronized (stateLock) {
+                        if (nextIndex < all.count) identifier = all[nextIndex++];
+                    }
+                    if (!identifier) break;
+
+                    NSError *error = nil;
+                    NSString *target = [FFAppDataLeaseManager.sharedManager
+                        acquireIdentifier:identifier error:&error];
+                    if (target.length) {
+                        NSString *name = FFAppContainerItemName(target);
+                        if (!name.length) name = FFAppDisplayName(identifier);
+                        [registry registerIdentifier:identifier displayName:name];
+                    }
+
+                    NSUInteger snapshot = 0;
+                    NSUInteger linkedSnapshot = 0;
+                    @synchronized (stateLock) {
+                        processed++;
+                        if (target.length) accessibleThisPass++;
+                        snapshot = processed;
+                        linkedSnapshot = registry.identifiers.count;
+                    }
+                    if (snapshot % 25 == 0 || snapshot == total) {
+                        [self publishScanning:YES
+                            progress:total ? (double)snapshot / (double)total : 1.0
+                            linked:linkedSnapshot total:total];
+                    }
+                }
+            });
         }
+        dispatch_group_wait(workers, DISPATCH_TIME_FOREVER);
+
+        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu",
+            (unsigned long)processed, (unsigned long)accessibleThisPass,
+            (unsigned long)registry.identifiers.count);
 
         [mcm runMobileGestaltProbe:root];
         [mcm writeAccessMap:root];
 
-        [self publishScanning:NO progress:1.0 linked:linked total:total];
+        [self publishScanning:NO progress:1.0 linked:registry.identifiers.count total:total];
         NSArray<void (^)(void)> *callbacks = nil;
         @synchronized (self) {
             _scanning = NO;
