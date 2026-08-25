@@ -15,6 +15,7 @@
 
 #import <objc/runtime.h>
 #import <AVKit/AVKit.h>
+#import <AVFoundation/AVFoundation.h>
 
 // Private readwrite mirrors of the metadata properties.
 @interface FFViewerInfo ()
@@ -128,6 +129,51 @@
     if (presenter)
         [presenter presentViewController:activity animated:YES completion:nil];
 }
+@end
+
+#pragma mark - Media
+
+// AVPlayer follows the app's current AVAudioSession category. With the default
+// ambient category, the hardware Ring/Silent switch mutes playback. A file
+// manager's explicit media player should behave like Music/Files instead: use
+// Playback while this controller is alive, then release the active session when
+// it is destroyed so other audio apps can resume normally.
+@interface FFMediaPlayerViewController : AVPlayerViewController
+@end
+
+@implementation FFMediaPlayerViewController
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    AVAudioSession *session = AVAudioSession.sharedInstance;
+    NSError *error = nil;
+    if (![session setCategory:AVAudioSessionCategoryPlayback
+                         mode:AVAudioSessionModeMoviePlayback
+                      options:0 error:&error]) {
+        FFLogTag(@"Media", @"audio session category failed: %@",
+            error.localizedDescription ?: @"unknown");
+        return;
+    }
+    error = nil;
+    if (![session setActive:YES error:&error]) {
+        FFLogTag(@"Media", @"audio session activate failed: %@",
+            error.localizedDescription ?: @"unknown");
+    }
+}
+
+- (void)dealloc
+{
+    NSError *error = nil;
+    [AVAudioSession.sharedInstance setActive:NO
+        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+              error:&error];
+    if (error) {
+        FFLogTag(@"Media", @"audio session deactivate failed: %@",
+            error.localizedDescription ?: @"unknown");
+    }
+}
+
 @end
 
 @interface FFViewerRegistry ()
@@ -291,7 +337,7 @@ navigationController:(UINavigationController *)nav
 
 - (UIViewController *)mediaViewerAtPath:(NSString *)path
 {
-    AVPlayerViewController *player = [AVPlayerViewController new];
+    FFMediaPlayerViewController *player = [FFMediaPlayerViewController new];
     player.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:path]];
     return player;
 }
