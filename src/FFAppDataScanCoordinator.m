@@ -9,7 +9,6 @@
 #import "FFAppNames.h"
 
 #import <errno.h>
-#import <objc/message.h>
 #import <unistd.h>
 
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
@@ -32,6 +31,8 @@ static NSString *const kFFAppDataLSFingerprintKey =
 @property(nonatomic) double progress;
 @property(nonatomic) NSUInteger total;
 @property(nonatomic) NSUInteger linked;
+@property(nonatomic) NSUInteger installedCount;
+@property(nonatomic) BOOL installedCountReliable;
 @end
 
 @implementation FFAppDataScanCoordinator {
@@ -68,30 +69,6 @@ static BOOL FFSafeIdentifier(NSString *identifier)
     return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
         ![identifier hasPrefix:@"."] && ![identifier hasSuffix:@"."] &&
         ![identifier containsString:@".."] && [identifier containsString:@"."];
-}
-
-static NSArray<NSString *> *FFWorkspaceApplicationIdentifiers(void)
-{
-    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
-    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return @[];
-    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
-    SEL allSelector = NSSelectorFromString(@"allApplications");
-    NSArray *applications = workspace && [workspace respondsToSelector:allSelector]
-        ? ((id (*)(id, SEL))objc_msgSend)(workspace, allSelector) : @[];
-    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
-    for (id proxy in applications ?: @[]) {
-        NSString *identifier = nil;
-        SEL appIDSelector = NSSelectorFromString(@"applicationIdentifier");
-        SEL bundleIDSelector = NSSelectorFromString(@"bundleIdentifier");
-        if ([proxy respondsToSelector:appIDSelector])
-            identifier = ((id (*)(id, SEL))objc_msgSend)(proxy, appIDSelector);
-        if (!FFSafeIdentifier(identifier) && [proxy respondsToSelector:bundleIDSelector])
-            identifier = ((id (*)(id, SEL))objc_msgSend)(proxy, bundleIDSelector);
-        if (FFSafeIdentifier(identifier)) [result addObject:identifier];
-        if (result.count >= 1024) break;
-    }
-    return result.array;
 }
 
 static NSArray<NSString *> *FFResearchIdentifiers(void)
@@ -133,15 +110,21 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
 - (void)publishScanning:(BOOL)scanning progress:(double)progress
                  linked:(NSUInteger)linked total:(NSUInteger)total
 {
+    NSUInteger installed = 0;
+    BOOL reliableInstalled = NO;
     @synchronized (self) {
         _scanning = scanning;
         _progress = progress;
         _linked = linked;
         _total = total;
+        installed = _installedCount;
+        reliableInstalled = _installedCountReliable;
     }
     NSDictionary *info = @{
         @"Scanning": @(scanning), @"Progress": @(progress),
         @"Linked": @(linked), @"Total": @(total),
+        @"InstalledCount": @(installed),
+        @"InstalledCountReliable": @(reliableInstalled),
     };
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter
@@ -150,10 +133,26 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
     });
 }
 
+- (void)updateInstalledCountFromLSDRoot:(NSString *)lsdRoot
+{
+    if (!lsdRoot.length) return;
+    NSUInteger count = FFLSBundleRecordCount(lsdRoot);
+    if (count == NSNotFound) return;
+    @synchronized (self) {
+        _installedCount = count;
+        _installedCountReliable = YES;
+    }
+    FFLogTag(@"LSInventory", @"installed Bundle records=%lu AppData=%lu",
+        (unsigned long)count,
+        (unsigned long)FFAppDataRegistry.sharedRegistry.identifiers.count);
+}
+
 - (BOOL)isScanning { @synchronized (self) { return _scanning; } }
 - (double)progress { @synchronized (self) { return _progress; } }
 - (NSUInteger)total { @synchronized (self) { return _total; } }
 - (NSUInteger)linked { @synchronized (self) { return _linked; } }
+- (NSUInteger)installedCount { @synchronized (self) { return _installedCount; } }
+- (BOOL)installedCountReliable { @synchronized (self) { return _installedCountReliable; } }
 
 - (void)bootstrapWithCompletion:(void (^)(BOOL, NSString * _Nullable))completion
 {
@@ -222,6 +221,11 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
             return;
         }
 
+        [self updateInstalledCountFromLSDRoot:lsdRoot];
+        [self publishScanning:self.scanning progress:self.progress
+                       linked:FFAppDataRegistry.sharedRegistry.identifiers.count
+                        total:self.total];
+
         NSString *current = FFLSStoreFingerprint(lsdRoot);
         if (!current.length) {
             FFLogTag(@"AppDataSync", @"change check skipped: no LS fingerprint");
@@ -273,17 +277,44 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         for (NSString *identifier in dynamic ?: @[])
             if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
 
-        [candidates addObjectsFromArray:FFWorkspaceApplicationIdentifiers()];
+        NSArray<NSString *> *structured = FFLSStructuredInstalledApplicationIdentifiers();
+        [candidates addObjectsFromArray:structured];
         [candidates addObjectsFromArray:FFResearchIdentifiers()];
         [candidates addObjectsFromArray:FFCustomIdentifiers()];
 
         MCMManager *mcm = MCMManager.sharedManager;
         NSString *lsdError = nil;
         NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
+        NSUInteger bundleRecordCount = NSNotFound;
+        BOOL usedRawFallback = YES;
         if (lsdRoot.length) {
-            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
-            for (NSString *identifier in raw)
-                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+            bundleRecordCount = FFLSBundleRecordCount(lsdRoot);
+            if (bundleRecordCount != NSNotFound) {
+                @synchronized (self) {
+                    self->_installedCount = bundleRecordCount;
+                    self->_installedCountReliable = YES;
+                }
+            }
+
+            // Fast path: when LSApplicationWorkspace exposes exactly the same
+            // number of installed applications as the Bundle table contains,
+            // the structured inventory is complete and the 20k+ byte-string
+            // fallback provides no coverage benefit.
+            BOOL structuredComplete = bundleRecordCount != NSNotFound &&
+                structured.count == bundleRecordCount;
+            if (structuredComplete) {
+                usedRawFallback = NO;
+                FFLogTag(@"LSInventory", @"structured inventory complete=%lu; skip raw csstore candidates",
+                    (unsigned long)structured.count);
+            } else {
+                NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
+                for (NSString *identifier in raw)
+                    if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+                FFLogTag(@"LSInventory", @"structured=%lu BundleRecords=%@; raw fallback=%lu",
+                    (unsigned long)structured.count,
+                    bundleRecordCount == NSNotFound ? @"unknown" : [NSString stringWithFormat:@"%lu", (unsigned long)bundleRecordCount],
+                    (unsigned long)raw.count);
+            }
         } else {
             FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
@@ -291,8 +322,9 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         NSArray<NSString *> *all = candidates.array;
         NSUInteger total = all.count;
         [self publishScanning:YES progress:0 linked:registry.identifiers.count total:total];
-        FFLogTag(@"MCM", @"virtual discovery candidates=%lu dynamic=%lu workers=4 detail=%@",
-            (unsigned long)total, (unsigned long)dynamic.count,
+        FFLogTag(@"MCM", @"virtual discovery candidates=%lu structured=%lu dynamic=%lu rawFallback=%d workers=4 detail=%@",
+            (unsigned long)total, (unsigned long)structured.count,
+            (unsigned long)dynamic.count, usedRawFallback,
             enumerationError ?: @"(nil)");
 
         NSObject *stateLock = [NSObject new];
@@ -369,9 +401,12 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         }
         NSUInteger removedCount = [registry removeIdentifiers:toRemove];
 
-        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu removed=%lu",
+        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu removed=%lu installed=%@",
             (unsigned long)processed, (unsigned long)accessibleThisPass,
-            (unsigned long)registry.identifiers.count, (unsigned long)removedCount);
+            (unsigned long)registry.identifiers.count, (unsigned long)removedCount,
+            self.installedCountReliable
+                ? [NSString stringWithFormat:@"%lu", (unsigned long)self.installedCount]
+                : @"unknown");
 
         // Save the fingerprint only after reconciliation completes. If lsd is
         // inaccessible, keep the old baseline so the next foreground can retry.
