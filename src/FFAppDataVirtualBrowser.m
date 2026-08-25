@@ -7,6 +7,19 @@
 #import "FFLogger.h"
 
 #import <objc/runtime.h>
+#import <sys/stat.h>
+
+typedef NS_ENUM(NSInteger, FFAppDataVirtualSortMode) {
+    FFAppDataVirtualSortModeName = 0,
+    FFAppDataVirtualSortModeSize,
+    FFAppDataVirtualSortModeDate,
+    FFAppDataVirtualSortModeKind,
+};
+
+static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
+{
+    return entry.displayName.length ? entry.displayName : entry.name;
+}
 
 @implementation FFBrowserViewController (FFAppDataVirtualBrowser)
 
@@ -52,15 +65,62 @@
             item.containerIdentifier = identifier;
             item.detail = @"App 数据 · 按需连接";
             item.fullDetail = item.detail;
+
+            // Do not acquire a lease just to sort. If this app is already
+            // materialized in the current process, opportunistically expose the
+            // same lightweight stat metadata used by the normal browser. This
+            // makes date/size sorting useful for connected entries without
+            // turning a UI sort into a 200+ container scan.
+            struct stat st = {0};
+            if (stat(item.path.fileSystemRepresentation, &st) == 0) {
+                item.size = (unsigned long long)st.st_size;
+                item.modificationDate = [NSDate dateWithTimeIntervalSince1970:st.st_mtime];
+            }
             [items addObject:item];
         }
+
+        // The virtual-root loader bypasses FFBrowserViewController's normal
+        // loadDirectoryContents implementation, so it must apply the browser's
+        // active sort state itself. Previously this block always sorted by
+        // display name ascending, which made every sort-menu change appear dead.
+        NSInteger sortMode = [[self valueForKey:@"sortMode"] integerValue];
+        BOOL descending = [[self valueForKey:@"sortDescending"] boolValue];
         [items sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
-            NSString *a = left.displayName.length ? left.displayName : left.name;
-            NSString *b = right.displayName.length ? right.displayName : right.name;
-            return [a localizedCaseInsensitiveCompare:b];
+            NSComparisonResult comparison = NSOrderedSame;
+            switch ((FFAppDataVirtualSortMode)sortMode) {
+                case FFAppDataVirtualSortModeSize:
+                    if (left.size != right.size)
+                        comparison = left.size > right.size ? NSOrderedAscending : NSOrderedDescending;
+                    break;
+                case FFAppDataVirtualSortModeDate: {
+                    NSDate *leftDate = left.modificationDate;
+                    NSDate *rightDate = right.modificationDate;
+                    if (leftDate && rightDate)
+                        comparison = [rightDate compare:leftDate];
+                    else if (leftDate || rightDate)
+                        comparison = leftDate ? NSOrderedAscending : NSOrderedDescending;
+                    break;
+                }
+                case FFAppDataVirtualSortModeKind:
+                    // Every virtual AppData node is the same kind (directory),
+                    // so kind sorting intentionally falls through to its stable
+                    // display-name tie breaker.
+                    break;
+                case FFAppDataVirtualSortModeName:
+                default:
+                    comparison = [FFAppDataVirtualEntrySortName(left)
+                        localizedCaseInsensitiveCompare:FFAppDataVirtualEntrySortName(right)];
+                    break;
+            }
+            if (comparison == NSOrderedSame)
+                comparison = [FFAppDataVirtualEntrySortName(left)
+                    localizedCaseInsensitiveCompare:FFAppDataVirtualEntrySortName(right)];
+            if (comparison == NSOrderedSame)
+                comparison = [left.name compare:right.name options:NSNumericSearch];
+            return descending ? -comparison : comparison;
         }];
-        FFLogTag(@"AppDataVirtual", @"root rendered from registry count=%lu",
-            (unsigned long)items.count);
+        FFLogTag(@"AppDataVirtual", @"root rendered from registry count=%lu sort=%ld descending=%d",
+            (unsigned long)items.count, (long)sortMode, descending);
         return items;
     }
 
