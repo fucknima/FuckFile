@@ -1,6 +1,8 @@
 #import "FFLSDiscovery.h"
 #import "FFLogger.h"
 
+#import <objc/message.h>
+
 static const NSUInteger kMaximumCandidateCount = 65536;
 
 static BOOL FFLSIdentifierByte(uint8_t value)
@@ -80,6 +82,251 @@ NSString *FFLSStoreFingerprint(NSString *lsdContainerRoot)
     (void)FFLSStorePaths(lsdContainerRoot, NULL, &fingerprint);
     return fingerprint;
 }
+
+#pragma mark - Structured CoreServicesStore metadata
+
+static BOOL FFLSReadLE32(NSData *data, NSUInteger offset, uint32_t *valueOut)
+{
+    if (!valueOut || offset > data.length || data.length - offset < 4) return NO;
+    const uint8_t *bytes = data.bytes;
+    const uint8_t *p = bytes + offset;
+    *valueOut = (uint32_t)p[0] |
+        ((uint32_t)p[1] << 8) |
+        ((uint32_t)p[2] << 16) |
+        ((uint32_t)p[3] << 24);
+    return YES;
+}
+
+static BOOL FFLSUnitPayloadRange(NSData *data, NSUInteger unitOffset, NSRange *rangeOut)
+{
+    if (!rangeOut || unitOffset > data.length || data.length - unitOffset < 8) return NO;
+    uint32_t payloadSize = 0;
+    if (!FFLSReadLE32(data, unitOffset + 4, &payloadSize)) return NO;
+    NSUInteger payloadOffset = unitOffset + 8;
+    if (payloadOffset > data.length || payloadSize > data.length - payloadOffset) return NO;
+    *rangeOut = NSMakeRange(payloadOffset, payloadSize);
+    return YES;
+}
+
+static BOOL FFLSTableInfoAtUnitOffset(NSData *data, NSUInteger unitOffset,
+                                      NSString **nameOut, NSUInteger *hashmapOffsetOut)
+{
+    NSRange payload = NSMakeRange(0, 0);
+    if (!FFLSUnitPayloadRange(data, unitOffset, &payload) || payload.length < 0x48) return NO;
+
+    const uint8_t *bytes = data.bytes;
+    const uint8_t *nameBytes = bytes + payload.location;
+    NSUInteger nameLength = 0;
+    while (nameLength < 0x30 && nameBytes[nameLength] != 0) nameLength++;
+    NSString *name = [[NSString alloc] initWithBytes:nameBytes
+        length:nameLength encoding:NSUTF8StringEncoding];
+    if (!name) return NO;
+
+    uint32_t hashmapOffset = 0;
+    // CSTable payload: name[0x30], reserved[0x10], nextUnitID[4], hashmapOffset[4].
+    if (!FFLSReadLE32(data, payload.location + 0x44, &hashmapOffset)) return NO;
+    if (hashmapOffset && hashmapOffset >= data.length) return NO;
+
+    if (nameOut) *nameOut = name;
+    if (hashmapOffsetOut) *hashmapOffsetOut = hashmapOffset;
+    return YES;
+}
+
+static NSUInteger FFLSValidHashmapEntryCount(NSData *data, NSUInteger hashmapOffset)
+{
+    if (!hashmapOffset || hashmapOffset >= data.length) return NSNotFound;
+    uint32_t bucketCount = 0;
+    if (!FFLSReadLE32(data, hashmapOffset, &bucketCount) ||
+        bucketCount == 0 || bucketCount > 65536)
+        return NSNotFound;
+
+    NSUInteger bucketTable = hashmapOffset + 4;
+    if (bucketTable > data.length || (NSUInteger)bucketCount > (data.length - bucketTable) / 8)
+        return NSNotFound;
+
+    NSUInteger count = 0;
+    for (uint32_t bucket = 0; bucket < bucketCount; bucket++) {
+        NSUInteger bucketOffset = bucketTable + (NSUInteger)bucket * 8;
+        uint32_t itemCount = 0;
+        uint32_t itemsOffset = 0;
+        if (!FFLSReadLE32(data, bucketOffset, &itemCount) ||
+            !FFLSReadLE32(data, bucketOffset + 4, &itemsOffset))
+            return NSNotFound;
+        if (itemCount == 0) continue;
+        if (itemCount > 1000000 || itemsOffset >= data.length ||
+            (NSUInteger)itemCount > (data.length - itemsOffset) / 8)
+            return NSNotFound;
+
+        for (uint32_t item = 0; item < itemCount; item++) {
+            uint32_t valueOffset = 0;
+            NSUInteger pairOffset = itemsOffset + (NSUInteger)item * 8;
+            if (!FFLSReadLE32(data, pairOffset + 4, &valueOffset)) return NSNotFound;
+            if (valueOffset == UINT32_MAX || valueOffset == 0 || valueOffset >= data.length)
+                continue;
+            count++;
+        }
+    }
+    return count;
+}
+
+static NSUInteger FFLSBundleRecordCountInStore(NSData *data)
+{
+    // CoreServicesStore v2 starts with: magic[4], version[1], pad[1], crc[2],
+    // unknown[4], size1[4], size2[4], then the catalog CSUnit at offset 20.
+    if (data.length < 28) return NSNotFound;
+    const uint8_t *bytes = data.bytes;
+    if (bytes[0] != 'b' || bytes[1] != 'd' || bytes[2] != 's' || bytes[3] != 'l' ||
+        bytes[4] != 2)
+        return NSNotFound;
+
+    NSString *catalogName = nil;
+    NSUInteger catalogHashmap = 0;
+    if (!FFLSTableInfoAtUnitOffset(data, 20, &catalogName, &catalogHashmap) ||
+        ![catalogName isEqualToString:@"<catalog>"] || !catalogHashmap)
+        return NSNotFound;
+
+    uint32_t bucketCount = 0;
+    if (!FFLSReadLE32(data, catalogHashmap, &bucketCount) ||
+        bucketCount == 0 || bucketCount > 65536)
+        return NSNotFound;
+    NSUInteger bucketTable = catalogHashmap + 4;
+    if (bucketTable > data.length || (NSUInteger)bucketCount > (data.length - bucketTable) / 8)
+        return NSNotFound;
+
+    for (uint32_t bucket = 0; bucket < bucketCount; bucket++) {
+        NSUInteger bucketOffset = bucketTable + (NSUInteger)bucket * 8;
+        uint32_t itemCount = 0;
+        uint32_t itemsOffset = 0;
+        if (!FFLSReadLE32(data, bucketOffset, &itemCount) ||
+            !FFLSReadLE32(data, bucketOffset + 4, &itemsOffset))
+            return NSNotFound;
+        if (itemCount == 0) continue;
+        if (itemCount > 100000 || itemsOffset >= data.length ||
+            (NSUInteger)itemCount > (data.length - itemsOffset) / 8)
+            return NSNotFound;
+
+        for (uint32_t item = 0; item < itemCount; item++) {
+            uint32_t tableUnitOffset = 0;
+            NSUInteger pairOffset = itemsOffset + (NSUInteger)item * 8;
+            if (!FFLSReadLE32(data, pairOffset + 4, &tableUnitOffset)) return NSNotFound;
+            if (tableUnitOffset == UINT32_MAX || tableUnitOffset == 0 ||
+                tableUnitOffset >= data.length)
+                continue;
+
+            NSString *tableName = nil;
+            NSUInteger tableHashmap = 0;
+            if (!FFLSTableInfoAtUnitOffset(data, tableUnitOffset, &tableName, &tableHashmap))
+                continue;
+            if (![tableName isEqualToString:@"Bundle"]) continue;
+            return FFLSValidHashmapEntryCount(data, tableHashmap);
+        }
+    }
+    return NSNotFound;
+}
+
+NSUInteger FFLSBundleRecordCount(NSString *lsdContainerRoot)
+{
+    NSArray<NSString *> *storePaths = FFLSStorePaths(lsdContainerRoot, NULL, NULL);
+    NSUInteger best = NSNotFound;
+    for (NSString *path in storePaths) {
+        NSData *data = [NSData dataWithContentsOfFile:path
+            options:NSDataReadingMappedIfSafe error:nil];
+        if (!data) continue;
+        NSUInteger count = FFLSBundleRecordCountInStore(data);
+        if (count == NSNotFound) {
+            FFLogTag(@"LSInventory", @"Bundle table parse failed path=%@", path.lastPathComponent);
+            continue;
+        }
+        FFLogTag(@"LSInventory", @"Bundle table path=%@ records=%lu",
+            path.lastPathComponent, (unsigned long)count);
+        if (best == NSNotFound || count > best) best = count;
+    }
+    return best;
+}
+
+static NSString *FFLSIdentifierFromApplicationObject(id object)
+{
+    if ([object isKindOfClass:NSString.class])
+        return FFLSSafeIdentifier(object) ? object : nil;
+    if (!object) return nil;
+
+    SEL installedSelector = NSSelectorFromString(@"isInstalled");
+    if ([object respondsToSelector:installedSelector] &&
+        !((BOOL (*)(id, SEL))objc_msgSend)(object, installedSelector))
+        return nil;
+    SEL placeholderSelector = NSSelectorFromString(@"isPlaceholder");
+    if ([object respondsToSelector:placeholderSelector] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(object, placeholderSelector))
+        return nil;
+
+    NSString *identifier = nil;
+    SEL appIDSelector = NSSelectorFromString(@"applicationIdentifier");
+    SEL bundleIDSelector = NSSelectorFromString(@"bundleIdentifier");
+    if ([object respondsToSelector:appIDSelector])
+        identifier = ((id (*)(id, SEL))objc_msgSend)(object, appIDSelector);
+    if (!FFLSSafeIdentifier(identifier) && [object respondsToSelector:bundleIDSelector])
+        identifier = ((id (*)(id, SEL))objc_msgSend)(object, bundleIDSelector);
+    return FFLSSafeIdentifier(identifier) ? identifier : nil;
+}
+
+static void FFLSAddApplicationObjects(NSMutableOrderedSet<NSString *> *result, id objects)
+{
+    if (![objects isKindOfClass:NSArray.class]) return;
+    for (id object in (NSArray *)objects) {
+        NSString *identifier = FFLSIdentifierFromApplicationObject(object);
+        if (identifier.length) [result addObject:identifier];
+    }
+}
+
+NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void)
+{
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return @[];
+
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
+    if (!workspace) return @[];
+
+    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+    @try {
+        SEL enumerateSelector = NSSelectorFromString(@"enumerateApplicationsOfType:block:");
+        if ([workspace respondsToSelector:enumerateSelector]) {
+            typedef void (^FFLSApplicationBlock)(id);
+            void (*enumerateSend)(id, SEL, unsigned long long, FFLSApplicationBlock) =
+                (void (*)(id, SEL, unsigned long long, FFLSApplicationBlock))objc_msgSend;
+            for (unsigned long long type = 0; type <= 1; type++) {
+                enumerateSend(workspace, enumerateSelector, type, ^(id proxy) {
+                    NSString *identifier = FFLSIdentifierFromApplicationObject(proxy);
+                    if (identifier.length) @synchronized (result) { [result addObject:identifier]; }
+                });
+            }
+        } else {
+            SEL applicationsOfTypeSelector = NSSelectorFromString(@"applicationsOfType:");
+            if ([workspace respondsToSelector:applicationsOfTypeSelector]) {
+                id (*sendType)(id, SEL, unsigned long long) =
+                    (id (*)(id, SEL, unsigned long long))objc_msgSend;
+                FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 0));
+                FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 1));
+            }
+        }
+
+        for (NSString *selectorName in @[@"allInstalledApplications", @"installedApplications", @"allApplications"]) {
+            SEL selector = NSSelectorFromString(selectorName);
+            if ([workspace respondsToSelector:selector]) {
+                id objects = ((id (*)(id, SEL))objc_msgSend)(workspace, selector);
+                FFLSAddApplicationObjects(result, objects);
+            }
+        }
+    } @catch (NSException *exception) {
+        FFLogTag(@"LSInventory", @"structured workspace exception=%@", exception.reason ?: exception.name);
+    }
+
+    FFLogTag(@"LSInventory", @"structured installed identifiers=%lu",
+        (unsigned long)result.count);
+    return result.array;
+}
+
+#pragma mark - Raw fallback discovery
 
 static NSArray<NSString *> *FFLSCachedIdentifiersForFingerprint(NSString *fingerprint,
                                                                  BOOL groupsOnly)
