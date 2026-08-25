@@ -15,6 +15,8 @@
 
 @interface FFHomeViewController ()
 @property(nonatomic) NSUInteger appCount;
+@property(nonatomic) NSUInteger installedAppCount;
+@property(nonatomic) BOOL installedCountReliable;
 @property(nonatomic) BOOL scanInProgress;
 @property(nonatomic) double scanProgress;
 @property(nonatomic) NSUInteger scanTotal;
@@ -32,6 +34,11 @@
     return self;
 }
 
+- (instancetype)initWithStyle:(UITableViewStyle)style
+{
+    return [self init];
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -43,6 +50,8 @@
     self.scanProgress = scan.progress;
     self.scanTotal = scan.total;
     self.scanLinked = scan.linked;
+    self.installedAppCount = scan.installedCount;
+    self.installedCountReliable = scan.installedCountReliable;
 
     __weak typeof(self) weakSelf = self;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
@@ -64,6 +73,8 @@
             weakSelf.scanProgress = [info[@"Progress"] doubleValue];
             weakSelf.scanTotal = [info[@"Total"] unsignedIntegerValue];
             weakSelf.scanLinked = [info[@"Linked"] unsignedIntegerValue];
+            weakSelf.installedAppCount = [info[@"InstalledCount"] unsignedIntegerValue];
+            weakSelf.installedCountReliable = [info[@"InstalledCountReliable"] boolValue];
             if (!weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
             [weakSelf reloadStatus];
         }];
@@ -87,6 +98,8 @@
     self.scanProgress = scan.progress;
     self.scanTotal = scan.total;
     self.scanLinked = scan.linked;
+    self.installedAppCount = scan.installedCount;
+    self.installedCountReliable = scan.installedCountReliable;
     [self reloadStatus];
 }
 
@@ -112,6 +125,8 @@
     FFAppDataScanCoordinator *scan = FFAppDataScanCoordinator.sharedCoordinator;
     BOOL ready = access.ready;
     self.scanInProgress = scan.scanning;
+    self.installedAppCount = scan.installedCount;
+    self.installedCountReliable = scan.installedCountReliable;
 
     if (access.enabled) {
         UIBarButtonItem *refresh = [[UIBarButtonItem alloc]
@@ -126,8 +141,7 @@
 
     // AppData is a logical registry-backed tree. The physical virtual-root
     // directory only contains session materializations for containers that have
-    // been opened in the current process, so counting its children reports 0
-    // after a clean cold launch even when the registry already contains apps.
+    // been opened in the current process, so count the persistent registry.
     NSUInteger count = ready ? FFAppDataRegistry.sharedRegistry.identifiers.count : 0;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSUInteger active = 0;
@@ -187,14 +201,26 @@
                 if (self.scanInProgress) {
                     NSUInteger done = self.scanTotal > 0
                         ? MIN(self.scanTotal, (NSUInteger)(self.scanTotal * self.scanProgress)) : 0;
-                    cell.detailTextLabel.text = self.scanTotal > 0
-                        ? [NSString stringWithFormat:@"高级访问已就绪 · 后台扫描 %lu/%lu · 已发现 %lu 个 App",
-                            (unsigned long)done, (unsigned long)self.scanTotal,
-                            (unsigned long)self.scanLinked]
-                        : @"高级访问已就绪 · 正在后台发现 App Data…";
+                    if (self.installedCountReliable && self.scanTotal > 0) {
+                        cell.detailTextLabel.text = [NSString stringWithFormat:
+                            @"已安装 %lu 个 App · AppData %lu · 扫描 %lu/%lu",
+                            (unsigned long)self.installedAppCount,
+                            (unsigned long)self.scanLinked,
+                            (unsigned long)done, (unsigned long)self.scanTotal];
+                    } else {
+                        cell.detailTextLabel.text = self.scanTotal > 0
+                            ? [NSString stringWithFormat:@"高级访问已就绪 · 后台扫描 %lu/%lu · AppData %lu",
+                                (unsigned long)done, (unsigned long)self.scanTotal,
+                                (unsigned long)self.scanLinked]
+                            : @"高级访问已就绪 · 正在后台发现 App Data…";
+                    }
                 } else {
-                    NSMutableString *subtitle = [NSMutableString stringWithFormat:
-                        @"本地文件 + %lu 个 App Data", (unsigned long)self.appCount];
+                    NSMutableString *subtitle = self.installedCountReliable
+                        ? [NSMutableString stringWithFormat:@"已安装 %lu 个 App · AppData %lu",
+                            (unsigned long)self.installedAppCount,
+                            (unsigned long)self.appCount]
+                        : [NSMutableString stringWithFormat:@"本地文件 + %lu 个 App Data",
+                            (unsigned long)self.appCount];
                     if (self.lastScanDate) {
                         NSDateFormatter *formatter = [NSDateFormatter new];
                         formatter.dateFormat = @"HH:mm";
