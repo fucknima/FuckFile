@@ -1,5 +1,6 @@
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
+#import "FFAppDataRegistry.h"
 #import "FFLogger.h"
 
 NSNotificationName const FFSystemAccessPreferenceDidChangeNotification =
@@ -129,14 +130,21 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
     }
     if (!shouldStart) return;
 
+    // Registry is persistent across launches. If it already contains known App
+    // identifiers, a cold launch only needs the small capability bootstrap; the
+    // virtual AppData browser will acquire each container lease lazily when the
+    // user opens it. Re-running the 20k+ LaunchServices fallback on every launch
+    // defeats the virtual architecture and wastes several minutes of MCM calls.
+    BOOL hadKnownAppData = FFAppDataRegistry.sharedRegistry.identifiers.count > 0;
+
     [[NSNotificationCenter defaultCenter]
         postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
 
-    // Root cause of the previous multi-second "enable" freeze: readiness was
-    // tied to the entire App Data enumeration. The full scan can involve
-    // thousands of ContainerManager lookups and must not sit on the critical
-    // enable path. Do a tiny capability probe first, publish Ready immediately,
-    // then fill the AppData directory in a coalesced utility scan.
+    // Readiness is intentionally independent from full App Data discovery.
+    // Bootstrap verifies that this process can acquire at least one class-2
+    // container lease. Full discovery runs automatically only for a genuinely
+    // empty registry (first use / migration); later cold launches reuse the
+    // registry and leave deep discovery to the explicit Rescan action.
     [[FFAppDataScanCoordinator sharedCoordinator]
         bootstrapWithCompletion:^(BOOL ready, NSString *failureReason) {
             BOOL current = NO;
@@ -158,19 +166,24 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
                 }
             }
 
-            FFLogTag(@"SystemAccess", @"bootstrap ready=%d generation=%lu reason=%@",
-                ready, (unsigned long)generation, failureReason ?: @"(nil)");
+            FFLogTag(@"SystemAccess", @"bootstrap ready=%d generation=%lu knownBefore=%d reason=%@",
+                ready, (unsigned long)generation, hadKnownAppData,
+                failureReason ?: @"(nil)");
             [self finishPendingCompletions:ready];
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
 
-            if (ready && self.enabled) {
+            if (ready && self.enabled && !hadKnownAppData) {
+                FFLogTag(@"SystemAccess", @"empty registry: start one-time full AppData discovery");
                 [[FFAppDataScanCoordinator sharedCoordinator]
                     scanWithCompletion:^{
                         [[NSNotificationCenter defaultCenter]
                             postNotificationName:FFSystemAccessPreferenceDidChangeNotification
                                           object:self];
                     }];
+            } else if (ready && self.enabled) {
+                FFLogTag(@"SystemAccess", @"known registry: skip automatic deep AppData scan count=%lu",
+                    (unsigned long)FFAppDataRegistry.sharedRegistry.identifiers.count);
             }
         }];
 }
