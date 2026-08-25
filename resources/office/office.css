@@ -8,6 +8,10 @@
   --secondary: #6d6d72;
   --accent: #0a84ff;
   --toolbar-h: 44px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -20,12 +24,28 @@ button,input { font:inherit; }
 button { color:var(--accent); background:transparent; border:0; }
 button:active { opacity:.55; }
 .hidden { display:none !important; }
-#app { height:100vh; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+/*
+ * WKWebView is intentionally allowed to extend edge-to-edge when the native
+ * navigation bar is hidden.  Keep the Office chrome inside the current iOS
+ * safe area so the status bar / Dynamic Island / landscape sensor housing and
+ * home indicator never cover the document toolbar.
+ */
+#app {
+  height:100vh;
+  height:100dvh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  padding-top:var(--safe-top);
+  padding-right:var(--safe-right);
+  padding-bottom:var(--safe-bottom);
+  padding-left:var(--safe-left);
+}
 #topbar { flex:0 0 auto; background:color-mix(in srgb,var(--surface) 94%,transparent); border-bottom:.5px solid var(--border); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); z-index:1000; }
 .topbar-row { min-height:42px; display:flex; align-items:center; gap:8px; padding:6px 10px; }
 .doc-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:600; }
-.doc-meta { flex:0 0 auto; color:var(--secondary); font-size:11px; white-space:nowrap; }
-.icon-button { width:36px; height:32px; border-radius:8px; font-size:18px; }
+.doc-meta { flex:0 1 auto; min-width:0; max-width:58%; overflow:hidden; text-overflow:ellipsis; color:var(--secondary); font-size:11px; white-space:nowrap; }
+.icon-button { width:36px; height:32px; flex:0 0 36px; border-radius:8px; font-size:18px; }
 .tool-row { display:flex; align-items:center; gap:8px; min-height:var(--toolbar-h); padding:5px 8px 7px; overflow-x:auto; scrollbar-width:none; }
 .tool-row::-webkit-scrollbar,.sheet-tabs::-webkit-scrollbar { display:none; }
 .tool-group { display:flex; align-items:center; gap:2px; flex:0 0 auto; background:var(--surface-2); border:.5px solid var(--border); border-radius:9px; min-height:32px; padding:2px; }
@@ -75,4 +95,5 @@ button:active { opacity:.55; }
   .ppt-thumbs { width:100%; height:96px; flex:0 0 96px; display:flex; overflow-x:auto; overflow-y:hidden; border-right:0; border-bottom:.5px solid var(--border); padding:6px; }
   .ppt-thumb { width:116px; flex:0 0 116px; margin:0 7px 0 0; }
   .docx-root { padding-left:4px; padding-right:4px; }
+  .doc-meta { max-width:52%; }
 }
