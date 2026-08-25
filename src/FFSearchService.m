@@ -133,6 +133,19 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     }
     closedir(directory);
 
+    // Emit matches from this directory before descending into its children.
+    // Otherwise a matching parent such as AppData/10086 is held until the
+    // entire 10086 subtree has been scanned, while deeper "10086" hits appear
+    // first. From Device Storage this made the parent look missing even though
+    // searching directly inside AppData found it immediately via browser rows.
+    if (pending.count > 0) {
+        NSArray *flush = pending.copy;
+        [pending removeAllObjects];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (batch && self.generation == generation) batch(flush);
+        });
+    }
+
     for (NSString *sub in subdirectories) {
         if (self.cancelled || self.generation != generation) break;
         if (!FFSystemAccessManager.sharedManager.ready && FFPathRequiresSystemAccess(sub)) continue;
@@ -144,12 +157,6 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         [self searchFor:needle underPath:sub depth:depth + 1 generation:generation batch:batch];
     }
 
-    if (pending.count > 0) {
-        NSArray *flush = pending.copy;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (batch && self.generation == generation) batch(flush);
-        });
-    }
     return !self.cancelled && self.generation == generation;
 }
 
