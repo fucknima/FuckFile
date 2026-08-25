@@ -121,6 +121,27 @@ static NSString *const kFFAppDataRegistryKey = @"FFAppDataVirtualRegistryV1";
     return changed;
 }
 
+- (NSUInteger)removeIdentifiers:(NSArray<NSString *> *)identifiers
+{
+    if (identifiers.count == 0) return 0;
+    NSMutableArray<NSString *> *removed = [NSMutableArray array];
+    @synchronized (self) {
+        for (NSString *identifier in identifiers) {
+            if (![identifier isKindOfClass:NSString.class] || !identifier.length) continue;
+            if (_entries[identifier] == nil) continue;
+            [_entries removeObjectForKey:identifier];
+            [removed addObject:identifier];
+        }
+        if (removed.count) [self persistLocked];
+    }
+    if (removed.count) {
+        FFLogTag(@"AppDataRegistry", @"removed stale ids count=%lu ids=%@",
+            (unsigned long)removed.count, [removed componentsJoinedByString:@","]);
+        [self publishChange];
+    }
+    return removed.count;
+}
+
 - (void)prepareVirtualRootAndMigrateLegacyLinks
 {
     BOOL shouldPrepare = NO;
