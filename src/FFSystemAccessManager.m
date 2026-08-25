@@ -3,6 +3,8 @@
 #import "FFAppDataRegistry.h"
 #import "FFLogger.h"
 
+#import <UIKit/UIKit.h>
+
 NSNotificationName const FFSystemAccessPreferenceDidChangeNotification =
     @"FFSystemAccessPreferenceDidChangeNotification";
 NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
@@ -31,8 +33,21 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
         _pendingCompletions = [NSMutableArray array];
         _state = [NSUserDefaults.standardUserDefaults boolForKey:FFSystemAccessEnabledPreferenceKey]
             ? FFSystemAccessStateIdle : FFSystemAccessStateDisabled;
+        [NSNotificationCenter.defaultCenter addObserver:self
+            selector:@selector(applicationDidBecomeActive:)
+            name:UIApplicationDidBecomeActiveNotification object:nil];
     }
     return self;
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)note
+{
+    (void)note;
+    // This is metadata-only unless LaunchServices changed. It lets installs and
+    // uninstalls performed while FuckFile was backgrounded reconcile as soon as
+    // the app returns, without restoring the old every-launch 20k scan.
+    if (!self.enabled || !self.ready) return;
+    [FFAppDataScanCoordinator.sharedCoordinator checkForInstalledAppChanges];
 }
 
 - (BOOL)isEnabled
@@ -132,19 +147,12 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
 
     // Registry is persistent across launches. If it already contains known App
     // identifiers, a cold launch only needs the small capability bootstrap; the
-    // virtual AppData browser will acquire each container lease lazily when the
-    // user opens it. Re-running the 20k+ LaunchServices fallback on every launch
-    // defeats the virtual architecture and wastes several minutes of MCM calls.
+    // virtual AppData browser acquires individual container leases lazily.
     BOOL hadKnownAppData = FFAppDataRegistry.sharedRegistry.identifiers.count > 0;
 
     [[NSNotificationCenter defaultCenter]
         postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
 
-    // Readiness is intentionally independent from full App Data discovery.
-    // Bootstrap verifies that this process can acquire at least one class-2
-    // container lease. Full discovery runs automatically only for a genuinely
-    // empty registry (first use / migration); later cold launches reuse the
-    // registry and leave deep discovery to the explicit Rescan action.
     [[FFAppDataScanCoordinator sharedCoordinator]
         bootstrapWithCompletion:^(BOOL ready, NSString *failureReason) {
             BOOL current = NO;
@@ -173,7 +181,9 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:FFSystemAccessPreferenceDidChangeNotification object:self];
 
-            if (ready && self.enabled && !hadKnownAppData) {
+            if (!ready || !self.enabled) return;
+
+            if (!hadKnownAppData) {
                 FFLogTag(@"SystemAccess", @"empty registry: start one-time full AppData discovery");
                 [[FFAppDataScanCoordinator sharedCoordinator]
                     scanWithCompletion:^{
@@ -181,9 +191,10 @@ NSString *const FFSystemAccessEnabledPreferenceKey = @"FFSystemAccessEnabled";
                             postNotificationName:FFSystemAccessPreferenceDidChangeNotification
                                           object:self];
                     }];
-            } else if (ready && self.enabled) {
-                FFLogTag(@"SystemAccess", @"known registry: skip automatic deep AppData scan count=%lu",
+            } else {
+                FFLogTag(@"SystemAccess", @"known registry: cheap LS change check count=%lu",
                     (unsigned long)FFAppDataRegistry.sharedRegistry.identifiers.count);
+                [FFAppDataScanCoordinator.sharedCoordinator checkForInstalledAppChanges];
             }
         }];
 }
