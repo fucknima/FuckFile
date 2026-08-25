@@ -184,9 +184,15 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 static const void *kFFBrowserFolderSearchServiceKey = &kFFBrowserFolderSearchServiceKey;
 static const void *kFFBrowserFolderSearchGenerationKey = &kFFBrowserFolderSearchGenerationKey;
 
+// refreshVisibleContent is implemented by FFBrowserViewController itself. Keep
+// that private declaration separate from the category implemented below so
+// -Wincomplete-implementation does not require us to re-implement it here.
+@interface FFBrowserViewController (FFRecursiveSearchHostPrivate)
+- (void)refreshVisibleContent;
+@end
+
 @interface FFBrowserViewController (FFRecursiveSearchPrivate)
 - (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
-- (void)refreshVisibleContent;
 @end
 
 @implementation FFBrowserViewController (FFRecursiveSearchPrivate)
