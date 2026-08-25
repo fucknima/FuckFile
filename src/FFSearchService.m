@@ -3,6 +3,8 @@
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppNames.h"
+#import "FFAppDataRegistry.h"
+#import "FFAppDataVirtualPath.h"
 
 #import <dirent.h>
 #import <limits.h>
@@ -71,11 +73,10 @@ static const NSUInteger kFFSearchMaxDepth = 16;
 
 - (NSString *)displayNameForEntryName:(NSString *)name path:(NSString *)child parent:(NSString *)parent
 {
-    // AppData top-level links are bundle IDs. Their actual localized name may
-    // only exist in the target container's iTunesMetadata and LS workspace can
-    // be unavailable on newer iOS, so resolve the symlink target exactly as
-    // the browser does instead of relying on bundle-id mappings alone.
     if ([parent.stringByStandardizingPath isEqualToString:FFAppDataVirtualPath().stringByStandardizingPath]) {
+        NSString *registered = [FFAppDataRegistry.sharedRegistry displayNameForIdentifier:name];
+        if (registered.length) return registered;
+
         char resolved[PATH_MAX] = {0};
         if (realpath(child.fileSystemRepresentation, resolved)) {
             NSString *real = [NSString stringWithUTF8String:resolved];
@@ -90,10 +91,21 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         generation:(NSUInteger)generation batch:(void (^)(NSArray<FFFoundItem *> *))batch
 {
     if (self.cancelled || self.generation != generation || depth > kFFSearchMaxDepth) return NO;
+
+    BOOL advancedReady = FFSystemAccessManager.sharedManager.ready;
+    if (advancedReady && FFAppDataIsVirtualRootPath(path)) {
+        // AppData's persistent children live in the registry, not on disk.
+        // Recursive search is an explicit user action, so materialize the known
+        // logical roots with bounded concurrency before the existing filesystem
+        // walker traverses them. Normal browsing remains lazy and does none of
+        // this cold-start work.
+        [FFAppDataRegistry.sharedRegistry prepareVirtualRootAndMigrateLegacyLinks];
+        FFAppDataMaterializeKnownForTraversal(4);
+    }
+
     DIR *directory = opendir(path.fileSystemRepresentation);
     if (!directory) return YES;
 
-    BOOL advancedReady = FFSystemAccessManager.sharedManager.ready;
     BOOL showHidden = [NSUserDefaults.standardUserDefaults boolForKey:@"FFSettingsShowHiddenFiles"];
     NSMutableArray<FFFoundItem *> *pending = [NSMutableArray array];
     NSMutableArray<NSString *> *subdirectories = [NSMutableArray array];
@@ -133,11 +145,6 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     }
     closedir(directory);
 
-    // Emit matches from this directory before descending into its children.
-    // Otherwise a matching parent such as AppData/10086 is held until the
-    // entire 10086 subtree has been scanned, while deeper "10086" hits appear
-    // first. From Device Storage this made the parent look missing even though
-    // searching directly inside AppData found it immediately via browser rows.
     if (pending.count > 0) {
         NSArray *flush = pending.copy;
         [pending removeAllObjects];
