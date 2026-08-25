@@ -272,6 +272,29 @@ static void FFLSAddApplicationObjects(NSMutableOrderedSet<NSString *> *result, i
     }
 }
 
+static void FFLSConsumeRecordEnumerator(NSMutableOrderedSet<NSString *> *result,
+                                        id enumerator, NSUInteger maxRecords)
+{
+    if (!enumerator) return;
+    SEL nextSelector = @selector(nextObject);
+    if ([enumerator respondsToSelector:nextSelector]) {
+        NSUInteger guard = 0;
+        while (guard++ < maxRecords) {
+            id record = ((id (*)(id, SEL))objc_msgSend)(enumerator, nextSelector);
+            if (!record) break;
+            NSString *identifier = FFLSIdentifierFromApplicationObject(record);
+            if (identifier.length) [result addObject:identifier];
+        }
+    } else if ([enumerator conformsToProtocol:@protocol(NSFastEnumeration)]) {
+        NSUInteger guard = 0;
+        for (id record in enumerator) {
+            NSString *identifier = FFLSIdentifierFromApplicationObject(record);
+            if (identifier.length) [result addObject:identifier];
+            if (++guard >= maxRecords) break;
+        }
+    }
+}
+
 static NSUInteger FFLSAddDirectApplicationRecords(NSMutableOrderedSet<NSString *> *result)
 {
     Class recordClass = NSClassFromString(@"LSApplicationRecord");
@@ -280,42 +303,30 @@ static NSUInteger FFLSAddDirectApplicationRecords(NSMutableOrderedSet<NSString *
 
     NSUInteger before = result.count;
     @try {
-        id enumerator = ((id (*)(id, SEL, unsigned long long))objc_msgSend)(recordClass, selector, 0ULL);
-        SEL nextSelector = @selector(nextObject);
-        if ([enumerator respondsToSelector:nextSelector]) {
-            NSUInteger guard = 0;
-            while (guard++ < 8192) {
-                id record = ((id (*)(id, SEL))objc_msgSend)(enumerator, nextSelector);
-                if (!record) break;
-                NSString *identifier = FFLSIdentifierFromApplicationObject(record);
-                if (identifier.length) [result addObject:identifier];
-            }
-        } else if ([enumerator conformsToProtocol:@protocol(NSFastEnumeration)]) {
-            NSUInteger guard = 0;
-            for (id record in enumerator) {
-                NSString *identifier = FFLSIdentifierFromApplicationObject(record);
-                if (identifier.length) [result addObject:identifier];
-                if (++guard >= 8192) break;
-            }
+        // BackupAgent2 on modern iOS enumerates both option classes 0 and 64
+        // for its installed user-app inventory. Mirror that pair here and dedupe
+        // by Bundle ID. This avoids LSApplicationWorkspace, which returns zero
+        // records under MobileHouseArrest on the tested iOS 27 build.
+        for (NSNumber *options in @[@0ULL, @64ULL]) {
+            NSUInteger optionBefore = result.count;
+            id enumerator = ((id (*)(id, SEL, unsigned long long))objc_msgSend)(
+                recordClass, selector, options.unsignedLongLongValue);
+            FFLSConsumeRecordEnumerator(result, enumerator, 8192);
+            FFLogTag(@"LSInventory", @"direct records options=%llu added=%lu total=%lu",
+                options.unsignedLongLongValue,
+                (unsigned long)(result.count - optionBefore),
+                (unsigned long)result.count);
         }
     } @catch (NSException *exception) {
         FFLogTag(@"LSInventory", @"direct record enumerator exception=%@",
             exception.reason ?: exception.name);
     }
-    NSUInteger added = result.count - before;
-    FFLogTag(@"LSInventory", @"direct record enumerator identifiers=%lu",
-        (unsigned long)added);
-    return added;
+    return result.count - before;
 }
 
 NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void)
 {
     NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
-
-    // LSApplicationWorkspace is filtered to zero records for the
-    // MobileHouseArrest identity on the user's iOS 27 build. Try the newer
-    // LSApplicationRecord database enumerator first; it maps the LaunchServices
-    // record layer directly and does not depend on Workspace enumeration.
     FFLSAddDirectApplicationRecords(result);
 
     Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
