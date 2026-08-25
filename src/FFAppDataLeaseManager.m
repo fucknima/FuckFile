@@ -13,6 +13,7 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
     NSMutableDictionary<NSString *, MCMLease *> *_leases;
     NSMutableDictionary<NSString *, dispatch_group_t> *_inFlight;
     NSMutableDictionary<NSString *, NSError *> *_lastErrors;
+    dispatch_semaphore_t _activationSlots;
 }
 
 + (instancetype)sharedManager
@@ -30,6 +31,10 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
         _leases = [NSMutableDictionary dictionary];
         _inFlight = [NSMutableDictionary dictionary];
         _lastErrors = [NSMutableDictionary dictionary];
+        // One global budget shared by background discovery, search prewarm and
+        // user-driven opens. This prevents concurrent features from accidentally
+        // hammering containermanagerd with 8-12 simultaneous lookups.
+        _activationSlots = dispatch_semaphore_create(4);
     }
     return self;
 }
@@ -166,8 +171,10 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
         }
     }
 
+    dispatch_semaphore_wait(_activationSlots, DISPATCH_TIME_FOREVER);
     NSString *detail = nil;
     MCMLease *lease = [self newUsableLeaseForIdentifier:identifier detail:&detail];
+    dispatch_semaphore_signal(_activationSlots);
     NSError *failure = lease ? nil : [self errorWithDetail:detail code:5];
 
     @synchronized (self) {
