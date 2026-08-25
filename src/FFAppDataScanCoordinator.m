@@ -13,6 +13,8 @@
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
     @"FFAppDataScanStateDidChangeNotification";
 
+static NSString *const kFFKnownAppDataIdentifiersKey = @"FFKnownAppDataIdentifiers";
+
 @interface MCMManager (FFScanCoordinatorPrivate)
 - (nullable NSString *)activate:(uint64_t)containerClass
                      identifier:(NSString *)identifier
@@ -90,6 +92,9 @@ static BOOL FFInstallAppDataLink(NSString *apps, NSString *identifier, NSString 
                 NSString *existing = [NSString stringWithUTF8String:current];
                 if ([existing isEqualToString:target] && FFValidLinkedDirectory(link)) return YES;
             }
+            // Replace a stale link only after MCM has already returned a fresh,
+            // validated target for the same identifier. Never delete a link just
+            // because one discovery source failed to mention it this run.
             unlink(link.fileSystemRepresentation);
         } else {
             return NO;
@@ -119,7 +124,6 @@ static NSArray<NSString *> *FFWorkspaceApplicationIdentifiers(void)
         if (!FFSafeIdentifier(identifier) && [proxy respondsToSelector:bundleIDSelector])
             identifier = ((id (*)(id, SEL))objc_msgSend)(proxy, bundleIDSelector);
         if (FFSafeIdentifier(identifier)) [result addObject:identifier];
-        if (result.count >= 1024) break;
     }
     return result.array;
 }
@@ -158,6 +162,25 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                 [result addObject:value];
     }
     return result.array;
+}
+
+static NSArray<NSString *> *FFKnownAppDataIdentifiers(void)
+{
+    NSArray *stored = [NSUserDefaults.standardUserDefaults
+        arrayForKey:kFFKnownAppDataIdentifiersKey];
+    if (![stored isKindOfClass:NSArray.class]) return @[];
+    NSMutableOrderedSet<NSString *> *safe = [NSMutableOrderedSet orderedSet];
+    for (id value in stored)
+        if ([value isKindOfClass:NSString.class] && FFSafeIdentifier(value))
+            [safe addObject:value];
+    return safe.array;
+}
+
+static void FFPersistKnownAppDataIdentifiers(NSOrderedSet<NSString *> *identifiers)
+{
+    if (!identifiers) return;
+    [NSUserDefaults.standardUserDefaults setObject:identifiers.array
+                                            forKey:kFFKnownAppDataIdentifiersKey];
 }
 
 - (void)publishScanning:(BOOL)scanning progress:(double)progress
@@ -219,6 +242,10 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                                         @"com.apple.Maps", @"com.apple.mobilemail"]) {
             NSString *target = [mcm activateClass2WithMatrix:identifier error:&lastError];
             if (target.length && FFInstallAppDataLink(apps, identifier, target)) {
+                NSMutableOrderedSet<NSString *> *known = [NSMutableOrderedSet
+                    orderedSetWithArray:FFKnownAppDataIdentifiers()];
+                [known addObject:identifier];
+                FFPersistKnownAppDataIdentifiers(known);
                 FFLogTag(@"SystemAccess", @"fast bootstrap OK id=%@", identifier);
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, nil); });
                 return;
@@ -247,51 +274,115 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         [fm createDirectoryAtPath:apps withIntermediateDirectories:YES
             attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
+        // Preserve every historical AppData entry as a discovery source. Broken
+        // symlinks are not deleted here: a reinstall can move the real container
+        // and MCM may repair the link later in this same scan.
+        NSMutableOrderedSet<NSString *> *existingLinks = [NSMutableOrderedSet orderedSet];
+        NSMutableOrderedSet<NSString *> *validExistingLinks = [NSMutableOrderedSet orderedSet];
         for (NSString *name in [fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]) {
             NSString *path = [apps stringByAppendingPathComponent:name];
             struct stat st = {0};
-            if (lstat(path.fileSystemRepresentation, &st) == 0 &&
-                S_ISLNK(st.st_mode) && !FFValidLinkedDirectory(path))
-                unlink(path.fileSystemRepresentation);
+            if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISLNK(st.st_mode)) continue;
+            if (!FFSafeIdentifier(name)) continue;
+            [existingLinks addObject:name];
+            if (FFValidLinkedDirectory(path))
+                [validExistingLinks addObject:name];
+            else
+                FFLogTag(@"MCM", @"preserve stale AppData link pending revalidation id=%@", name);
         }
 
-        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+        NSArray<NSString *> *workspace = FFWorkspaceApplicationIdentifiers();
+        NSArray<NSString *> *knownStored = FFKnownAppDataIdentifiers();
+
+        // Ask ContainerManager itself for the full class-2 identifier set. Using
+        // NSUIntegerMax removes the previous 1024-item artificial stop while
+        // retaining the bridge's existing cancellation contract.
         NSString *enumerationError = nil;
-        NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
+        NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(
+            2, NSUIntegerMax, &enumerationError);
+        NSMutableOrderedSet<NSString *> *dynamicSafe = [NSMutableOrderedSet orderedSet];
         for (NSString *identifier in dynamic ?: @[])
-            if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
-        [candidates addObjectsFromArray:FFWorkspaceApplicationIdentifiers()];
+            if (FFSafeIdentifier(identifier)) [dynamicSafe addObject:identifier];
+
+        // Treat a successful MCM iteration as authoritative unless it contradicts
+        // a currently valid class-2 link we can prove exists right now. That
+        // catches partial/filtered enumeration without penalising normal runs.
+        BOOL authoritativeMCM = enumerationError.length == 0;
+        if (authoritativeMCM) {
+            for (NSString *identifier in validExistingLinks) {
+                if (![dynamicSafe containsObject:identifier]) {
+                    authoritativeMCM = NO;
+                    enumerationError = [NSString stringWithFormat:
+                        @"enumeration omitted valid existing container %@", identifier];
+                    break;
+                }
+            }
+        }
+        if (authoritativeMCM && dynamicSafe.count == 0 &&
+            (workspace.count > 0 || validExistingLinks.count > 0)) {
+            authoritativeMCM = NO;
+            enumerationError = @"enumeration returned zero despite installed/active apps";
+        }
+
+        // Structured sources are cheap and high confidence. Existing links and
+        // historical successes come first so previously visible AppData entries
+        // are revalidated before any broad discovery work.
+        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+        [candidates addObjectsFromArray:existingLinks.array];
+        [candidates addObjectsFromArray:knownStored];
+        [candidates addObjectsFromArray:workspace];
+        [candidates addObjectsFromArray:dynamicSafe.array];
         [candidates addObjectsFromArray:FFResearchIdentifiers()];
         [candidates addObjectsFromArray:FFCustomIdentifiers()];
 
-        MCMManager *mcm = MCMManager.sharedManager;
-        NSString *lsdError = nil;
-        NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
-        if (lsdRoot.length) {
-            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
-            for (NSString *identifier in raw)
-                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
-        } else {
-            FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
+        // The raw LaunchServices csstore scanner has many false positives. Keep
+        // it as a lossless fallback only when the authoritative MCM enumeration
+        // is unavailable or demonstrably incomplete. This preserves old coverage
+        // without forcing tens of thousands of speculative activations normally.
+        NSUInteger rawFallbackCount = 0;
+        if (!authoritativeMCM) {
+            MCMManager *fallbackMCM = MCMManager.sharedManager;
+            NSString *lsdError = nil;
+            NSString *lsdRoot = [fallbackMCM activate:10 identifier:@"com.apple.lsd"
+                                                  group:NO error:&lsdError];
+            if (lsdRoot.length) {
+                NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
+                rawFallbackCount = raw.count;
+                for (NSString *identifier in raw)
+                    if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+            } else {
+                FFLogTag(@"MCM", @"LS fallback unavailable detail=%@", lsdError ?: @"(nil)");
+            }
         }
 
         NSUInteger total = candidates.count;
         NSUInteger linked = 0;
         NSUInteger index = 0;
-        [self publishScanning:YES progress:0 linked:0 total:total];
-        FFLogTag(@"MCM", @"full discovery candidates=%lu dynamic=%lu detail=%@",
-            (unsigned long)total, (unsigned long)dynamic.count,
-            enumerationError ?: @"(nil)");
+        NSMutableOrderedSet<NSString *> *knownSuccessful = [NSMutableOrderedSet
+            orderedSetWithArray:knownStored];
+        [knownSuccessful addObjectsFromArray:validExistingLinks.array];
 
+        [self publishScanning:YES progress:0 linked:0 total:total];
+        FFLogTag(@"MCM", @"AppData discovery total=%lu mcm=%lu workspace=%lu existing=%lu known=%lu authoritative=%d rawFallback=%lu detail=%@",
+            (unsigned long)total, (unsigned long)dynamicSafe.count,
+            (unsigned long)workspace.count, (unsigned long)existingLinks.count,
+            (unsigned long)knownStored.count, authoritativeMCM,
+            (unsigned long)rawFallbackCount, enumerationError ?: @"(nil)");
+
+        MCMManager *mcm = MCMManager.sharedManager;
         for (NSString *identifier in candidates) {
             index++;
             NSString *link = [apps stringByAppendingPathComponent:identifier];
             if (FFValidLinkedDirectory(link)) {
                 linked++;
+                [knownSuccessful addObject:identifier];
             } else {
                 NSString *error = nil;
                 NSString *target = [mcm activateClass2WithMatrix:identifier error:&error];
-                if (target.length && FFInstallAppDataLink(apps, identifier, target)) linked++;
+                if (target.length && FFInstallAppDataLink(apps, identifier, target)) {
+                    linked++;
+                    [knownSuccessful addObject:identifier];
+                }
             }
 
             if (index % 25 == 0 || index == total) {
@@ -301,6 +392,10 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                 usleep(2500);
             }
         }
+
+        // Success history is monotonic by design. A temporary OS/API regression
+        // must not make an App disappear from future discovery attempts.
+        FFPersistKnownAppDataIdentifiers(knownSuccessful);
 
         [mcm runMobileGestaltProbe:root];
         [mcm writeAccessMap:root];
