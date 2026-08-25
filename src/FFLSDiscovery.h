@@ -6,7 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 // It does not read the store contents: filename, size, modification time and
 // inode are combined so foreground/cold-launch checks can tell whether app
 // installation state may have changed before starting an expensive deep scan.
-nullable NSString *FFLSStoreFingerprint(NSString *lsdContainerRoot);
+NSString * _Nullable FFLSStoreFingerprint(NSString *lsdContainerRoot);
 
 // Scans the device-local LaunchServices store inside the given lsd service
 // container root and returns candidate installed-app bundle identifiers.
