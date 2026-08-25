@@ -49,6 +49,17 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
         ![identifier containsString:@".."] && [identifier containsString:@"."];
 }
 
+static BOOL FFLeaseDetailMeansMissing(NSString *detail)
+{
+    if (!detail.length) return NO;
+    // MCMBridge formats lookup failures as "lookup denied posix=N ...".
+    // ENOENT is the one failure we can safely use as evidence that the class-2
+    // container itself no longer exists; permission/token failures must never
+    // evict a persistent registry entry.
+    return [detail containsString:@"posix=2"] ||
+           [detail localizedCaseInsensitiveContainsString:@"No such file"];
+}
+
 - (BOOL)rootStillReadable:(NSString *)path
 {
     if (!path.length) return NO;
@@ -81,7 +92,9 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
         userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-- (MCMLease *)newUsableLeaseForIdentifier:(NSString *)identifier detail:(NSString **)detailOut
+- (MCMLease *)newUsableLeaseForIdentifier:(NSString *)identifier
+                                   detail:(NSString **)detailOut
+                        definitiveMissing:(BOOL *)definitiveMissingOut
 {
     static NSArray<NSNumber *> *flags;
     static dispatch_once_t onceToken;
@@ -95,15 +108,23 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
     });
 
     NSString *lastDetail = nil;
+    BOOL sawMissingLookup = NO;
+    BOOL onlyMissingLookups = YES;
     for (NSNumber *flag in flags) {
         NSString *detail = nil;
         MCMLease *lease = [MCMLease leaseForClass:2 identifier:identifier
             group:NO part:0 flags:flag.unsignedLongLongValue error:&detail];
         if (!lease) {
+            BOOL missing = FFLeaseDetailMeansMissing(detail);
+            sawMissingLookup |= missing;
+            if (!missing) onlyMissingLookups = NO;
             lastDetail = detail;
             continue;
         }
 
+        // A real container object existed. Any later activation/open failure is
+        // transient/access-related, not proof of uninstall.
+        onlyMissingLookups = NO;
         BOOL activated = [lease activate:&detail];
         int fd = open(lease.rootPath.fileSystemRepresentation,
             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
@@ -117,6 +138,7 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
                     identifier, flag.unsignedLongLongValue, lease.rootPath);
             }
             if (detailOut) *detailOut = nil;
+            if (definitiveMissingOut) *definitiveMissingOut = NO;
             return lease;
         }
 
@@ -126,6 +148,8 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
     }
 
     if (detailOut) *detailOut = lastDetail ?: @"class-2 lookup denied (matrix exhausted)";
+    if (definitiveMissingOut)
+        *definitiveMissingOut = sawMissingLookup && onlyMissingLookups;
     return nil;
 }
 
@@ -173,9 +197,12 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
 
     dispatch_semaphore_wait(_activationSlots, DISPATCH_TIME_FOREVER);
     NSString *detail = nil;
-    MCMLease *lease = [self newUsableLeaseForIdentifier:identifier detail:&detail];
+    BOOL definitiveMissing = NO;
+    MCMLease *lease = [self newUsableLeaseForIdentifier:identifier
+        detail:&detail definitiveMissing:&definitiveMissing];
     dispatch_semaphore_signal(_activationSlots);
-    NSError *failure = lease ? nil : [self errorWithDetail:detail code:5];
+    NSError *failure = lease ? nil : [self errorWithDetail:detail
+        code:definitiveMissing ? ENOENT : 5];
 
     @synchronized (self) {
         if (lease) {
