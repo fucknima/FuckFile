@@ -7,6 +7,7 @@
 #import "FFSettingsViewController.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
+#import "FFAppDataRegistry.h"
 #import "FFStorageEnvironment.h"
 #import "FFPathPolicy.h"
 #import "FFFileTaskManager.h"
@@ -51,6 +52,10 @@
     [[NSNotificationCenter defaultCenter] addObserverForName:FFSystemAccessPreferenceDidChangeNotification
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadStatus]; });
+        }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataRegistryDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+            [weakSelf reloadStatus];
         }];
     [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
@@ -119,10 +124,12 @@
         self.navigationItem.rightBarButtonItem = nil;
     }
 
+    // AppData is a logical registry-backed tree. The physical virtual-root
+    // directory only contains session materializations for containers that have
+    // been opened in the current process, so counting its children reports 0
+    // after a clean cold launch even when the registry already contains apps.
+    NSUInteger count = ready ? FFAppDataRegistry.sharedRegistry.identifiers.count : 0;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSUInteger count = ready
-            ? [[NSFileManager.defaultManager contentsOfDirectoryAtPath:FFAppDataVirtualPath() error:nil] count]
-            : 0;
         NSUInteger active = 0;
         for (FFFileTask *task in FFFileTaskManager.sharedManager.tasks)
             if (task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued)
