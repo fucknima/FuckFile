@@ -2,10 +2,12 @@
 
 #import "unzip.h"
 
+#import <CoreFoundation/CoreFoundation.h>
 #import <fcntl.h>
 #import <unistd.h>
 #import <string.h>
 #import <sys/stat.h>
+#import <zlib.h>
 
 // Built on minizip (third_party/minizip) instead of a hand-written
 // central-directory parser: real-world archives (Actions artifacts,
@@ -18,11 +20,110 @@
 
 static const unsigned long long kMaxEntrySize = 2ULL * 1024 * 1024 * 1024; // 单条目 2 GiB
 static const NSUInteger kMaxEntries = 100000;
+static const NSUInteger kMaxArchiveNameBytes = 64 * 1024;
 
 static NSError *FFArchiveError(NSString *message)
 {
     return [NSError errorWithDomain:@"FFArchive" code:-1
         userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
+static uint16_t FFArchiveReadLE16(const uint8_t *bytes)
+{
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+}
+
+static uint32_t FFArchiveReadLE32(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] |
+        ((uint32_t)bytes[1] << 8) |
+        ((uint32_t)bytes[2] << 16) |
+        ((uint32_t)bytes[3] << 24);
+}
+
+// Info-ZIP Unicode Path extra field (0x7075 / "up"):
+//   version[1] + CRC32(raw filename)[4] + UTF-8 path[n]
+// A large number of Windows-created Chinese ZIPs keep the central-directory
+// filename in GBK/OEM bytes with UTF-8 flag bit 11 clear, then put the actual
+// Unicode path here. Ignoring this field made every such entry fail UTF-8
+// decoding and the archive browser incorrectly reported "空归档".
+static NSString *FFArchiveUnicodePathFromExtra(NSData *rawName, NSData *extra)
+{
+    const uint8_t *bytes = extra.bytes;
+    NSUInteger offset = 0;
+    while (offset + 4 <= extra.length) {
+        uint16_t headerID = FFArchiveReadLE16(bytes + offset);
+        uint16_t payloadSize = FFArchiveReadLE16(bytes + offset + 2);
+        offset += 4;
+        if ((NSUInteger)payloadSize > extra.length - offset) break;
+
+        if (headerID == 0x7075 && payloadSize >= 5) {
+            const uint8_t *payload = bytes + offset;
+            if (payload[0] == 1) {
+                uint32_t expectedCRC = FFArchiveReadLE32(payload + 1);
+                uLong actualCRC = crc32(0L, Z_NULL, 0);
+                actualCRC = crc32(actualCRC, rawName.bytes, (uInt)rawName.length);
+                if ((uint32_t)actualCRC == expectedCRC) {
+                    NSString *unicode = [[NSString alloc]
+                        initWithBytes:payload + 5
+                        length:(NSUInteger)payloadSize - 5
+                        encoding:NSUTF8StringEncoding];
+                    if (unicode.length) return unicode;
+                }
+            }
+        }
+        offset += payloadSize;
+    }
+    return nil;
+}
+
+// Reads the current minizip record without assuming the raw filename is UTF-8.
+// `infoOut` describes exactly the same current entry and can be used directly
+// by the extraction path after a decoded-name match.
+static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut)
+{
+    if (!zip) return nil;
+
+    unz_file_info64 info;
+    memset(&info, 0, sizeof(info));
+    if (unzGetCurrentFileInfo64(zip, &info, NULL, 0, NULL, 0, NULL, 0) != UNZ_OK)
+        return nil;
+    if (info.size_filename == 0 || info.size_filename > kMaxArchiveNameBytes ||
+        info.size_file_extra > kMaxArchiveNameBytes)
+        return nil;
+
+    NSMutableData *rawName = [NSMutableData dataWithLength:(NSUInteger)info.size_filename];
+    NSMutableData *extra = [NSMutableData dataWithLength:(NSUInteger)info.size_file_extra];
+    if (unzGetCurrentFileInfo64(zip, &info,
+            rawName.mutableBytes, (uLong)rawName.length,
+            extra.length ? extra.mutableBytes : NULL, (uLong)extra.length,
+            NULL, 0) != UNZ_OK)
+        return nil;
+
+    NSString *name = nil;
+    BOOL declaresUTF8 = (info.flag & (1U << 11)) != 0;
+    if (declaresUTF8) {
+        name = [[NSString alloc] initWithData:rawName encoding:NSUTF8StringEncoding];
+    } else {
+        // Prefer the standard Unicode path extra when present and CRC-valid.
+        name = FFArchiveUnicodePathFromExtra(rawName, extra);
+        // Some writers emit UTF-8 bytes but forget bit 11.
+        if (!name.length)
+            name = [[NSString alloc] initWithData:rawName encoding:NSUTF8StringEncoding];
+        // Common Windows Chinese ZIP fallback (GBK is a subset of GB18030).
+        if (!name.length) {
+            NSStringEncoding gb18030 = CFStringConvertEncodingToNSStringEncoding(
+                kCFStringEncodingGB_18030_2000);
+            name = [[NSString alloc] initWithData:rawName encoding:gb18030];
+        }
+        // Last-resort reversible display path: never silently turn a non-empty
+        // archive into an empty one merely because its legacy code page is odd.
+        if (!name.length)
+            name = [[NSString alloc] initWithData:rawName encoding:NSISOLatin1StringEncoding];
+    }
+
+    if (infoOut) *infoOut = info;
+    return name;
 }
 
 @implementation FFArchiveEntry
@@ -86,14 +187,9 @@ static NSError *FFArchiveError(NSString *message)
 
     NSUInteger count = 0;
     do {
-        char nameBuffer[2048];
         unz_file_info64 info;
-        if (unzGetCurrentFileInfo64(zip, &info, nameBuffer, sizeof(nameBuffer),
-                                    NULL, 0, NULL, 0) != UNZ_OK) break;
-
-        NSString *name = [[NSString alloc] initWithBytes:nameBuffer
-            length:strlen(nameBuffer) encoding:NSUTF8StringEncoding];
-        if (!name.length) continue; // 无法解码的名字跳过
+        NSString *name = FFArchiveCurrentEntryName(zip, &info);
+        if (!name.length) continue; // malformed entry name only; keep scanning
 
         FFArchiveEntry *entry = [FFArchiveEntry new];
         entry.entryPath = name;
@@ -135,19 +231,26 @@ static NSError *FFArchiveError(NSString *message)
         return nil;
     }
 
-    if (unzLocateFile(zip, entryName.fileSystemRepresentation, 1) != UNZ_OK &&
-        unzLocateFile(zip, entryName.fileSystemRepresentation, 2) != UNZ_OK) {
+    // Do not use unzLocateFile(entryName.fileSystemRepresentation) here.
+    // The UI name may come from a 0x7075 Unicode extra field while the central
+    // directory stores completely different GBK/OEM bytes. Walk records and
+    // compare the same decoded display path used by listEntries instead.
+    BOOL found = NO;
+    unz_file_info64 info;
+    if (unzGoToFirstFile(zip) == UNZ_OK) {
+        do {
+            unz_file_info64 candidateInfo;
+            NSString *candidate = FFArchiveCurrentEntryName(zip, &candidateInfo);
+            if (candidate.length && [candidate isEqualToString:entryName]) {
+                info = candidateInfo;
+                found = YES;
+                break;
+            }
+        } while (unzGoToNextFile(zip) == UNZ_OK);
+    }
+    if (!found) {
         unzClose(zip);
         if (error) *error = FFArchiveError(@"归档中不存在该条目");
-        return nil;
-    }
-
-    char located[2048];
-    unz_file_info64 info;
-    if (unzGetCurrentFileInfo64(zip, &info, located, sizeof(located),
-                                NULL, 0, NULL, 0) != UNZ_OK) {
-        unzClose(zip);
-        if (error) *error = FFArchiveError(@"读取条目信息失败");
         return nil;
     }
 
