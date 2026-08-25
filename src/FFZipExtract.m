@@ -336,7 +336,8 @@ BOOL FFZipExtractWithProgress(NSString *archivePath, NSString *destDir,
             ok = NO;
             break;
         }
-        if (unzGoToFilePos64(zip, &entry.position) != UNZ_OK) {
+        unz64_file_pos position = entry.position;
+        if (unzGoToFilePos64(zip, &position) != UNZ_OK) {
             FFXSetError(error, EIO,
                 [NSString stringWithFormat:@"无法定位归档条目：%@", entry.name]);
             ok = NO;
