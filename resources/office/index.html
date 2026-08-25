@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes,viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline' blob: data:; img-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Office Viewer</title>
+  <link rel="stylesheet" href="assets/office.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="topbar-row">
+        <div id="doc-title" class="doc-title">Office</div>
+        <div id="doc-meta" class="doc-meta"></div>
+        <button class="icon-button" id="fullscreen-button" aria-label="全屏">⛶</button>
+      </div>
+      <div id="tool-row" class="tool-row hidden">
+        <div id="ppt-nav" class="tool-group hidden">
+          <button id="ppt-prev">‹</button>
+          <button id="ppt-page" class="page-button">1 / 1</button>
+          <button id="ppt-next">›</button>
+        </div>
+        <div class="tool-group search-group">
+          <input id="search-input" type="search" placeholder="在文档中搜索" autocomplete="off" autocorrect="off" spellcheck="false">
+          <button id="search-prev" aria-label="上一个">↑</button>
+          <button id="search-next" aria-label="下一个">↓</button>
+          <span id="search-count"></span>
+        </div>
+        <div class="tool-group">
+          <button id="zoom-out" aria-label="缩小">−</button>
+          <button id="zoom-label" class="zoom-label">100%</button>
+          <button id="zoom-in" aria-label="放大">＋</button>
+          <button id="fit-button" class="text-button">适合</button>
+        </div>
+      </div>
+      <div id="sheet-tabs" class="sheet-tabs hidden"></div>
+    </header>
+
+    <main id="workspace">
+      <aside id="ppt-thumbs" class="ppt-thumbs hidden"></aside>
+      <section id="content" class="content">
+        <div id="loading" class="state-card">
+          <div class="spinner"></div>
+          <strong>正在打开办公文件…</strong>
+          <span id="loading-detail">准备渲染器</span>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="assets/office-host.js"></script>
+</body>
+</html>
