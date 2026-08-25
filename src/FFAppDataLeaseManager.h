@@ -14,6 +14,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)currentRootForIdentifier:(NSString *)identifier;
 - (BOOL)hasLeaseForIdentifier:(NSString *)identifier;
 
+// Drops a process-local lease after LaunchServices authoritatively reports that
+// the app is no longer installed. Any in-flight acquisition for this identifier
+// is allowed to finish first so it cannot repopulate the cache after eviction.
+- (void)invalidateIdentifier:(NSString *)identifier;
+
 @end
 
 NS_ASSUME_NONNULL_END
