@@ -8,14 +8,27 @@ NS_ASSUME_NONNULL_BEGIN
 // installation state may have changed before starting an expensive deep scan.
 NSString * _Nullable FFLSStoreFingerprint(NSString *lsdContainerRoot);
 
+// Reads the CoreServicesStore catalog/table index and returns the number of
+// records in LaunchServices' Bundle table. This is a structural count, not the
+// old byte-string candidate count, so it is normally close to the actual number
+// of registered applications (including hidden/system apps). Returns NSNotFound
+// when the current csstore schema cannot be parsed safely.
+NSUInteger FFLSBundleRecordCount(NSString *lsdContainerRoot);
+
+// Uses LSApplicationWorkspace's structured application APIs (user + system,
+// plus compatibility fallbacks) and returns deduplicated installed bundle IDs.
+// On iOS versions that filter LaunchServices for this process, callers compare
+// this count with FFLSBundleRecordCount and fall back to the raw store scan only
+// when the structured inventory is incomplete.
+NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void);
+
 // Scans the device-local LaunchServices store inside the given lsd service
 // container root and returns candidate installed-app bundle identifiers.
 //
-// iOS 26 hides third-party apps from the normal ContainerManager and
-// LaunchServices enumeration APIs, but the store database still contains
-// every installed identifier. Candidates are extracted with a byte-range
-// scan and must be confirmed with a direct ContainerManager lookup by the
-// caller.
+// This is deliberately the final fallback. Some iOS releases hide third-party
+// apps from structured ContainerManager / LaunchServices enumeration while the
+// store still contains their identifiers. The byte-range candidates must be
+// confirmed with a direct ContainerManager lookup by the caller.
 //
 // Results are cached in <Documents>/LSIdentifierCache.plist keyed by the
 // metadata fingerprint above; a rescan happens only when the store changed.
