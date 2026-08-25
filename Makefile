@@ -14,6 +14,7 @@ FuckFile_FILES = \
 	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
+	src/FFAppDataDiscoveryUI.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
