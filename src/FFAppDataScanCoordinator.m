@@ -9,6 +9,7 @@
 #import "FFAppNames.h"
 
 #import <errno.h>
+#import <sys/stat.h>
 #import <unistd.h>
 
 NSNotificationName const FFAppDataScanStateDidChangeNotification =
@@ -69,6 +70,16 @@ static BOOL FFSafeIdentifier(NSString *identifier)
     return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
         ![identifier hasPrefix:@"."] && ![identifier hasSuffix:@"."] &&
         ![identifier containsString:@".."] && [identifier containsString:@"."];
+}
+
+static void FFRemoveSessionMaterialization(NSString *identifier)
+{
+    if (!FFSafeIdentifier(identifier)) return;
+    NSString *path = [FFAppDataVirtualPath() stringByAppendingPathComponent:identifier];
+    struct stat st = {0};
+    if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISLNK(st.st_mode)) return;
+    if (unlink(path.fileSystemRepresentation) == 0)
+        FFLogTag(@"AppDataSync", @"removed session materialization id=%@", identifier);
 }
 
 static NSArray<NSString *> *FFResearchIdentifiers(void)
@@ -269,24 +280,11 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         NSArray<NSString *> *registryBefore = registry.identifiers;
         NSSet<NSString *> *registryBeforeSet = [NSSet setWithArray:registryBefore];
 
-        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
-        [candidates addObjectsFromArray:registryBefore];
-
-        NSString *enumerationError = nil;
-        NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
-        for (NSString *identifier in dynamic ?: @[])
-            if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
-
         NSArray<NSString *> *structured = FFLSStructuredInstalledApplicationIdentifiers();
-        [candidates addObjectsFromArray:structured];
-        [candidates addObjectsFromArray:FFResearchIdentifiers()];
-        [candidates addObjectsFromArray:FFCustomIdentifiers()];
-
         MCMManager *mcm = MCMManager.sharedManager;
         NSString *lsdError = nil;
         NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
         NSUInteger bundleRecordCount = NSNotFound;
-        BOOL usedRawFallback = YES;
         if (lsdRoot.length) {
             bundleRecordCount = FFLSBundleRecordCount(lsdRoot);
             if (bundleRecordCount != NSNotFound) {
@@ -295,36 +293,77 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                     self->_installedCountReliable = YES;
                 }
             }
+        }
 
-            // Fast path: when LSApplicationWorkspace exposes exactly the same
-            // number of installed applications as the Bundle table contains,
-            // the structured inventory is complete and the 20k+ byte-string
-            // fallback provides no coverage benefit.
-            BOOL structuredComplete = bundleRecordCount != NSNotFound &&
-                structured.count == bundleRecordCount;
-            if (structuredComplete) {
-                usedRawFallback = NO;
-                FFLogTag(@"LSInventory", @"structured inventory complete=%lu; skip raw csstore candidates",
-                    (unsigned long)structured.count);
-            } else {
+        // Only treat LSApplicationWorkspace as authoritative when its unique
+        // installed identifiers exactly match the structural Bundle-table count.
+        // Otherwise a private API filter could make a partial list look complete
+        // and cause destructive registry eviction.
+        BOOL structuredComplete = bundleRecordCount != NSNotFound &&
+            structured.count > 0 && structured.count == bundleRecordCount;
+
+        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+        NSArray<NSString *> *dynamic = @[];
+        NSString *enumerationError = nil;
+        BOOL usedRawFallback = NO;
+        NSUInteger authoritativeRemoved = 0;
+
+        if (structuredComplete) {
+            NSSet<NSString *> *installedSet = [NSSet setWithArray:structured];
+            NSMutableArray<NSString *> *stale = [NSMutableArray array];
+            for (NSString *identifier in registryBefore) {
+                if (![installedSet containsObject:identifier]) [stale addObject:identifier];
+            }
+
+            // LaunchServices answers the installed/uninstalled question. Do not
+            // let a readable process-local cached MCM lease resurrect an app that
+            // LS has already removed.
+            for (NSString *identifier in stale) {
+                [FFAppDataLeaseManager.sharedManager invalidateIdentifier:identifier];
+                FFRemoveSessionMaterialization(identifier);
+            }
+            authoritativeRemoved = [registry removeIdentifiers:stale];
+            [candidates addObjectsFromArray:structured];
+
+            FFLogTag(@"AppDataSync",
+                @"authoritative LS inventory installed=%lu registryBefore=%lu removed=%lu",
+                (unsigned long)structured.count, (unsigned long)registryBefore.count,
+                (unsigned long)authoritativeRemoved);
+            FFLogTag(@"LSInventory", @"structured inventory complete=%lu; skip raw csstore candidates",
+                (unsigned long)structured.count);
+        } else {
+            // Conservative fallback: preserve every previously known AppData id,
+            // add all discoverable sources, and only evict on two direct MCM
+            // ENOENT observations. This is intentionally non-destructive when LS
+            // structured enumeration is incomplete on a particular iOS build.
+            [candidates addObjectsFromArray:registryBefore];
+            dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
+            for (NSString *identifier in dynamic ?: @[])
+                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+            [candidates addObjectsFromArray:structured];
+            [candidates addObjectsFromArray:FFResearchIdentifiers()];
+            [candidates addObjectsFromArray:FFCustomIdentifiers()];
+
+            if (lsdRoot.length) {
                 NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
                 for (NSString *identifier in raw)
                     if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
+                usedRawFallback = YES;
                 FFLogTag(@"LSInventory", @"structured=%lu BundleRecords=%@; raw fallback=%lu",
                     (unsigned long)structured.count,
                     bundleRecordCount == NSNotFound ? @"unknown" : [NSString stringWithFormat:@"%lu", (unsigned long)bundleRecordCount],
                     (unsigned long)raw.count);
+            } else {
+                FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
             }
-        } else {
-            FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
 
         NSArray<NSString *> *all = candidates.array;
         NSUInteger total = all.count;
         [self publishScanning:YES progress:0 linked:registry.identifiers.count total:total];
-        FFLogTag(@"MCM", @"virtual discovery candidates=%lu structured=%lu dynamic=%lu rawFallback=%d workers=4 detail=%@",
+        FFLogTag(@"MCM", @"virtual discovery candidates=%lu structured=%lu dynamic=%lu authoritative=%d rawFallback=%d workers=4 detail=%@",
             (unsigned long)total, (unsigned long)structured.count,
-            (unsigned long)dynamic.count, usedRawFallback,
+            (unsigned long)dynamic.count, structuredComplete, usedRawFallback,
             enumerationError ?: @"(nil)");
 
         NSObject *stateLock = [NSObject new];
@@ -377,11 +416,8 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         }
         dispatch_group_wait(workers, DISPATCH_TIME_FOREVER);
 
-        // Direct class-2 MCM ENOENT is stronger evidence than the raw csstore:
-        // byte scanning can retain stale identifier strings after uninstall.
-        // Still, never evict on one observation. Re-check every previously known
-        // missing container after the full pass has finished (usually seconds or
-        // minutes later). Only two ENOENT results across that interval remove it.
+        // For identifiers still considered installed (or when LS inventory is
+        // not authoritative), retain the conservative two-ENOENT MCM rule.
         NSMutableArray<NSString *> *toRemove = [NSMutableArray array];
         for (NSString *identifier in definitiveMissing.allObjects) {
             NSError *verifyError = nil;
@@ -399,14 +435,20 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
                     identifier, verifyError.localizedDescription ?: @"(nil)");
             }
         }
-        NSUInteger removedCount = [registry removeIdentifiers:toRemove];
+        for (NSString *identifier in toRemove) {
+            [FFAppDataLeaseManager.sharedManager invalidateIdentifier:identifier];
+            FFRemoveSessionMaterialization(identifier);
+        }
+        NSUInteger confirmedRemoved = [registry removeIdentifiers:toRemove];
+        NSUInteger removedCount = authoritativeRemoved + confirmedRemoved;
 
-        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu removed=%lu installed=%@",
+        FFLogTag(@"MCM", @"virtual discovery complete processed=%lu accessible=%lu registry=%lu removed=%lu installed=%@ authoritative=%d",
             (unsigned long)processed, (unsigned long)accessibleThisPass,
             (unsigned long)registry.identifiers.count, (unsigned long)removedCount,
             self.installedCountReliable
                 ? [NSString stringWithFormat:@"%lu", (unsigned long)self.installedCount]
-                : @"unknown");
+                : @"unknown",
+            structuredComplete);
 
         // Save the fingerprint only after reconciliation completes. If lsd is
         // inaccessible, keep the old baseline so the next foreground can retry.
