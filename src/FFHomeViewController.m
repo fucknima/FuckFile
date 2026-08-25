@@ -34,11 +34,6 @@
     return self;
 }
 
-- (instancetype)initWithStyle:(UITableViewStyle)style
-{
-    return [self init];
-}
-
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -69,13 +64,14 @@
     [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
             NSDictionary *info = note.userInfo;
+            BOOL wasScanning = weakSelf.scanInProgress;
             weakSelf.scanInProgress = [info[@"Scanning"] boolValue];
             weakSelf.scanProgress = [info[@"Progress"] doubleValue];
             weakSelf.scanTotal = [info[@"Total"] unsignedIntegerValue];
             weakSelf.scanLinked = [info[@"Linked"] unsignedIntegerValue];
             weakSelf.installedAppCount = [info[@"InstalledCount"] unsignedIntegerValue];
             weakSelf.installedCountReliable = [info[@"InstalledCountReliable"] boolValue];
-            if (!weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
+            if (wasScanning && !weakSelf.scanInProgress) weakSelf.lastScanDate = NSDate.date;
             [weakSelf reloadStatus];
         }];
     [[NSNotificationCenter defaultCenter] addObserverForName:FFFileTaskManagerDidChangeNotification
