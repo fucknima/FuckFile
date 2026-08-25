@@ -1,7 +1,8 @@
 #import "FFBookmarksViewController.h"
 #import "FFBookmarksService.h"
 #import "FFBrowserViewController.h"
-#import "MCMManager.h"
+#import "FFStorageEnvironment.h"
+#import "FFSystemAccessManager.h"
 #import "FFFileMetadataService.h"
 
 @interface FFBookmarksViewController ()
@@ -49,7 +50,6 @@
     [self.tableView reloadData];
 }
 
-// 空状态：收藏为空与最近为空分别给明确的引导文案。
 - (void)updateEmptyState
 {
     if (self.items.count > 0) {
@@ -61,7 +61,7 @@
         self.view.bounds.size.width - 80, 120)];
     label.textAlignment = NSTextAlignmentCenter;
     label.numberOfLines = 0;
-    label.textColor = [UIColor secondaryLabelColor];
+    label.textColor = UIColor.secondaryLabelColor;
     label.text = self.mode == FFBookmarksModeFavorites
         ? @"还没有收藏\n长按文件或文件夹即可收藏"
         : @"还没有最近访问记录";
@@ -75,18 +75,15 @@
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
 }
 
-// 「清空最近记录」必须有确认：清理的是用户历史，不是可恢复的临时状态。
 - (void)clearAll
 {
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"清空最近记录"
-        message:@"将删除全部最近访问记录。"
-        preferredStyle:UIAlertControllerStyleAlert];
+        message:@"将删除全部最近访问记录。" preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
-    [confirm addAction:[UIAlertAction actionWithTitle:@"取消"
-        style:UIAlertActionStyleCancel handler:nil]];
-    [confirm addAction:[UIAlertAction actionWithTitle:@"清空"
-        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-            [[FFRecentService sharedService] clear];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"清空" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [FFRecentService.sharedService clear];
             [weakSelf reloadItems];
         }]];
     [self presentViewController:confirm animated:YES completion:nil];
@@ -103,22 +100,23 @@
          cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:@"Cell"];
-    }
+    if (!cell)
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell"];
+
     FFBookmark *bookmark = self.items[indexPath.row];
+    BOOL gated = FFPathRequiresSystemAccess(bookmark.path) && !FFSystemAccessManager.sharedManager.ready;
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = bookmark.name.length ? bookmark.name : bookmark.path.lastPathComponent;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.textProperties.adjustsFontForContentSizeCategory = YES;
-    // 缩略显示，完整路径在文件信息/复制路径。
-    config.secondaryText = FFAbbreviatedDisplayPath(bookmark.path);
-    config.secondaryTextProperties.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryText = gated
+        ? @"需要高级系统访问"
+        : FFAbbreviatedDisplayPath(bookmark.path);
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
     config.secondaryTextProperties.numberOfLines = 1;
-    config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder" : @"doc"];
+    config.secondaryTextProperties.color = gated ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor;
+    config.image = [UIImage systemImageNamed:gated ? @"lock" : (bookmark.isDirectory ? @"folder" : @"doc")];
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
@@ -128,22 +126,24 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFBookmark *bookmark = self.items[indexPath.row];
+    if (FFPathRequiresSystemAccess(bookmark.path) && !FFSystemAccessManager.sharedManager.ready) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"需要高级系统访问"
+            message:@"该收藏或最近记录位于 App Data。请先在设置中启用并成功加载高级系统访问。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
     __weak typeof(self) weakSelf = self;
-    // openItemAtPath 内部处理：目录 push 浏览器，文件打开预览。
-    // 用书签页自身作为调用者（其 navigationController 负责 push）。
-    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
-        initWithPath:MCMVirtualRoot()];
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
     browser.title = bookmark.name;
     [browser openItemAtPath:bookmark.path title:bookmark.name
         navigationController:self.navigationController completion:^(BOOL available) {
-        if (!available) {
-            [weakSelf presentUnavailable:bookmark];
-        }
-        // 文件/目录打开后停留在内容页，不再自动弹回列表。
+        if (!available) [weakSelf presentUnavailable:bookmark];
     }];
 }
 
-// 目标已不存在：提示并提供移除记录。
 - (void)presentUnavailable:(FFBookmark *)bookmark
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"
@@ -153,9 +153,9 @@
     [alert addAction:[UIAlertAction actionWithTitle:@"移除记录" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             if (weakSelf.mode == FFBookmarksModeFavorites)
-                [[FFFavoritesService sharedService] removePath:bookmark.path];
+                [FFFavoritesService.sharedService removePath:bookmark.path];
             else
-                [[FFRecentService sharedService] removePath:bookmark.path];
+                [FFRecentService.sharedService removePath:bookmark.path];
             [weakSelf reloadItems];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -169,9 +169,9 @@
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     FFBookmark *bookmark = self.items[indexPath.row];
     if (self.mode == FFBookmarksModeFavorites)
-        [[FFFavoritesService sharedService] removePath:bookmark.path];
+        [FFFavoritesService.sharedService removePath:bookmark.path];
     else
-        [[FFRecentService sharedService] removePath:bookmark.path];
+        [FFRecentService.sharedService removePath:bookmark.path];
     [self reloadItems];
 }
 

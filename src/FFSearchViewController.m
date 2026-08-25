@@ -2,7 +2,8 @@
 #import "FFSearchService.h"
 #import "FFBrowserViewController.h"
 #import "FFLogger.h"
-#import "MCMManager.h"
+#import "FFStorageEnvironment.h"
+#import "FFSystemAccessManager.h"
 #import "FFAppNames.h"
 #import "FFFileMetadataService.h"
 
@@ -35,13 +36,12 @@
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
 
-    // 与 Browser 一致的导航栏搜索（ADR-013），不再用 tableHeader 搜索框。
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
-    // 提交/历史重搜仍走 UISearchBarDelegate。
     self.searchController.searchBar.delegate = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
-    self.searchController.searchBar.placeholder = @"搜索文件名（全部 App 数据）";
+    self.searchController.searchBar.placeholder = FFSystemAccessManager.sharedManager.ready
+        ? @"搜索本地文件与 App Data" : @"搜索本地文件";
     self.searchController.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.searchController.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
     self.navigationItem.searchController = self.searchController;
@@ -51,28 +51,51 @@
     self.results = [NSMutableArray array];
     self.history = [[FFSearchService sharedService] history];
 
-    self.searchBackdrop = [[UIView alloc] init];
+    self.searchBackdrop = [[UIView alloc] initWithFrame:self.tableView.bounds];
+    self.searchBackdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
     self.spinner = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.hidesWhenStopped = YES;
     self.statusLabel = [UILabel new];
     self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.statusLabel.adjustsFontForContentSizeCategory = YES;
     self.statusLabel.textColor = UIColor.secondaryLabelColor;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
+    self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+
     UIStackView *stack = [[UIStackView alloc]
         initWithArrangedSubviews:@[self.spinner, self.statusLabel]];
     stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentFill;
     stack.spacing = 10;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.searchBackdrop addSubview:stack];
+
+    NSLayoutConstraint *preferredWidth =
+        [stack.widthAnchor constraintEqualToAnchor:self.searchBackdrop.widthAnchor constant:-64];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [stack.centerXAnchor constraintEqualToAnchor:self.searchBackdrop.centerXAnchor],
         [stack.topAnchor constraintEqualToAnchor:self.searchBackdrop.topAnchor constant:60],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.searchBackdrop.leadingAnchor constant:32],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:self.searchBackdrop.trailingAnchor constant:-32],
+        preferredWidth,
+        [stack.widthAnchor constraintLessThanOrEqualToConstant:420],
+        [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
     ]];
+
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"清空历史" style:UIBarButtonItemStylePlain
         target:self action:@selector(clearHistoryTapped)];
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    self.searchController.searchBar.placeholder = FFSystemAccessManager.sharedManager.ready
+        ? @"搜索本地文件与 App Data" : @"搜索本地文件";
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -83,7 +106,6 @@
 
 #pragma mark - Search
 
-// UISearchResultsUpdating：防抖逻辑与取消语义保持不变。
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
 {
     [self searchBarTextChanged:searchController.searchBar.text];
@@ -103,8 +125,7 @@
         [self.tableView reloadData];
         return;
     }
-    [self performSelector:@selector(beginSearch:) withObject:searchText
-               afterDelay:0.3];
+    [self performSelector:@selector(beginSearch:) withObject:searchText afterDelay:0.3];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar
@@ -119,7 +140,9 @@
         self.history = [[FFSearchService sharedService] history];
     }
     [self beginSearch:searchBar.text];
-}- (void)updateSearchBackground
+}
+
+- (void)updateSearchBackground
 {
     if (self.searching) {
         [self.spinner startAnimating];
@@ -127,7 +150,6 @@
             @"搜索中… 已找到 %lu 个结果", (unsigned long)self.results.count];
         self.tableView.backgroundView = self.searchBackdrop;
     } else if (self.finished && self.lastQuery.length && self.results.count == 0) {
-        // 搜索完成但无结果：明确空状态，提示缩短关键词。
         [self.spinner stopAnimating];
         self.statusLabel.text = [NSString stringWithFormat:
             @"没有找到“%@”\n尝试缩短关键词", self.lastQuery];
@@ -150,24 +172,29 @@
     [self.results removeAllObjects];
     [self updateSearchBackground];
     [self.tableView reloadData];
-    FFLogTag(@"Search", @"begin query=%@ root=%@", query, MCMVirtualRoot());
 
+    NSString *searchRoot = FFStorageRootPath();
+    FFLogTag(@"Search", @"begin query=%@ root=%@ advancedReady=%d",
+        query, searchRoot, FFSystemAccessManager.sharedManager.ready);
     __weak typeof(self) weakSelf = self;
-    NSString *searchRoot = [MCMVirtualRoot() stringByAppendingPathComponent:@"AppData"];
     [[FFSearchService sharedService] startSearch:query
         underRoot:searchRoot
         batch:^(NSArray<FFFoundItem *> *batch) {
-            [weakSelf.results addObjectsFromArray:batch];
-            [weakSelf updateSearchBackground];
-            [weakSelf.tableView reloadData];
+            typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            [self.results addObjectsFromArray:batch];
+            [self updateSearchBackground];
+            [self.tableView reloadData];
         }
         completion:^(BOOL finished) {
-            weakSelf.searching = NO;
-            weakSelf.finished = finished;
-            [weakSelf updateSearchBackground];
-            [weakSelf.tableView reloadData];
+            typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.searching = NO;
+            self.finished = finished;
+            [self updateSearchBackground];
+            [self.tableView reloadData];
             FFLogTag(@"Search", @"done query=%@ finished=%d results=%lu",
-                     query, finished, (unsigned long)weakSelf.results.count);
+                query, finished, (unsigned long)self.results.count);
         }];
 }
 
@@ -180,22 +207,18 @@
 
 #pragma mark - Table view
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section
 {
     if (self.searching || self.results.count > 0 || self.finished)
         return (NSInteger)self.results.count;
     return (NSInteger)self.history.count;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     BOOL showingHistory = !self.searching && self.results.count == 0;
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:@"Cell"];
-    }
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell"];
     if (showingHistory) {
         NSString *query = self.history[indexPath.row];
         UIListContentConfiguration *config = [cell defaultContentConfiguration];
@@ -205,15 +228,15 @@
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
     }
+
     FFFoundItem *item = self.results[indexPath.row];
+    NSString *displayName = item.displayName.length ? item.displayName : FFAppDisplayName(item.name);
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = FFAppDisplayName(item.name);
+    config.text = displayName;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.textProperties.adjustsFontForContentSizeCategory = YES;
-    // 默认只显示最后 2~3 层（ADR-013），完整真实路径只在文件信息/复制路径。
     config.secondaryText = FFAbbreviatedDisplayPath(item.path);
-    config.secondaryTextProperties.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
     config.secondaryTextProperties.numberOfLines = 1;
     config.image = [UIImage systemImageNamed:item.isDirectory ? @"folder" : @"doc"];
@@ -234,39 +257,52 @@
         [self beginSearch:query];
         return;
     }
+
     FFFoundItem *item = self.results[indexPath.row];
-    // 点击结果先弹窗确认：打开 / 跳转所在目录（语义保持不变）。
+    NSString *displayName = item.displayName.length ? item.displayName : item.name;
     __weak typeof(self) weakSelf = self;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.name
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:displayName
         message:FFAbbreviatedDisplayPath(item.path)
         preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"打开"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-        [weakSelf openFoundItem:item];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"跳转所在目录"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) { [weakSelf openFoundItem:item]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"跳转所在目录" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) {
+        if (FFPathRequiresSystemAccess(item.path) && !FFSystemAccessManager.sharedManager.ready) {
+            [weakSelf presentSystemAccessRequired];
+            return;
+        }
         NSString *parent = item.path.stringByDeletingLastPathComponent;
-        FFBrowserViewController *browser =
-            [[FFBrowserViewController alloc] initWithPath:parent];
-        [weakSelf.navigationController pushViewController:browser animated:YES];
+        [weakSelf.navigationController pushViewController:
+            [[FFBrowserViewController alloc] initWithPath:parent] animated:YES];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
-        style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     sheet.popoverPresentationController.sourceView = self.view;
     sheet.popoverPresentationController.sourceRect = CGRectMake(
         self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+- (void)presentSystemAccessRequired
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"需要高级系统访问"
+        message:@"该位置属于高级系统访问范围。请先在设置中启用并成功加载高级系统访问。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)openFoundItem:(FFFoundItem *)item
 {
-    // 文件打开预览，文件夹进入目录；不存在则提示。
-    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
-        initWithPath:MCMVirtualRoot()];
-    browser.title = item.name;
+    if (FFPathRequiresSystemAccess(item.path) && !FFSystemAccessManager.sharedManager.ready) {
+        [self presentSystemAccessRequired];
+        return;
+    }
+    NSString *displayName = item.displayName.length ? item.displayName : item.name;
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
+    browser.title = displayName;
     __weak typeof(self) weakSelf = self;
-    [browser openItemAtPath:item.path title:item.name
+    [browser openItemAtPath:item.path title:displayName
         navigationController:self.navigationController completion:^(BOOL available) {
         if (!available) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"文件不可用"

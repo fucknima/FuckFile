@@ -1,4 +1,5 @@
 #import "FFThumbnailService.h"
+#import "FFIPAMetadataService.h"
 #import "FFLogger.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -10,7 +11,6 @@
 @interface FFThumbnailService ()
 @property(nonatomic, strong) NSCache<NSString *, UIImage *> *memoryCache;
 @property(nonatomic, strong) dispatch_queue_t workQueue;
-// key -> array of pending completions, coalescing concurrent requests.
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *inFlight;
 @property(nonatomic, strong) NSLock *lock;
 @end
@@ -21,9 +21,7 @@
 {
     static FFThumbnailService *service;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        service = [FFThumbnailService new];
-    });
+    dispatch_once(&onceToken, ^{ service = [FFThumbnailService new]; });
     return service;
 }
 
@@ -43,20 +41,15 @@
 
 static NSString *FFThumbnailKey(NSString *path, CGSize size)
 {
-    // 缓存键包含修改时间与大小：文件被替换后（路径不变）也重新生成，
-    // 避免展示旧缩略图。
     NSString *fingerprint = @"?";
-    NSDictionary *attrs = [NSFileManager.defaultManager
-        attributesOfItemAtPath:path error:nil];
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
     if (attrs) {
         NSDate *mtime = attrs[NSFileModificationDate];
         NSNumber *fileSize = attrs[NSFileSize];
         fingerprint = [NSString stringWithFormat:@"%@-%@",
-            mtime ? @((long long)mtime.timeIntervalSince1970) : @"-",
-            fileSize ?: @"-"];
+            mtime ? @((long long)mtime.timeIntervalSince1970) : @"-", fileSize ?: @"-"];
     }
-    return [NSString stringWithFormat:@"%@#%.0fx%.0f#%@",
-        path, size.width, size.height, fingerprint];
+    return [NSString stringWithFormat:@"%@#%.0fx%.0f#%@", path, size.width, size.height, fingerprint];
 }
 
 static NSString *FFThumbnailSHA1(NSString *input)
@@ -65,29 +58,23 @@ static NSString *FFThumbnailSHA1(NSString *input)
     uint8_t digest[CC_SHA1_DIGEST_LENGTH] = {0};
     CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
     NSMutableString *result = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for (NSUInteger index = 0; index < CC_SHA1_DIGEST_LENGTH; index++)
-        [result appendFormat:@"%02x", digest[index]];
+    for (NSUInteger index = 0; index < CC_SHA1_DIGEST_LENGTH; index++) [result appendFormat:@"%02x", digest[index]];
     return result;
 }
 
 static NSString *FFThumbnailDiskRoot(void)
 {
-    NSString *caches = NSSearchPathForDirectoriesInDomains(
-        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
     return [caches stringByAppendingPathComponent:@"Thumbnails"];
 }
 
-- (void)thumbnailForPath:(NSString *)path
-                    size:(CGSize)size
-              completion:(void (^)(UIImage *))completion
+- (void)thumbnailForPath:(NSString *)path size:(CGSize)size completion:(void (^)(UIImage *))completion
 {
     if (!path.length || !completion) return;
     NSString *key = FFThumbnailKey(path, size);
     UIImage *cached = [self.memoryCache objectForKey:key];
-    if (cached) {
-        completion(cached);
-        return;
-    }
+    if (cached) { completion(cached); return; }
+
     [self.lock lock];
     NSMutableArray *pending = self.inFlight[key];
     if (pending) {
@@ -95,37 +82,30 @@ static NSString *FFThumbnailDiskRoot(void)
         [self.lock unlock];
         return;
     }
-    pending = [NSMutableArray arrayWithObject:[completion copy]];
-    self.inFlight[key] = pending;
+    self.inFlight[key] = [NSMutableArray arrayWithObject:[completion copy]];
     [self.lock unlock];
 
     NSString *ext = path.pathExtension.lowercaseString;
-    FFThumbnailKind kind;
-    if ([@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext])
-        kind = FFThumbnailKindImage;
-    else if ([@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext])
-        kind = FFThumbnailKindVideo;
-    else if ([ext isEqualToString:@"pdf"])
-        kind = FFThumbnailKindPDF;
-    else {
-        kind = FFThumbnailKindNone;
-        [self finishForKey:key image:nil];
-        return;
-    }
+    FFThumbnailKind kind = FFThumbnailKindNone;
+    if ([@[@"png", @"jpg", @"jpeg", @"gif", @"heic", @"webp", @"tiff", @"bmp"] containsObject:ext]) kind = FFThumbnailKindImage;
+    else if ([@[@"mp4", @"mov", @"m4v", @"avi", @"mkv"] containsObject:ext]) kind = FFThumbnailKindVideo;
+    else if ([ext isEqualToString:@"pdf"]) kind = FFThumbnailKindPDF;
+    else if ([ext isEqualToString:@"ipa"]) kind = FFThumbnailKindIPA;
+    else { [self finishForKey:key image:nil]; return; }
 
     dispatch_async(self.workQueue, ^{
-        // Disk cache first: cheaper than re-generating.
-        NSString *diskPath = [[FFThumbnailDiskRoot()
-            stringByAppendingPathComponent:FFThumbnailSHA1(key)]
-            stringByAppendingPathExtension:@"jpg"];
+        BOOL preserveAlpha = kind == FFThumbnailKindIPA;
+        NSString *diskExt = preserveAlpha ? @"png" : @"jpg";
+        NSString *diskPath = [[[FFThumbnailDiskRoot() stringByAppendingPathComponent:FFThumbnailSHA1(key)]
+            stringByAppendingPathExtension:diskExt] copy];
         UIImage *image = [UIImage imageWithContentsOfFile:diskPath];
         if (!image) {
             image = [self generateForPath:path kind:kind size:size];
             if (image) {
-                NSData *jpeg = UIImageJPEGRepresentation(image, 0.8);
-                [[NSFileManager defaultManager] createDirectoryAtPath:FFThumbnailDiskRoot()
+                NSData *encoded = preserveAlpha ? UIImagePNGRepresentation(image) : UIImageJPEGRepresentation(image, 0.8);
+                [NSFileManager.defaultManager createDirectoryAtPath:FFThumbnailDiskRoot()
                     withIntermediateDirectories:YES attributes:nil error:nil];
-                [jpeg writeToFile:diskPath atomically:YES];
+                [encoded writeToFile:diskPath atomically:YES];
             }
         }
         if (image) [self.memoryCache setObject:image forKey:key];
@@ -139,9 +119,7 @@ static NSString *FFThumbnailDiskRoot(void)
     NSArray *pending = [self.inFlight[key] copy];
     [self.inFlight removeObjectForKey:key];
     [self.lock unlock];
-    for (void (^completion)(UIImage *) in pending) {
-        if (completion) completion(image);
-    }
+    for (void (^completion)(UIImage *) in pending) if (completion) completion(image);
 }
 
 - (UIImage *)generateForPath:(NSString *)path kind:(FFThumbnailKind)kind size:(CGSize)size
@@ -150,14 +128,17 @@ static NSString *FFThumbnailDiskRoot(void)
         CGFloat scale = MAX(UIScreen.mainScreen.scale, 2.0);
         NSInteger pixels = (NSInteger)MAX(size.width, size.height) * scale;
         switch (kind) {
-            case FFThumbnailKindImage:
-                return [self imageThumbnail:path pixels:pixels];
-            case FFThumbnailKindVideo:
-                return [self videoThumbnail:path pixels:pixels];
-            case FFThumbnailKindPDF:
-                return [self pdfThumbnail:path size:size];
-            case FFThumbnailKindNone:
-                return nil;
+            case FFThumbnailKindImage: return [self imageThumbnail:path pixels:pixels];
+            case FFThumbnailKindVideo: return [self videoThumbnail:path pixels:pixels];
+            case FFThumbnailKindPDF: return [self pdfThumbnail:path size:size];
+            case FFThumbnailKindIPA: {
+                NSError *error = nil;
+                FFIPAMetadata *metadata = [[FFIPAMetadataService sharedService]
+                    metadataForIPAAtPath:path error:&error];
+                if (!metadata.icon && error) FFLogTag(@"Thumbnail", @"ipa icon FAIL path=%@ error=%@", path, error);
+                return metadata.icon;
+            }
+            case FFThumbnailKindNone: return nil;
         }
     }
     return nil;
@@ -189,8 +170,7 @@ static NSString *FFThumbnailDiskRoot(void)
     generator.appliesPreferredTrackTransform = YES;
     generator.maximumSize = CGSizeMake(pixels, pixels);
     NSError *error = nil;
-    CGImageRef frame = [generator copyCGImageAtTime:kCMTimeZero
-        actualTime:NULL error:&error];
+    CGImageRef frame = [generator copyCGImageAtTime:kCMTimeZero actualTime:NULL error:&error];
     if (!frame) {
         FFLogTag(@"Thumbnail", @"video frame FAIL path=%@ error=%@", path, error);
         return nil;
@@ -204,28 +184,20 @@ static NSString *FFThumbnailDiskRoot(void)
 {
     PDFDocument *document = [[PDFDocument alloc] initWithURL:[NSURL fileURLWithPath:path]];
     if (!document || document.pageCount == 0) return nil;
-    PDFPage *page = [document pageAtIndex:0];
-    // Size in points; PDF page thumbnails are retina-independent.
-    return [page thumbnailOfSize:size forBox:kPDFDisplayBoxMediaBox];
+    return [[document pageAtIndex:0] thumbnailOfSize:size forBox:kPDFDisplayBoxMediaBox];
 }
 
 - (void)clearCaches
 {
     [self.memoryCache removeAllObjects];
+    [[FFIPAMetadataService sharedService] clearCache];
     dispatch_async(self.workQueue, ^{
         NSString *root = FFThumbnailDiskRoot();
-        // 目录不存在时视为已清理成功（NSFileManager 会把 ENOENT 当失败）。
         BOOL isDirectory = NO;
-        if (![[NSFileManager defaultManager] fileExistsAtPath:root isDirectory:&isDirectory]) {
-            FFLogTag(@"Thumbnail", @"cache clear skipped (absent)");
-            return;
-        }
+        if (![NSFileManager.defaultManager fileExistsAtPath:root isDirectory:&isDirectory]) return;
         NSError *error = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:root error:&error];
-        if (error)
-            FFLogTag(@"Thumbnail", @"cache clear FAIL error=%@", error);
-        else
-            FFLogTag(@"Thumbnail", @"cache cleared");
+        [NSFileManager.defaultManager removeItemAtPath:root error:&error];
+        if (error) FFLogTag(@"Thumbnail", @"cache clear FAIL error=%@", error);
     });
 }
 
@@ -236,7 +208,7 @@ static NSString *FFThumbnailDiskRoot(void)
     unsigned long long total = 0;
     for (NSString *name in children ?: @[]) {
         NSString *path = [FFThumbnailDiskRoot() stringByAppendingPathComponent:name];
-        NSNumber *size = [[manager attributesOfItemAtPath:path error:nil] objectForKey:NSFileSize];
+        NSNumber *size = [manager attributesOfItemAtPath:path error:nil][NSFileSize];
         if (size) total += size.unsignedLongLongValue;
     }
     return total;

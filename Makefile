@@ -11,9 +11,19 @@ APPEX_NAME = FuckFileShare
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFAppDelegate+ShareWakeDedup.m \
+	src/FFSystemAccessManager.m \
+	src/FFAppDataScanCoordinator.m \
+	src/FFAppDataRegistry.m \
+	src/FFAppDataLeaseManager.m \
+	src/FFAppDataVirtualPath.m \
+	src/FFAppDataVirtualBrowser.m \
+	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
+	src/FFBrowserViewController+LocalSearchFix.m \
+	src/FFBrowserViewController+IPAThumbnail.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
 	src/FFCopyEngine.m \
@@ -21,6 +31,7 @@ FuckFile_FILES = \
 	src/FFFileOperationService.m \
 	src/FFImportService.m \
 	src/FFSharedInboxService.m \
+	src/FFLocalShareBridgeServer.m \
 	src/MCMManager+ExtensionData.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
@@ -28,8 +39,11 @@ FuckFile_FILES = \
 	src/FFTextEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
+	src/FFPdfReaderViewController.m \
+	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
 	src/FFThumbnailService.m \
+	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
 	src/FFTasksViewController.m \
@@ -106,7 +120,6 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/parser.c \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
-# Vendored Runestone 全量 Swift 源（同模块编译）。
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
 
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
@@ -122,10 +135,6 @@ FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS) -Wno-implicit-function-declaration
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
-# Swift（vendored Runestone + FFCodeEditorView.swift）：
-# Bridging（FuckFile-Bridging-Header.h）导入 C 头（tree_sitter/api.h +
-# grammars.h）；-I include 路径供 `#include <tree_sitter/api.h>` 解析。
-# 注意：必须传绝对路径 —— theos 的 swiftc 调用目录不在项目根。
 FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/FuckFile-Bridging-Header.h
 FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
@@ -133,19 +142,15 @@ FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit 
 FuckFile_LIBRARIES = z sqlite3
 FuckFile_INFOPLIST = Info.plist
 
-# LCSign-style share-sheet receiver. The extension persists the provider
-# representation while its callback is alive; it never hands a temporary
-# provider path to the main app.
-FuckFileShare_FILES = ShareExtension/FFShareViewController.m
+FuckFileShare_FILES = \
+	ShareExtension/FFShareViewController.m \
+	src/FFLocalShareBridgeClient.m
 FuckFileShare_CFLAGS = -I$(PWD)/src -fobjc-arc -Wno-deprecated-declarations
 FuckFileShare_OBJCFLAGS = $(FuckFileShare_CFLAGS)
 FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
 FuckFileShare_INFOPLIST = ShareExtension/Info.plist
 FuckFileShare_INSTALL_PATH = /Applications/FuckFile.app/PlugIns
 
-# The MCM identity bypass requires the host bundle identifier to be exactly
-# this system identity. Do not change it: MobileContainerManager then trusts
-# the caller and issues foreign-container sandbox extensions.
 FuckFile_INSTALL_PATH = /Applications
 
 include $(THEOS_MAKE_PATH)/application.mk
@@ -154,11 +159,10 @@ include $(THEOS_MAKE_PATH)/appex.mk
 after-stage::
 	@APP="$(THEOS_STAGING_DIR)/Applications/FuckFile.app"; \
 	EXT="$$APP/PlugIns/FuckFileShare.appex"; \
-	if [ -d "$$EXT" ]; then codesign --force -s - "$$EXT"; fi; \
-	codesign --force -s - "$$APP"; \
-	echo "== ad-hoc re-signed FuckFile.app + nested share extension"
+	if [ -d "$$EXT" ]; then codesign --force -s - --entitlements ShareExtension/FuckFileShare.entitlements "$$EXT"; fi; \
+	codesign --force -s - --entitlements FuckFile.entitlements "$$APP"; \
+	echo "== ad-hoc re-signed FuckFile.app + nested share extension with App Group entitlements"
 
-# 语法高亮 queries 与 theme 资源进入 App bundle（CI 的 actool 再合并 Assets.car）。
 after-stage::
 	@APP="$(THEOS_STAGING_DIR)/Applications/FuckFile.app"; \
 	mkdir -p "$$APP/Languages"; \

@@ -2,10 +2,13 @@
 #import "FFShareBridge.h"
 #import "FFImportService.h"
 #import "FFLogger.h"
+#import "FFSystemAccessManager.h"
 #import "MCMManager+ExtensionData.h"
 
 NSNotificationName const FFSharedInboxDidImportNotification =
     @"FFSharedInboxDidImportNotification";
+
+static const NSTimeInterval kFFShareStreamRecoveryDelay = 180.0;
 
 @implementation FFSharedInboxService
 
@@ -19,36 +22,63 @@ NSNotificationName const FFSharedInboxDidImportNotification =
     return queue;
 }
 
++ (NSString *)appGroupInboxPath
+{
+    NSURL *groupURL = [NSFileManager.defaultManager
+        containerURLForSecurityApplicationGroupIdentifier:FFShareAppGroupIdentifier];
+    return groupURL.path.length
+        ? [groupURL.path stringByAppendingPathComponent:FFShareInboxDirectoryName] : nil;
+}
+
 + (NSArray<NSString *> *)candidateInboxRoots
 {
     NSMutableOrderedSet<NSString *> *roots = [NSMutableOrderedSet orderedSet];
 
-    NSURL *groupURL = [NSFileManager.defaultManager
-        containerURLForSecurityApplicationGroupIdentifier:FFShareAppGroupIdentifier];
-    if (groupURL.path.length) {
-        NSString *groupInbox = [groupURL.path stringByAppendingPathComponent:
-            FFShareInboxDirectoryName];
+    NSString *groupInbox = [self appGroupInboxPath];
+    if (groupInbox.length) {
         [roots addObject:groupInbox];
         FFLogTag(@"ShareInbox", @"bridge app-group=%@", groupInbox);
     } else {
-        FFLogTag(@"ShareInbox", @"app-group unavailable; using class-4 fallback");
+        FFLogTag(@"ShareInbox", @"app-group unavailable");
     }
 
-    NSString *mcmError = nil;
-    NSString *extensionRoot = [[MCMManager sharedManager]
-        extensionContainerPathForIdentifier:FFShareExtensionBundleIdentifier
-        error:&mcmError];
-    if (extensionRoot.length) {
-        NSString *extensionInbox = [[extensionRoot stringByAppendingPathComponent:@"Documents"]
-            stringByAppendingPathComponent:FFShareInboxDirectoryName];
-        [roots addObject:extensionInbox];
-        FFLogTag(@"ShareInbox", @"bridge extension-data=%@", extensionInbox);
+    if (FFSystemAccessManager.sharedManager.enabled &&
+        FFSystemAccessManager.sharedManager.loadedThisSession) {
+        NSString *mcmError = nil;
+        NSString *extensionRoot = [[MCMManager sharedManager]
+            extensionContainerPathForIdentifier:FFShareExtensionBundleIdentifier
+            error:&mcmError];
+        if (extensionRoot.length) {
+            NSString *extensionInbox = [[extensionRoot stringByAppendingPathComponent:@"Documents"]
+                stringByAppendingPathComponent:FFShareInboxDirectoryName];
+            [roots addObject:extensionInbox];
+            FFLogTag(@"ShareInbox", @"bridge extension-data=%@", extensionInbox);
+        } else {
+            FFLogTag(@"ShareInbox", @"class-4 bridge unavailable detail=%@",
+                mcmError ?: @"(nil)");
+        }
     } else {
-        FFLogTag(@"ShareInbox", @"class-4 bridge unavailable detail=%@",
-            mcmError ?: @"(nil)");
+        FFLogTag(@"ShareInbox", @"class-4 bridge skipped (advanced access disabled/not loaded)");
     }
 
     return roots.array;
+}
+
++ (BOOL)shouldDeferExtensionRecoveryForMetadata:(NSDictionary *)metadata
+                                          root:(NSString *)root
+                                groupInboxPath:(NSString *)groupInboxPath
+{
+    if (groupInboxPath.length && [root.stringByStandardizingPath
+        isEqualToString:groupInboxPath.stringByStandardizingPath]) return NO;
+
+    NSString *session = [metadata[@"session"] isKindOfClass:NSString.class]
+        ? metadata[@"session"] : nil;
+    NSDate *created = [metadata[@"created"] isKindOfClass:NSDate.class]
+        ? metadata[@"created"] : nil;
+    if (!session.length || !created) return NO;
+
+    NSTimeInterval age = [NSDate.date timeIntervalSinceDate:created];
+    return age >= 0 && age < kFFShareStreamRecoveryDelay;
 }
 
 + (void)processPendingWithCompletion:(void (^)(NSUInteger,
@@ -66,6 +96,7 @@ NSNotificationName const FFSharedInboxDidImportNotification =
         NSMutableArray<NSString *> *destinations = [NSMutableArray array];
         NSMutableArray<NSError *> *errors = [NSMutableArray array];
         if (mkdirError) [errors addObject:mkdirError];
+        NSString *groupInboxPath = [self appGroupInboxPath];
 
         for (NSString *root in [self candidateInboxRoots]) {
             NSArray<NSString *> *names = [NSFileManager.defaultManager
@@ -75,16 +106,24 @@ NSNotificationName const FFSharedInboxDidImportNotification =
                 NSString *itemDirectory = [root stringByAppendingPathComponent:name];
                 NSString *payloadPath = [itemDirectory stringByAppendingPathComponent:@"payload"];
                 NSString *metadataPath = [itemDirectory stringByAppendingPathComponent:@"metadata.plist"];
-                NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+                NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath] ?: @{};
+
+                if ([self shouldDeferExtensionRecoveryForMetadata:metadata
+                    root:root groupInboxPath:groupInboxPath]) {
+                    FFLogTag(@"ShareInbox", @"defer active stream item=%@ session=%@",
+                        name, metadata[@"session"] ?: @"?");
+                    continue;
+                }
+
                 NSString *originalName = [metadata[@"name"] isKindOfClass:NSString.class]
                     ? metadata[@"name"] : @"imported";
 
                 BOOL isDirectory = NO;
                 if (![NSFileManager.defaultManager fileExistsAtPath:payloadPath
-                    isDirectory:&isDirectory]) {
+                    isDirectory:&isDirectory] || isDirectory) {
                     NSError *error = [NSError errorWithDomain:@"FFSharedInboxErrorDomain"
                         code:1 userInfo:@{NSLocalizedDescriptionKey:
-                            [NSString stringWithFormat:@"共享收件箱缺少 payload：%@", name]}];
+                            [NSString stringWithFormat:@"共享收件箱缺少有效 payload：%@", name]}];
                     [errors addObject:error];
                     FFLogTag(@"ShareInbox", @"invalid item=%@", itemDirectory);
                     continue;

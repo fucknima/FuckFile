@@ -3,6 +3,7 @@
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
+#import "FFPdfReaderViewController.h"
 #import "FFQuickLookViewController.h"
 #import "FFWebViewerViewController.h"
 #import "FFHexEditorViewController.h"
@@ -14,6 +15,7 @@
 
 #import <objc/runtime.h>
 #import <AVKit/AVKit.h>
+#import <AVFoundation/AVFoundation.h>
 
 // Private readwrite mirrors of the metadata properties.
 @interface FFViewerInfo ()
@@ -129,6 +131,51 @@
 }
 @end
 
+#pragma mark - Media
+
+// AVPlayer follows the app's current AVAudioSession category. With the default
+// ambient category, the hardware Ring/Silent switch mutes playback. A file
+// manager's explicit media player should behave like Music/Files instead: use
+// Playback while this controller is alive, then release the active session when
+// it is destroyed so other audio apps can resume normally.
+@interface FFMediaPlayerViewController : AVPlayerViewController
+@end
+
+@implementation FFMediaPlayerViewController
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    AVAudioSession *session = AVAudioSession.sharedInstance;
+    NSError *error = nil;
+    if (![session setCategory:AVAudioSessionCategoryPlayback
+                         mode:AVAudioSessionModeMoviePlayback
+                      options:0 error:&error]) {
+        FFLogTag(@"Media", @"audio session category failed: %@",
+            error.localizedDescription ?: @"unknown");
+        return;
+    }
+    error = nil;
+    if (![session setActive:YES error:&error]) {
+        FFLogTag(@"Media", @"audio session activate failed: %@",
+            error.localizedDescription ?: @"unknown");
+    }
+}
+
+- (void)dealloc
+{
+    NSError *error = nil;
+    [AVAudioSession.sharedInstance setActive:NO
+        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+              error:&error];
+    if (error) {
+        FFLogTag(@"Media", @"audio session deactivate failed: %@",
+            error.localizedDescription ?: @"unknown");
+    }
+}
+
+@end
+
 @interface FFViewerRegistry ()
 @property(nonatomic, strong) NSArray<FFViewerInfo *> *viewers;
 // 当前打开操作的 nav（share target 呈现用，响应链到不了 barButtonItem）。
@@ -163,7 +210,7 @@
             @[@"archive",   @"ZIP 浏览器",     @"archivebox",            @"ZIP/IPA 包内浏览与提取。部分支持：TAR/GZ/7z/RAR/XZ/BZ2 当前构建无法解析，仅明确提示"],
             @[@"hex",       @"十六进制编辑器", @"waveform.path.ecg",     @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
             @[@"media",     @"媒体播放器",     @"play.circle",           @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）"],
-            @[@"pdf",       @"PDF 阅读器",     @"doc.richtext",          @"PDFKit 连续滚动、缩略图侧栏、分享"],
+            @[@"pdf",       @"PDF 阅读器",     @"doc.richtext",          @"PDFKit 阅读、搜索、目录、页面网格与缩放"],
         ];
         NSMutableArray<FFViewerInfo *> *built = [NSMutableArray array];
         for (NSArray *spec in specs) {
@@ -248,7 +295,7 @@ navigationController:(UINavigationController *)nav
     if ([viewerID isEqualToString:@"media"])     return [self mediaViewerAtPath:path];
     if ([viewerID isEqualToString:@"plist"])     return [[FFPlistEditorViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"text"])      return [[FFTextEditorViewController alloc] initWithPath:path];
-    if ([viewerID isEqualToString:@"pdf"])       return [[FFPdfPreviewViewController alloc] initWithPath:path];
+    if ([viewerID isEqualToString:@"pdf"])       return [[FFPdfReaderViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"quicklook"]) return [[FFQuickLookViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"web"])       return [[FFWebViewerViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"sqlite"])    return [[FFSQLiteBrowserViewController alloc] initWithDatabasePath:path];
@@ -290,7 +337,7 @@ navigationController:(UINavigationController *)nav
 
 - (UIViewController *)mediaViewerAtPath:(NSString *)path
 {
-    AVPlayerViewController *player = [AVPlayerViewController new];
+    FFMediaPlayerViewController *player = [FFMediaPlayerViewController new];
     player.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:path]];
     return player;
 }

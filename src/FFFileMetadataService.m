@@ -1,4 +1,5 @@
 #import "FFFileMetadataService.h"
+#import "FFAppDataVirtualPath.h"
 
 #import <CommonCrypto/CommonDigest.h>
 #import <dirent.h>
@@ -6,6 +7,14 @@
 #import <sys/stat.h>
 #import <sys/xattr.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+static NSString *FFMetadataResolvedPath(NSString *path)
+{
+    if (!path.length) return path;
+    NSError *error = nil;
+    NSString *resolved = FFAppDataResolveLogicalPath(path, &error);
+    return resolved.length ? resolved : path;
+}
 
 NSString *FFAbbreviatedDisplayPath(NSString *path)
 {
@@ -24,6 +33,7 @@ NSString *FFAbbreviatedDisplayPath(NSString *path)
 
 + (NSArray<NSString *> *)extendedAttributeLinesForPath:(NSString *)path
 {
+    path = FFMetadataResolvedPath(path);
     ssize_t size = listxattr(path.fileSystemRepresentation, NULL, 0, 0);
     if (size <= 0) return @[];
     NSMutableData *buffer = [NSMutableData dataWithLength:(NSUInteger)size];
@@ -46,7 +56,6 @@ NSString *FFAbbreviatedDisplayPath(NSString *path)
     return result;
 }
 
-// 单次递归遍历：大小 + 文件数 + 目录数。
 static void FFStatDirectory(NSString *path, unsigned long long *size,
     NSUInteger *files, NSUInteger *folders)
 {
@@ -76,10 +85,11 @@ static void FFStatDirectory(NSString *path, unsigned long long *size,
                  completion:(void (^)(unsigned long long, NSUInteger, NSUInteger))completion
 {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *resolved = FFMetadataResolvedPath(path);
         unsigned long long size = 0;
         NSUInteger files = 0;
         NSUInteger folders = 0;
-        FFStatDirectory(path, &size, &files, &folders);
+        FFStatDirectory(resolved, &size, &files, &folders);
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(size, files, folders);
         });
@@ -88,6 +98,7 @@ static void FFStatDirectory(NSString *path, unsigned long long *size,
 
 + (nullable NSString *)sha256OfFile:(NSString *)path
 {
+    path = FFMetadataResolvedPath(path);
     int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return nil;
     CC_SHA256_CTX context;

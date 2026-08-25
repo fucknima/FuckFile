@@ -4,6 +4,9 @@
 #import "FFImportService.h"
 #import "FFSharedInboxService.h"
 #import "FFShareBridge.h"
+#import "FFLocalShareBridge.h"
+#import "FFSystemAccessManager.h"
+#import "FFStorageEnvironment.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
@@ -12,6 +15,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 @interface FFAppDelegate ()
 @property(nonatomic, strong) NSMutableSet<NSString *> *inFlightImports;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *recentImports;
+@property(nonatomic) BOOL shareStreamInProgress;
 @end
 
 @implementation FFAppDelegate
@@ -24,6 +28,12 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         _recentImports = [NSMutableDictionary dictionary];
     }
     return self;
+}
+
+- (BOOL)isShareStreamURL:(NSURL *)url
+{
+    return [[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]] &&
+        [[url.host lowercaseString] isEqualToString:@"share-stream"];
 }
 
 - (BOOL)application:(UIApplication *)application
@@ -41,11 +51,16 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [NSBundle.mainBundle.bundleIdentifier
             isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
 
+    FFStorageRootPath();
+    if (!FFSystemAccessManager.sharedManager.enabled)
+        FFPrepareStorageRootForNormalMode();
+
+    NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
+    self.shareStreamInProgress = [self isShareStreamURL:incoming];
+
     FFHomeViewController *root = [FFHomeViewController new];
     UINavigationController *navigation = [[UINavigationController alloc]
         initWithRootViewController:root];
-    // 全 App 统一 Inline 标题（ADR-013）：标题由系统放在顶部导航栏，
-    // 不再出现正文区域的大标题占位。
     navigation.navigationBar.translucent = NO;
     navigation.navigationBar.prefersLargeTitles = NO;
 
@@ -55,37 +70,35 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     navigation.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
-    // MCM is needed for the class-4 Extension Data bridge when a re-signer
-    // strips/denies App Group entitlements. Start it in parallel, then drain
-    // the shared inbox again once leases are available.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFLog(@"MCM start begin");
-        [[MCMManager sharedManager] start];
-        FFLog(@"MCM start done");
+    __weak typeof(self) weakSelf = self;
+    [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
+        if (!loaded) return;
+        if (!weakSelf.shareStreamInProgress)
+            [weakSelf processSharedInboxShowingResult:NO];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"FFProbeFinished" object:nil];
+    }];
+
+    // Do not race a freshly launched loopback transfer with class-4 recovery.
+    // The old ordering drained Extension Data before the share-stream listener
+    // was even created, which imported the same large file twice.
+    if (!self.shareStreamInProgress)
         [self processSharedInboxShowingResult:NO];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"FFProbeFinished" object:nil];
-        });
-    });
 
-    // Drain an App Group inbox immediately if one exists. The class-4 bridge
-    // will be retried after MCM start above.
-    [self processSharedInboxShowingResult:NO];
-
-    // With LSSupportsOpeningDocumentsInPlace=NO (LCSign parity), document-open
-    // deliveries are normally copied into our Inbox and are stable local URLs.
-    NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     if (incoming) {
-        FFLogTag(@"Import", @"launchOptions file=%@", incoming.path);
-        [self importIncomingFileURL:incoming];
+        FFLogTag(@"Import", @"launchOptions url=%@", incoming.absoluteString);
+        if ([[incoming.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]])
+            [self handleShareWakeURL:incoming];
+        else
+            [self importIncomingFileURL:incoming];
     }
     return YES;
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    [self processSharedInboxShowingResult:NO];
+    if (!self.shareStreamInProgress)
+        [self processSharedInboxShowingResult:NO];
 }
 
 #pragma mark - Incoming URLs
@@ -95,7 +108,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 {
     if ([[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]]) {
         FFLogTag(@"ShareInbox", @"wake URL received=%@", url.absoluteString);
-        [self processSharedInboxShowingResult:YES];
+        [self handleShareWakeURL:url];
         return YES;
     }
 
@@ -109,6 +122,40 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     FFLogTag(@"Import", @"openURL file=%@ openInPlace=%d sourceApp=%@",
         url.path, openInPlace, sourceApp ?: @"?");
     return [self importIncomingFileURL:url];
+}
+
+- (void)handleShareWakeURL:(NSURL *)url
+{
+    if ([self isShareStreamURL:url]) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url
+            resolvingAgainstBaseURL:NO];
+        NSString *token = nil;
+        NSUInteger count = 0;
+        for (NSURLQueryItem *item in components.queryItems ?: @[]) {
+            if ([item.name isEqualToString:@"token"]) token = item.value;
+            else if ([item.name isEqualToString:@"count"]) count = (NSUInteger)item.value.integerValue;
+        }
+        if (!token.length) {
+            self.shareStreamInProgress = NO;
+            FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString);
+            return;
+        }
+
+        self.shareStreamInProgress = YES;
+        FFLogTag(@"ShareBridge", @"prepare loopback token=%@ count=%lu",
+            token, (unsigned long)count);
+        __weak typeof(self) weakSelf = self;
+        [[FFLocalShareBridgeServer sharedServer] prepareForToken:token expectedCount:count
+            completion:^(NSUInteger imported, NSArray<NSString *> *destinations,
+                         NSArray<NSError *> *errors) {
+                weakSelf.shareStreamInProgress = NO;
+                [weakSelf presentSharedBridgeResultImported:imported
+                    destinations:destinations errors:errors];
+            }];
+        return;
+    }
+
+    [self processSharedInboxShowingResult:YES];
 }
 
 #pragma mark - File import
@@ -143,10 +190,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [self.inFlightImports addObject:key];
     }
 
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *importedDirectory = [[documents stringByAppendingPathComponent:
-        @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
+    NSString *importedDirectory = FFImportedDirectoryPath();
     NSError *mkdirError = nil;
     if (![NSFileManager.defaultManager createDirectoryAtPath:importedDirectory
         withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
@@ -182,44 +226,55 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 - (void)processSharedInboxShowingResult:(BOOL)showResult
 {
+    if (self.shareStreamInProgress) {
+        FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active");
+        return;
+    }
     [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported,
         NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
         if (imported == 0 && errors.count == 0) return;
         FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu",
             (unsigned long)imported, (unsigned long)errors.count);
         if (!showResult && imported == 0) return;
-
-        UINavigationController *navigation =
-            (UINavigationController *)self.window.rootViewController;
-        UIViewController *top = navigation.topViewController ?: navigation;
-        if (!top || [top isKindOfClass:UIAlertController.class]) return;
-
-        NSString *message = nil;
-        if (imported > 0 && errors.count == 0) {
-            message = [NSString stringWithFormat:@"已导入 %lu 个共享文件。",
-                (unsigned long)imported];
-        } else if (imported > 0) {
-            message = [NSString stringWithFormat:@"已导入 %lu 个文件，%lu 个失败：%@",
-                (unsigned long)imported, (unsigned long)errors.count,
-                errors.firstObject.localizedDescription ?: @"未知错误"];
-        } else {
-            message = [NSString stringWithFormat:@"共享文件导入失败：%@",
-                errors.firstObject.localizedDescription ?: @"未知错误"];
-        }
-
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-            message:message preferredStyle:UIAlertControllerStyleAlert];
-        if (destinations.count) {
-            [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
-                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                    NSString *directory = destinations.firstObject.stringByDeletingLastPathComponent;
-                    [self showImportedDirectory:directory navigationController:navigation];
-                }]];
-        }
-        [alert addAction:[UIAlertAction actionWithTitle:@"好"
-            style:UIAlertActionStyleCancel handler:nil]];
-        [top presentViewController:alert animated:YES completion:nil];
+        [self presentSharedBridgeResultImported:imported destinations:destinations errors:errors];
     }];
+}
+
+- (void)presentSharedBridgeResultImported:(NSUInteger)imported
+                              destinations:(NSArray<NSString *> *)destinations
+                                    errors:(NSArray<NSError *> *)errors
+{
+    if (imported == 0 && errors.count == 0) return;
+    UINavigationController *navigation =
+        (UINavigationController *)self.window.rootViewController;
+    UIViewController *top = navigation.topViewController ?: navigation;
+    if (!top || [top isKindOfClass:UIAlertController.class]) return;
+
+    NSString *message = nil;
+    if (imported > 0 && errors.count == 0) {
+        message = [NSString stringWithFormat:@"已导入 %lu 个共享文件。",
+            (unsigned long)imported];
+    } else if (imported > 0) {
+        message = [NSString stringWithFormat:@"已导入 %lu 个文件，%lu 个失败：%@",
+            (unsigned long)imported, (unsigned long)errors.count,
+            errors.firstObject.localizedDescription ?: @"未知错误"];
+    } else {
+        message = [NSString stringWithFormat:@"共享文件导入失败：%@",
+            errors.firstObject.localizedDescription ?: @"未知错误"];
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    if (destinations.count) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                NSString *directory = destinations.firstObject.stringByDeletingLastPathComponent;
+                [self showImportedDirectory:directory navigationController:navigation];
+            }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Imported-folder navigation
@@ -231,9 +286,6 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     NSString *target = directory.stringByStandardizingPath;
     FFBrowserViewController *existing = nil;
 
-    // Idempotent navigation: an Imported browser is a destination, not a new
-    // screen instance per import. Reuse the existing controller if it is
-    // already anywhere in the stack, otherwise push exactly one.
     for (UIViewController *controller in navigation.viewControllers) {
         if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
         FFBrowserViewController *browser = (FFBrowserViewController *)controller;

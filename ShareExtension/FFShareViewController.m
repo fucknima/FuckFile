@@ -3,11 +3,15 @@
 #import <objc/message.h>
 #import <dlfcn.h>
 #import "FFShareBridge.h"
+#import "FFLocalShareBridge.h"
 
 @interface FFShareViewController : UIViewController
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
 @property(nonatomic) BOOL started;
+@property(nonatomic) BOOL bridgeUsesAppGroup;
+@property(nonatomic, copy) NSString *bridgeInboxPath;
+@property(nonatomic, copy) NSString *shareSessionID;
 @end
 
 @implementation FFShareViewController
@@ -16,6 +20,7 @@
 {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.shareSessionID = NSUUID.UUID.UUIDString;
 
     self.spinner = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -28,7 +33,6 @@
     self.statusLabel.text = @"正在导入到 FuckFile…";
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
-    // 轻量视觉统一（ADR-013）：Dynamic Type + 次级色；导入逻辑不变。
     self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     self.statusLabel.adjustsFontForContentSizeCategory = YES;
     self.statusLabel.textColor = UIColor.secondaryLabelColor;
@@ -57,22 +61,17 @@
 - (NSURL *)bridgeInboxURL
 {
     NSFileManager *manager = NSFileManager.defaultManager;
-
-    // LCSign-compatible path when the final signer grants the App Group.
     NSURL *groupURL = [manager
         containerURLForSecurityApplicationGroupIdentifier:FFShareAppGroupIdentifier];
     NSURL *root = groupURL;
     NSString *mode = @"app-group";
+    self.bridgeUsesAppGroup = groupURL != nil;
 
-    // Critical fallback for re-signers that strip/deny App Group entitlements:
-    // persist in the extension's own data container. The main FuckFile process
-    // (MobileHouseArrest identity) retrieves this class-4 Extension Data
-    // container through MCM, so the bridge does not depend on provisioning.
     if (!root) {
         NSString *documents = NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
         root = [NSURL fileURLWithPath:documents isDirectory:YES];
-        mode = @"extension-data";
+        mode = @"extension-data+loopback";
     }
 
     NSURL *inbox = [root URLByAppendingPathComponent:FFShareInboxDirectoryName
@@ -84,6 +83,7 @@
             mode, inbox.path, error);
         return nil;
     }
+    self.bridgeInboxPath = inbox.path;
     NSLog(@"[FuckFileShare] bridge mode=%@ path=%@", mode, inbox.path);
     return inbox;
 }
@@ -133,6 +133,7 @@ static NSString *FFShareSafeName(NSString *name)
         @"type": typeIdentifier ?: @"public.data",
         @"created": NSDate.date,
         @"size": size ?: @0,
+        @"session": self.shareSessionID ?: @"",
     };
     if (![metadata writeToURL:metadataURL atomically:YES]) {
         if (error) *error = [NSError errorWithDomain:@"FFShareErrorDomain" code:2
@@ -145,8 +146,8 @@ static NSString *FFShareSafeName(NSString *name)
         [manager removeItemAtURL:partial error:nil];
         return NO;
     }
-    NSLog(@"[FuckFileShare] stored name=%@ type=%@ item=%@",
-        metadata[@"name"], metadata[@"type"], final.lastPathComponent);
+    NSLog(@"[FuckFileShare] stored name=%@ type=%@ item=%@ session=%@",
+        metadata[@"name"], metadata[@"type"], final.lastPathComponent, self.shareSessionID);
     return YES;
 }
 
@@ -178,6 +179,7 @@ static NSString *FFShareSafeName(NSString *name)
         @"type": typeIdentifier ?: @"public.data",
         @"created": NSDate.date,
         @"size": @(data.length),
+        @"session": self.shareSessionID ?: @"",
     };
     if (![metadata writeToURL:metadataURL atomically:YES]) {
         if (error) *error = [NSError errorWithDomain:@"FFShareErrorDomain" code:2
@@ -197,18 +199,11 @@ static NSString *FFShareSafeName(NSString *name)
     for (NSString *identifier in provider.registeredTypeIdentifiers) {
         UTType *type = [UTType typeWithIdentifier:identifier];
         if (!type) continue;
-
-        // A file URL is a representation of the file location, not the file
-        // payload itself. public.file-url conforms to public.data, so without
-        // this guard an extensionless file can be imported as a tiny plist-like
-        // serialized URL representation instead of its real bytes.
         if ([type conformsToType:UTTypeURL]) {
             NSLog(@"[FuckFileShare] skip URL representation type=%@", identifier);
             continue;
         }
-
-        if ([type conformsToType:UTTypeData] ||
-            [type conformsToType:UTTypeContent])
+        if ([type conformsToType:UTTypeData] || [type conformsToType:UTTypeContent])
             return identifier;
     }
     return nil;
@@ -219,9 +214,6 @@ static NSString *FFShareSafeName(NSString *name)
           completion:(void (^)(BOOL ok))completion
 {
     dispatch_group_enter(group);
-    // Keep nil here. For file representations the provider URL's own basename
-    // is a better fallback than replacing an unknown original name with
-    // "imported" and losing .pdf/.ipa/.zip.
     NSString *suggestedName = provider.suggestedName;
     NSString *representationType = [self fileRepresentationTypeForProvider:provider];
 
@@ -248,8 +240,6 @@ static NSString *FFShareSafeName(NSString *name)
 
     NSString *fileURLType = UTTypeFileURL.identifier;
     if ([provider hasItemConformingToTypeIdentifier:fileURLType]) {
-        NSLog(@"[FuckFileShare] loadItem file-url name=%@",
-            suggestedName ?: @"(actual URL basename)");
         [provider loadItemForTypeIdentifier:fileURLType options:nil
             completionHandler:^(id item, NSError *loadError) {
                 NSURL *url = [item isKindOfClass:NSURL.class] ? item : nil;
@@ -268,7 +258,6 @@ static NSString *FFShareSafeName(NSString *name)
 
     NSString *fallbackType = provider.registeredTypeIdentifiers.firstObject;
     if (!fallbackType.length) {
-        NSLog(@"[FuckFileShare] provider has no registered types");
         record(NO);
         return;
     }
@@ -305,8 +294,8 @@ static NSString *FFShareSafeName(NSString *name)
         }
     }
 
-    NSLog(@"[FuckFileShare] START items=%lu providers=%lu",
-        (unsigned long)inputItems.count, (unsigned long)providers.count);
+    NSLog(@"[FuckFileShare] START items=%lu providers=%lu session=%@",
+        (unsigned long)inputItems.count, (unsigned long)providers.count, self.shareSessionID);
     if (!providers.count) {
         [self finishWithImportedCount:0];
         return;
@@ -316,11 +305,8 @@ static NSString *FFShareSafeName(NSString *name)
     NSObject *lock = [NSObject new];
     __block NSInteger imported = 0;
     for (NSItemProvider *provider in providers) {
-        NSLog(@"[FuckFileShare] provider types=%@", provider.registeredTypeIdentifiers);
         [self loadProvider:provider group:group completion:^(BOOL ok) {
-            if (ok) {
-                @synchronized (lock) { imported++; }
-            }
+            if (ok) @synchronized (lock) { imported++; }
         }];
     }
 
@@ -335,10 +321,6 @@ static void FFEnsureLaunchServicesLoaded(void)
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // LSApplicationWorkspace is private SPI. FuckFile already depends on
-        // private LaunchServices/MCM behavior and is not an App Store target.
-        // Loading by path keeps the extension build independent of private
-        // headers and lets this gracefully fall back when the class moves.
         void *handle = dlopen(
             "/System/Library/Frameworks/CoreServices.framework/CoreServices",
             RTLD_LAZY | RTLD_LOCAL);
@@ -356,16 +338,9 @@ static void FFEnsureLaunchServicesLoaded(void)
     FFEnsureLaunchServicesLoaded();
     Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
     SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
-    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) {
-        NSLog(@"[FuckFileShare] wake LS unavailable class=%@", workspaceClass);
-        return NO;
-    }
-
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return NO;
     id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
-    if (!workspace) {
-        NSLog(@"[FuckFileShare] wake LS defaultWorkspace=nil");
-        return NO;
-    }
+    if (!workspace) return NO;
 
     NSError *error = nil;
     SEL openSelector = NSSelectorFromString(@"openURL:withOptions:error:");
@@ -382,18 +357,12 @@ static void FFEnsureLaunchServicesLoaded(void)
     if ([workspace respondsToSelector:sensitiveSelector]) {
         BOOL opened = ((BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend)(
             workspace, sensitiveSelector, url, @{}, &error);
-        NSLog(@"[FuckFileShare] wake LS sensitive result=%d error=%@", opened,
-            error.localizedDescription ?: @"(nil)");
         if (opened) return YES;
     }
 
     SEL simpleSelector = NSSelectorFromString(@"openURL:");
-    if ([workspace respondsToSelector:simpleSelector]) {
-        BOOL opened = ((BOOL (*)(id, SEL, NSURL *))objc_msgSend)(
-            workspace, simpleSelector, url);
-        NSLog(@"[FuckFileShare] wake LS simple result=%d", opened);
-        if (opened) return YES;
-    }
+    if ([workspace respondsToSelector:simpleSelector])
+        return ((BOOL (*)(id, SEL, NSURL *))objc_msgSend)(workspace, simpleSelector, url);
     return NO;
 }
 
@@ -403,89 +372,94 @@ static void FFEnsureLaunchServicesLoaded(void)
     SEL openSelector = NSSelectorFromString(@"openURL:options:completionHandler:");
     if (!applicationClass || !openSelector) return NO;
 
-    // Share extensions are not allowed to reference UIApplication.shared at
-    // compile time, but the hosting UIKit process has a UIApplication object
-    // in its responder chain. The iOS 18+ openURL:options: API is required;
-    // the legacy openURL: path is force-rejected by modern UIKit.
     UIResponder *responder = self;
     while (responder) {
         if ([responder isKindOfClass:applicationClass] &&
             [responder respondsToSelector:openSelector]) {
-            void (^completion)(BOOL) = ^(BOOL success) {
-                NSLog(@"[FuckFileShare] wake UIApplication responder result=%d", success);
-            };
             ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
-                responder, openSelector, url, @{}, completion);
-            NSLog(@"[FuckFileShare] wake UIApplication responder requested");
+                responder, openSelector, url, @{}, ^(BOOL success) {
+                    NSLog(@"[FuckFileShare] wake UIApplication responder=%d", success);
+                });
             return YES;
         }
         responder = responder.nextResponder;
     }
 
-    // Some iOS builds no longer place UIApplication directly in the responder
-    // chain. Use the same runtime-only call as a second compatibility route.
     SEL sharedSelector = NSSelectorFromString(@"sharedApplication");
     if ([applicationClass respondsToSelector:sharedSelector]) {
         id application = ((id (*)(id, SEL))objc_msgSend)(applicationClass, sharedSelector);
         if (application && [application respondsToSelector:openSelector]) {
-            void (^completion)(BOOL) = ^(BOOL success) {
-                NSLog(@"[FuckFileShare] wake UIApplication shared result=%d", success);
-            };
             ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
-                application, openSelector, url, @{}, completion);
-            NSLog(@"[FuckFileShare] wake UIApplication shared requested");
+                application, openSelector, url, @{}, ^(BOOL success) {
+                    NSLog(@"[FuckFileShare] wake UIApplication shared=%d", success);
+                });
             return YES;
         }
     }
-    NSLog(@"[FuckFileShare] wake UIApplication route unavailable");
     return NO;
+}
+
+- (void)completeExtension
+{
+    [self.extensionContext completeRequestReturningItems:@[] completionHandler:nil];
 }
 
 - (void)finishWithImportedCount:(NSInteger)count
 {
     [self.spinner stopAnimating];
-    self.statusLabel.text = count > 0
-        ? [NSString stringWithFormat:@"已接收 %ld 个文件，正在打开 FuckFile…", (long)count]
-        : @"没有收到可导入的文件";
-
-    NSURL *wakeURL = [NSURL URLWithString:
-        [NSString stringWithFormat:@"%@://shared-inbox", FFShareWakeScheme]];
-    NSLog(@"[FuckFileShare] COMPLETE imported=%ld wake=%@", (long)count, wakeURL);
-
-    __block BOOL completed = NO;
-    void (^completeOnce)(void) = ^{
-        if (completed) return;
-        completed = YES;
-        [self.extensionContext completeRequestReturningItems:@[] completionHandler:nil];
-    };
-
-    if (count > 0 && wakeURL) {
-        // NSExtensionContext.openURL is not supported by the iOS Share
-        // extension point, which is why the previous build merely dismissed
-        // this sheet. Use LaunchServices first; responder-chain UIApplication
-        // is the compatibility fallback for builds where LS SPI is filtered.
-        BOOL requested = [self openWakeURLViaLaunchServices:wakeURL];
-        if (!requested) requested = [self openWakeURLViaUIApplication:wakeURL];
-
-        if (!requested) {
-            // Keep the official API as a last diagnostic fallback. Apple only
-            // documents it as supported for Today/iMessage extension points,
-            // so failure here is expected for share-services.
-            [self.extensionContext openURL:wakeURL completionHandler:^(BOOL success) {
-                NSLog(@"[FuckFileShare] wake extensionContext fallback result=%d", success);
-            }];
-            self.statusLabel.text = @"已导入，请打开 FuckFile 查看";
-        }
-
-        // Give the foreground request a short head start, then finish the
-        // extension request exactly once. A full one-second timeout is only
-        // needed when every direct foreground route was unavailable.
-        NSTimeInterval delay = requested ? 0.20 : 1.0;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), completeOnce);
-    } else {
-        completeOnce();
+    if (count <= 0) {
+        self.statusLabel.text = @"没有收到可导入的文件";
+        [self completeExtension];
+        return;
     }
+
+    if (self.bridgeUsesAppGroup) {
+        self.statusLabel.text = [NSString stringWithFormat:
+            @"已接收 %ld 个文件，正在打开 FuckFile…", (long)count];
+        NSURL *wakeURL = [NSURL URLWithString:
+            [NSString stringWithFormat:@"%@://shared-inbox", FFShareWakeScheme]];
+        BOOL requested = wakeURL && [self openWakeURLViaLaunchServices:wakeURL];
+        if (!requested && wakeURL) requested = [self openWakeURLViaUIApplication:wakeURL];
+        if (!requested && wakeURL) {
+            [self.extensionContext openURL:wakeURL completionHandler:^(BOOL success) {
+                NSLog(@"[FuckFileShare] app-group wake fallback=%d", success);
+            }];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)((requested ? 0.20 : 0.80) * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{ [self completeExtension]; });
+        return;
+    }
+
+    NSString *token = NSUUID.UUID.UUIDString;
+    NSURL *wakeURL = [NSURL URLWithString:[NSString stringWithFormat:
+        @"%@://share-stream?token=%@&count=%ld", FFShareWakeScheme, token, (long)count]];
+    self.statusLabel.text = @"正在将文件传给 FuckFile…";
+    BOOL requested = wakeURL && [self openWakeURLViaLaunchServices:wakeURL];
+    if (!requested && wakeURL) requested = [self openWakeURLViaUIApplication:wakeURL];
+    if (!requested && wakeURL) {
+        [self.extensionContext openURL:wakeURL completionHandler:^(BOOL success) {
+            NSLog(@"[FuckFileShare] loopback wake fallback=%d", success);
+        }];
+    }
+
+    NSString *inbox = self.bridgeInboxPath;
+    NSString *session = self.shareSessionID;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSUInteger sent = 0;
+        NSError *error = nil;
+        BOOL ok = FFLocalShareBridgeSendInbox(inbox, session, token, &sent, &error);
+        NSLog(@"[FuckFileShare] loopback send ok=%d sent=%lu error=%@",
+            ok, (unsigned long)sent, error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.statusLabel.text = ok
+                ? [NSString stringWithFormat:@"已导入 %lu 个文件", (unsigned long)sent]
+                : @"直传失败，文件已暂存；可稍后重试或启用高级访问恢复";
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)((ok ? 0.15 : 1.2) * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{ [self completeExtension]; });
+        });
+    });
 }
 
 @end
