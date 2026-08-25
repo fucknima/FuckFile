@@ -21,6 +21,10 @@ FOUNDATION_EXPORT NSNotificationName const FFAppDataRegistryDidChangeNotificatio
 - (BOOL)registerIdentifier:(NSString *)identifier
                displayName:(nullable NSString *)displayName;
 
+// Removes identifiers that have been positively reconciled as no longer
+// installed. The operation is batched so UI observers receive one refresh.
+- (NSUInteger)removeIdentifiers:(NSArray<NSString *> *)identifiers;
+
 // Creates the logical AppData root when advanced access is active and migrates
 // legacy per-app symlinks into the registry. Legacy symlinks are then removed:
 // they are process-session materializations, not persistent source-of-truth.
