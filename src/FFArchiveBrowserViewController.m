@@ -172,9 +172,9 @@
                 return a.isDirectory ? NSOrderedAscending : NSOrderedDescending;
             return [a.name compare:b.name options:NSCaseInsensitiveSearch];
         }];
-    // 兜底：有条目但树建不出来（异常归档结构）→ 降级为平铺列表，
-    // 保证内容始终可见，绝不给用户一个空白/死胡同页面。
-    if (sorted.count == 0 && self.entries.count > 0) {
+    // 仅根层在异常归档结构下做平铺兜底。进入一个合法的空目录时
+    // sorted 也会是 0；旧逻辑会把整个归档平铺进去，看起来像“穿帮”。
+    if (sorted.count == 0 && self.entries.count > 0 && self.pathStack.count == 0) {
         NSMutableArray<FFArchiveNode *> *flat = [NSMutableArray array];
         for (FFArchiveEntry *entry in self.entries) {
             FFArchiveNode *node = [FFArchiveNode new];
@@ -200,7 +200,7 @@
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section
 {
     if (self.unsupportedMessage || self.loadError || !self.entries) return 1;
-    // 空归档或结构无法展示时给显式状态行，绝不留空白列表。
+    // 空归档、空文件夹或结构无法展示时给显式状态行，绝不留空白列表。
     if (self.entries.count == 0 || self.visibleNodes.count == 0) return 1;
     return (NSInteger)self.visibleNodes.count;
 }
@@ -247,9 +247,15 @@
         return cell;
     }
     if (self.visibleNodes.count == 0) {
-        config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
-        config.text = @"无法解析包内结构";
-        config.secondaryText = @"已读到条目但无法组织为目录，可尝试「全部解压」";
+        if (self.pathStack.count > 0) {
+            config.image = [UIImage systemImageNamed:@"folder"];
+            config.text = @"空文件夹";
+            config.secondaryText = @"该文件夹内没有文件";
+        } else {
+            config.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+            config.text = @"无法解析包内结构";
+            config.secondaryText = @"已读到条目但无法组织为目录，可尝试「全部解压」";
+        }
         cell.contentConfiguration = config;
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
@@ -410,9 +416,11 @@
     NSArray<NSIndexPath *> *selected = self.tableView.indexPathsForSelectedRows;
     if (selected.count == 0) return;
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSMutableSet<NSString *> *directoryPaths = [NSMutableSet set];
     for (NSIndexPath *indexPath in selected) {
         FFArchiveNode *node = self.visibleNodes[(NSUInteger)indexPath.row];
         [paths addObject:node.fullPath];
+        if (node.isDirectory) [directoryPaths addObject:node.fullPath];
     }
 
     NSString *stem = self.archivePath.lastPathComponent.stringByDeletingPathExtension;
@@ -426,47 +434,69 @@
         NSError *firstError = nil;
         NSUInteger done = 0;
         NSFileManager *manager = NSFileManager.defaultManager;
-        [manager createDirectoryAtPath:destination
-            withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *rootError = nil;
+        if (![manager createDirectoryAtPath:destination
+            withIntermediateDirectories:YES attributes:nil error:&rootError]) {
+            firstError = rootError;
+        }
         for (NSString *entryPath in paths) {
-            // 目录条目：递归提取其下所有文件。
-            BOOL isDirectory = NO;
-            for (FFArchiveEntry *entry in weakSelf.entries)
-                if ([entry.entryPath isEqualToString:entryPath])
-                    isDirectory = entry.isDirectory;
+            if (firstError && done == 0 && rootError) break;
+            // UI 节点本身最清楚它是不是目录。旧逻辑拿无尾斜杠的
+            // node.fullPath 去和 ZIP 中带 "/" 的目录条目精确比较，导致
+            // 文件夹被当成普通文件，选择提取文件夹必然失败。
+            BOOL isDirectory = [directoryPaths containsObject:entryPath];
             NSArray<NSString *> *targets = isDirectory ?
                 [weakSelf childFilesOfDirectory:entryPath] : @[entryPath];
+            if (isDirectory && targets.count == 0) {
+                NSString *emptyDir = [destination stringByAppendingPathComponent:entryPath];
+                NSError *mkdirError = nil;
+                if (![manager createDirectoryAtPath:emptyDir
+                    withIntermediateDirectories:YES attributes:nil error:&mkdirError] && !firstError)
+                    firstError = mkdirError;
+                continue;
+            }
             for (NSString *target in targets) {
                 // 保留包内相对目录结构。
                 NSString *relativeFolder = target.stringByDeletingLastPathComponent;
                 NSString *subDir = relativeFolder.length ?
                     [destination stringByAppendingPathComponent:relativeFolder]
                     : destination;
-                [manager createDirectoryAtPath:subDir
-                    withIntermediateDirectories:YES attributes:nil error:nil];
+                NSError *mkdirError = nil;
+                if (![manager createDirectoryAtPath:subDir
+                    withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+                    if (!firstError) firstError = mkdirError;
+                    continue;
+                }
+                NSError *extractError = nil;
                 NSString *file = [[FFArchiveService new] extractEntry:target
-                    fromArchive:self->_archivePath toDirectory:subDir error:&firstError];
+                    fromArchive:self->_archivePath toDirectory:subDir error:&extractError];
                 if (file) done++;
-                else if (!firstError) firstError = [NSError errorWithDomain:@"FFArchive"
+                else if (!firstError) firstError = extractError ?: [NSError errorWithDomain:@"FFArchive"
                     code:-1 userInfo:@{NSLocalizedDescriptionKey: target}];
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf setEditing:NO animated:YES];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
             NSString *message;
             if (firstError && done == 0)
                 message = [NSString stringWithFormat:@"提取失败：%@",
-                    firstError.localizedDescription];
+                    firstError.localizedDescription ?: @"未知错误"];
             else if (firstError)
                 message = [NSString stringWithFormat:
                     @"已提取 %lu 项，部分失败：%@", (unsigned long)done,
-                    firstError.localizedDescription];
+                    firstError.localizedDescription ?: @"未知错误"];
             else
                 message = [NSString stringWithFormat:@"已提取 %lu 项到：\n%@",
                     (unsigned long)done, destination];
-            UINavigationController *nav = weakSelf.navigationController;
-            if (nav) [FFPreviewRouter alertOnNav:nav title:@"提取完成"
-                message:message];
+            UINavigationController *nav = strongSelf.navigationController;
+            // 先关掉“正在提取”再弹结果。旧代码直接在 wait 上再 present
+            // 一个 alert，UIKit 会拒绝第二次 present，用户看起来像卡住。
+            [strongSelf dismissViewControllerAnimated:NO completion:^{
+                [strongSelf setEditing:NO animated:YES];
+                if (nav) [FFPreviewRouter alertOnNav:nav title:@"提取完成"
+                    message:message];
+            }];
         });
     });
     [self presentViewController:wait animated:YES completion:nil];
@@ -475,7 +505,8 @@
 // Directory entry → all file entries below it.
 - (NSArray<NSString *> *)childFilesOfDirectory:(NSString *)directoryPath
 {
-    NSString *prefix = [directoryPath stringByAppendingString:@"/"];
+    NSString *prefix = [directoryPath hasSuffix:@"/"] ? directoryPath :
+        [directoryPath stringByAppendingString:@"/"];
     NSMutableArray<NSString *> *files = [NSMutableArray array];
     for (FFArchiveEntry *entry in self.entries) {
         if (entry.isDirectory || ![entry.entryPath hasPrefix:prefix]) continue;
