@@ -11,12 +11,14 @@ APPEX_NAME = FuckFileShare
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
+	src/FFBrowserViewController+LocalSearchFix.m \
 	src/FFBrowserViewController+IPAThumbnail.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
