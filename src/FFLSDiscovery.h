@@ -11,9 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 // scan and must be confirmed with a direct ContainerManager lookup by the
 // caller.
 //
-// Results are cached in <Documents>/LSIdentifierCache.plist. The cache is
-// keyed by a store fingerprint built from file name, size, mtime and inode,
-// so equal byte sizes can no longer hide a changed LaunchServices database.
+// Results are cached in <Documents>/LSIdentifierCache.plist keyed by the
+// store's byte size; a rescan happens only when the store changed.
 NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
                                                       NSUInteger maxCandidates);
 
@@ -22,13 +21,5 @@ NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot
 NSArray<NSString *> *FFLSDiscoverGroupIdentifiers(NSString *lsdContainerRoot,
                                                   NSUInteger maxCandidates);
 
-// Cheap fingerprint of the current LaunchServices store set. Returns nil when
-// no readable store is present. Callers can use it to skip repeated deep
-// validation when the database has not changed.
-NSString * _Nullable FFLSStoreFingerprint(NSString *lsdContainerRoot);
-
-// Removes the parsed identifier caches. This does not touch App Data or any
-// system file; it only forces the next discovery pass to reparse csstore.
-void FFLSInvalidateDiscoveryCaches(void);
 
 NS_ASSUME_NONNULL_END
