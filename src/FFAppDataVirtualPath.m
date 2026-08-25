@@ -5,7 +5,9 @@
 #import "FFAppNames.h"
 #import "FFLogger.h"
 
+#import <errno.h>
 #import <limits.h>
+#import <stdio.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -89,8 +91,6 @@ static BOOL FFMaterializeSessionLink(NSString *identifier, NSString *target, NSE
         return NO;
     }
 
-    // rename(2) atomically replaces an existing symlink, so a reinstall that
-    // changes the container UUID never exposes a half-updated mapping.
     if (rename(temp.fileSystemRepresentation, link.fileSystemRepresentation) != 0) {
         int saved = errno;
         unlink(temp.fileSystemRepresentation);
