@@ -85,6 +85,26 @@ static BOOL FFLeaseDetailMeansMissing(NSString *detail)
     return [self currentRootForIdentifier:identifier].length > 0;
 }
 
+- (void)invalidateIdentifier:(NSString *)identifier
+{
+    if (![self.class safeIdentifier:identifier]) return;
+
+    // Do not let an already-running acquisition repopulate the cache after the
+    // uninstall path has decided to evict this identifier.
+    dispatch_group_t inFlight = nil;
+    @synchronized (self) { inFlight = _inFlight[identifier]; }
+    if (inFlight) dispatch_group_wait(inFlight, DISPATCH_TIME_FOREVER);
+
+    MCMLease *lease = nil;
+    @synchronized (self) {
+        lease = _leases[identifier];
+        [_leases removeObjectForKey:identifier];
+        [_lastErrors removeObjectForKey:identifier];
+    }
+    [lease invalidate];
+    FFLogTag(@"AppDataLease", @"invalidated id=%@", identifier);
+}
+
 - (NSError *)errorWithDetail:(NSString *)detail code:(NSInteger)code
 {
     NSString *message = detail.length ? detail : @"App Data 容器访问失败";
