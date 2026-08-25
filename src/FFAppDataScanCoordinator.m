@@ -211,7 +211,6 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         if (now - self->_lastFingerprintCheck < 2.0) return;
         self->_lastFingerprintCheck = now;
 
-        // A full scan already queued/running will refresh the fingerprint itself.
         if (self.scanning) return;
 
         NSString *lsdError = nil;
@@ -232,10 +231,8 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         NSString *previous = [defaults stringForKey:kFFAppDataLSFingerprintKey];
         if (!previous.length) {
-            // Upgrade/migration path: an existing registry is already useful and
-            // should not force one surprise 20k scan merely because this build is
-            // the first one that knows about fingerprints. Establish a baseline;
-            // subsequent install/uninstall changes will trigger reconciliation.
+            // Existing registries upgrade without a surprise 20k scan. This
+            // establishes the baseline; any later install/uninstall changes it.
             [defaults setObject:current forKey:kFFAppDataLSFingerprintKey];
             FFLogTag(@"AppDataSync", @"established LS fingerprint baseline known=%lu",
                 (unsigned long)FFAppDataRegistry.sharedRegistry.identifiers.count);
@@ -270,35 +267,23 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
 
         NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
         [candidates addObjectsFromArray:registryBefore];
-        NSMutableSet<NSString *> *presentLowercase = [NSMutableSet set];
 
         NSString *enumerationError = nil;
         NSArray<NSString *> *dynamic = MCMEnumerateIdentifiersForClass(2, 1024, &enumerationError);
-        for (NSString *identifier in dynamic ?: @[]) {
-            if (!FFSafeIdentifier(identifier)) continue;
-            [candidates addObject:identifier];
-            [presentLowercase addObject:identifier.lowercaseString];
-        }
+        for (NSString *identifier in dynamic ?: @[])
+            if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
 
-        NSArray<NSString *> *workspace = FFWorkspaceApplicationIdentifiers();
-        for (NSString *identifier in workspace) {
-            [candidates addObject:identifier];
-            [presentLowercase addObject:identifier.lowercaseString];
-        }
+        [candidates addObjectsFromArray:FFWorkspaceApplicationIdentifiers()];
         [candidates addObjectsFromArray:FFResearchIdentifiers()];
         [candidates addObjectsFromArray:FFCustomIdentifiers()];
 
         MCMManager *mcm = MCMManager.sharedManager;
         NSString *lsdError = nil;
         NSString *lsdRoot = [mcm activate:10 identifier:@"com.apple.lsd" group:NO error:&lsdError];
-        NSArray<NSString *> *raw = @[];
         if (lsdRoot.length) {
-            raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
-            for (NSString *identifier in raw) {
-                if (!FFSafeIdentifier(identifier)) continue;
-                [candidates addObject:identifier];
-                [presentLowercase addObject:identifier.lowercaseString];
-            }
+            NSArray<NSString *> *raw = FFLSDiscoverInstalledIdentifiers(lsdRoot, 65536);
+            for (NSString *identifier in raw)
+                if (FFSafeIdentifier(identifier)) [candidates addObject:identifier];
         } else {
             FFLogTag(@"MCM", @"LS discovery unavailable detail=%@", lsdError ?: @"(nil)");
         }
@@ -360,17 +345,26 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
         }
         dispatch_group_wait(workers, DISPATCH_TIME_FOREVER);
 
-        // Removal is intentionally conservative. A registry entry is evicted
-        // only when direct MCM lookup says ENOENT AND the current LaunchServices
-        // / dynamic / workspace sources no longer advertise the identifier.
-        // Permission/token failures never remove a known App.
+        // Direct class-2 MCM ENOENT is stronger evidence than the raw csstore:
+        // byte scanning can retain stale identifier strings after uninstall.
+        // Still, never evict on one observation. Re-check every previously known
+        // missing container after the full pass has finished (usually seconds or
+        // minutes later). Only two ENOENT results across that interval remove it.
         NSMutableArray<NSString *> *toRemove = [NSMutableArray array];
-        BOOL canReconcileRemovals = lsdRoot.length > 0 && raw.count > 0;
-        if (canReconcileRemovals) {
-            for (NSString *identifier in registryBefore) {
-                if (![definitiveMissing containsObject:identifier]) continue;
-                if ([presentLowercase containsObject:identifier.lowercaseString]) continue;
+        for (NSString *identifier in definitiveMissing.allObjects) {
+            NSError *verifyError = nil;
+            NSString *target = [FFAppDataLeaseManager.sharedManager
+                acquireIdentifier:identifier error:&verifyError];
+            if (target.length) {
+                NSString *name = FFAppContainerItemName(target);
+                if (!name.length) name = FFAppDisplayName(identifier);
+                [registry registerIdentifier:identifier displayName:name];
+                FFLogTag(@"AppDataSync", @"missing candidate recovered id=%@", identifier);
+            } else if (verifyError.code == ENOENT) {
                 [toRemove addObject:identifier];
+            } else {
+                FFLogTag(@"AppDataSync", @"keep id=%@ after non-ENOENT verify error=%@",
+                    identifier, verifyError.localizedDescription ?: @"(nil)");
             }
         }
         NSUInteger removedCount = [registry removeIdentifiers:toRemove];
@@ -379,10 +373,8 @@ static NSArray<NSString *> *FFCustomIdentifiers(void)
             (unsigned long)processed, (unsigned long)accessibleThisPass,
             (unsigned long)registry.identifiers.count, (unsigned long)removedCount);
 
-        // The scan reconciled the world represented by this LaunchServices
-        // generation. Save a fresh fingerprint only after the pass completes;
-        // failed/aborted LS access leaves the previous baseline untouched so a
-        // later foreground event can retry.
+        // Save the fingerprint only after reconciliation completes. If lsd is
+        // inaccessible, keep the old baseline so the next foreground can retry.
         NSString *finalFingerprint = lsdRoot.length ? FFLSStoreFingerprint(lsdRoot) : nil;
         if (finalFingerprint.length) {
             [NSUserDefaults.standardUserDefaults setObject:finalFingerprint
