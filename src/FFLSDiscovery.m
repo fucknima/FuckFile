@@ -29,13 +29,75 @@ static NSString *FFLSCachePathForMode(BOOL groupsOnly)
         groupsOnly ? @"LSGroupCache.plist" : @"LSIdentifierCache.plist"];
 }
 
-static NSArray<NSString *> *FFLSCachedIdentifiersForSize(unsigned long long storeSize, BOOL groupsOnly)
+static NSArray<NSString *> *FFLSStorePaths(NSString *lsdContainerRoot,
+                                           NSString **fingerprintOut,
+                                           unsigned long long *totalSizeOut)
 {
+    if (fingerprintOut) *fingerprintOut = nil;
+    if (totalSizeOut) *totalSizeOut = 0;
+    if (!lsdContainerRoot.length) return @[];
+
+    NSString *caches = [lsdContainerRoot stringByAppendingPathComponent:@"Library/Caches"];
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSArray<NSString *> *names = [[manager contentsOfDirectoryAtPath:caches error:nil] ?: @[]
+        sortedArrayUsingSelector:@selector(compare:)];
+
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    unsigned long long totalSize = 0;
+
+    for (NSString *name in names) {
+        if (![name hasPrefix:@"com.apple.LaunchServices-"] ||
+            ![name hasSuffix:@"-v2.csstore"])
+            continue;
+
+        NSString *path = [caches stringByAppendingPathComponent:name];
+        NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
+        NSNumber *size = attributes[NSFileSize];
+        if (!size || size.unsignedLongLongValue == 0 ||
+            size.unsignedLongLongValue > 64ULL * 1024ULL * 1024ULL)
+            continue;
+
+        NSDate *mtime = attributes[NSFileModificationDate];
+        NSNumber *inode = attributes[NSFileSystemFileNumber];
+        totalSize += size.unsignedLongLongValue;
+        [paths addObject:path];
+        [parts addObject:[NSString stringWithFormat:@"%@|%llu|%.6f|%@",
+            name, size.unsignedLongLongValue,
+            mtime ? mtime.timeIntervalSince1970 : 0.0,
+            inode ?: @0]];
+    }
+
+    if (paths.count == 0) return @[];
+    if (fingerprintOut) *fingerprintOut = [parts componentsJoinedByString:@";"];
+    if (totalSizeOut) *totalSizeOut = totalSize;
+    return paths;
+}
+
+NSString *FFLSStoreFingerprint(NSString *lsdContainerRoot)
+{
+    NSString *fingerprint = nil;
+    FFLSStorePaths(lsdContainerRoot, &fingerprint, NULL);
+    return fingerprint;
+}
+
+void FFLSInvalidateDiscoveryCaches(void)
+{
+    NSFileManager *manager = NSFileManager.defaultManager;
+    [manager removeItemAtPath:FFLSCachePathForMode(NO) error:nil];
+    [manager removeItemAtPath:FFLSCachePathForMode(YES) error:nil];
+}
+
+static NSArray<NSString *> *FFLSCachedIdentifiersForFingerprint(NSString *fingerprint,
+                                                                BOOL groupsOnly)
+{
+    if (!fingerprint.length) return nil;
     NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:
         FFLSCachePathForMode(groupsOnly)];
-    if (![cache[@"StoreSize"] isKindOfClass:NSNumber.class] ||
-        [cache[@"StoreSize"] unsignedLongLongValue] != storeSize)
+    if (![cache[@"StoreFingerprint"] isKindOfClass:NSString.class] ||
+        ![cache[@"StoreFingerprint"] isEqualToString:fingerprint])
         return nil;
+
     NSArray *identifiers = cache[@"Identifiers"];
     if (![identifiers isKindOfClass:NSArray.class]) return nil;
     NSMutableArray *safe = [NSMutableArray arrayWithCapacity:identifiers.count];
@@ -45,10 +107,17 @@ static NSArray<NSString *> *FFLSCachedIdentifiersForSize(unsigned long long stor
     return safe;
 }
 
-static void FFLSWriteCache(unsigned long long storeSize, NSArray<NSString *> *identifiers,
+static void FFLSWriteCache(NSString *fingerprint,
+                           unsigned long long storeSize,
+                           NSArray<NSString *> *identifiers,
                            BOOL groupsOnly)
 {
-    NSDictionary *cache = @{ @"StoreSize": @(storeSize), @"Identifiers": identifiers };
+    if (!fingerprint.length) return;
+    NSDictionary *cache = @{
+        @"StoreFingerprint": fingerprint,
+        @"StoreSize": @(storeSize),
+        @"Identifiers": identifiers ?: @[]
+    };
     [cache writeToFile:FFLSCachePathForMode(groupsOnly) atomically:YES];
 }
 
@@ -73,32 +142,18 @@ static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
                                                    BOOL groupsOnly)
 {
     if (!lsdContainerRoot.length || maxCandidates == 0) return @[];
-    NSString *caches = [lsdContainerRoot stringByAppendingPathComponent:@"Library/Caches"];
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:caches error:nil];
 
-    // Aggregate the store size so unchanged stores reuse the cached scan.
+    NSString *fingerprint = nil;
     unsigned long long totalStoreSize = 0;
-    NSMutableArray<NSString *> *storePaths = [NSMutableArray array];
-    for (NSString *name in names ?: @[]) {
-        if (![name hasPrefix:@"com.apple.LaunchServices-"] ||
-            ![name hasSuffix:@"-v2.csstore"])
-            continue;
-        NSString *path = [caches stringByAppendingPathComponent:name];
-        NSNumber *size = [[manager attributesOfItemAtPath:path error:nil]
-            objectForKey:NSFileSize];
-        if (!size || size.unsignedLongLongValue == 0 ||
-            size.unsignedLongLongValue > 64 * 1024 * 1024)
-            continue;
-        totalStoreSize += size.unsignedLongLongValue;
-        [storePaths addObject:path];
-    }
+    NSArray<NSString *> *storePaths = FFLSStorePaths(
+        lsdContainerRoot, &fingerprint, &totalStoreSize);
     if (storePaths.count == 0) {
-        FFLogTag(@"LSDiscovery", @"no LaunchServices store files under %@", caches);
+        FFLogTag(@"LSDiscovery", @"no LaunchServices store files under %@",
+            [lsdContainerRoot stringByAppendingPathComponent:@"Library/Caches"]);
         return @[];
     }
 
-    NSArray<NSString *> *cached = FFLSCachedIdentifiersForSize(totalStoreSize, groupsOnly);
+    NSArray<NSString *> *cached = FFLSCachedIdentifiersForFingerprint(fingerprint, groupsOnly);
     if (cached) {
         FFLogTag(@"LSDiscovery", @"store unchanged mode=%@ (%llu bytes, %lu files); reused cached candidates=%lu",
                  groupsOnly ? @"groups" : @"apps", totalStoreSize,
@@ -134,12 +189,9 @@ static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
                 NSString *candidate = [[NSString alloc]
                     initWithBytes:bytes + start length:length
                     encoding:NSUTF8StringEncoding];
-                if (groupsOnly) {
-                    // Keep only "group.<team>.<name>" shaped identifiers.
-                    if (![candidate hasPrefix:@"group."]) {
-                        start = NSNotFound;
-                        continue;
-                    }
+                if (groupsOnly && ![candidate hasPrefix:@"group."]) {
+                    start = NSNotFound;
+                    continue;
                 }
                 if (FFLSSafeIdentifier(candidate)) {
                     NSString *key = candidate.lowercaseString;
@@ -157,15 +209,18 @@ static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
                  (unsigned long)byLowercase.count);
         if (reachedLimit) break;
     }
+
     if (reachedLimit)
         FFLogTag(@"LSDiscovery", @"candidate limit (%lu) reached; scan truncated",
                  (unsigned long)kMaximumCandidateCount);
+
     NSArray<NSString *> *result = byLowercase.allValues;
     FFLogTag(@"LSDiscovery", @"scan complete mode=%@ storeFiles=%lu bytes=%llu candidates=%lu",
              groupsOnly ? @"groups" : @"apps",
              (unsigned long)storePaths.count, totalStoreSize,
              (unsigned long)result.count);
-    FFLSWriteCache(totalStoreSize, result, groupsOnly);
+    FFLSWriteCache(fingerprint, totalStoreSize, result, groupsOnly);
+
     if (result.count > maxCandidates)
         return [result subarrayWithRange:NSMakeRange(0, maxCandidates)];
     return result;
