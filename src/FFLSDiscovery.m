@@ -31,9 +31,6 @@ static NSString *FFLSCachePathForMode(BOOL groupsOnly)
         groupsOnly ? @"LSGroupCache.plist" : @"LSIdentifierCache.plist"];
 }
 
-// Returns the valid csstore paths in deterministic filename order and, without
-// reading their contents, builds a change fingerprint from metadata that is
-// expected to move when an app install/uninstall rewrites LaunchServices.
 static NSArray<NSString *> *FFLSStorePaths(NSString *lsdContainerRoot,
     unsigned long long *totalSizeOut, NSString **fingerprintOut)
 {
@@ -123,7 +120,6 @@ static BOOL FFLSTableInfoAtUnitOffset(NSData *data, NSUInteger unitOffset,
     if (!name) return NO;
 
     uint32_t hashmapOffset = 0;
-    // CSTable payload: name[0x30], reserved[0x10], nextUnitID[4], hashmapOffset[4].
     if (!FFLSReadLE32(data, payload.location + 0x44, &hashmapOffset)) return NO;
     if (hashmapOffset && hashmapOffset >= data.length) return NO;
 
@@ -171,8 +167,6 @@ static NSUInteger FFLSValidHashmapEntryCount(NSData *data, NSUInteger hashmapOff
 
 static NSUInteger FFLSBundleRecordCountInStore(NSData *data)
 {
-    // CoreServicesStore v2 starts with: magic[4], version[1], pad[1], crc[2],
-    // unknown[4], size1[4], size2[4], then the catalog CSUnit at offset 20.
     if (data.length < 28) return NSNotFound;
     const uint8_t *bytes = data.bytes;
     if (bytes[0] != 'b' || bytes[1] != 'd' || bytes[2] != 's' || bytes[3] != 'l' ||
@@ -260,12 +254,12 @@ static NSString *FFLSIdentifierFromApplicationObject(id object)
         return nil;
 
     NSString *identifier = nil;
-    SEL appIDSelector = NSSelectorFromString(@"applicationIdentifier");
     SEL bundleIDSelector = NSSelectorFromString(@"bundleIdentifier");
-    if ([object respondsToSelector:appIDSelector])
-        identifier = ((id (*)(id, SEL))objc_msgSend)(object, appIDSelector);
-    if (!FFLSSafeIdentifier(identifier) && [object respondsToSelector:bundleIDSelector])
+    SEL appIDSelector = NSSelectorFromString(@"applicationIdentifier");
+    if ([object respondsToSelector:bundleIDSelector])
         identifier = ((id (*)(id, SEL))objc_msgSend)(object, bundleIDSelector);
+    if (!FFLSSafeIdentifier(identifier) && [object respondsToSelector:appIDSelector])
+        identifier = ((id (*)(id, SEL))objc_msgSend)(object, appIDSelector);
     return FFLSSafeIdentifier(identifier) ? identifier : nil;
 }
 
@@ -278,47 +272,91 @@ static void FFLSAddApplicationObjects(NSMutableOrderedSet<NSString *> *result, i
     }
 }
 
-NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void)
+static NSUInteger FFLSAddDirectApplicationRecords(NSMutableOrderedSet<NSString *> *result)
 {
-    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
-    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return @[];
+    Class recordClass = NSClassFromString(@"LSApplicationRecord");
+    SEL selector = NSSelectorFromString(@"enumeratorWithOptions:");
+    if (!recordClass || ![recordClass respondsToSelector:selector]) return 0;
 
-    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
-    if (!workspace) return @[];
-
-    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+    NSUInteger before = result.count;
     @try {
-        SEL enumerateSelector = NSSelectorFromString(@"enumerateApplicationsOfType:block:");
-        if ([workspace respondsToSelector:enumerateSelector]) {
-            typedef void (^FFLSApplicationBlock)(id);
-            void (*enumerateSend)(id, SEL, unsigned long long, FFLSApplicationBlock) =
-                (void (*)(id, SEL, unsigned long long, FFLSApplicationBlock))objc_msgSend;
-            for (unsigned long long type = 0; type <= 1; type++) {
-                enumerateSend(workspace, enumerateSelector, type, ^(id proxy) {
-                    NSString *identifier = FFLSIdentifierFromApplicationObject(proxy);
-                    if (identifier.length) @synchronized (result) { [result addObject:identifier]; }
-                });
+        id enumerator = ((id (*)(id, SEL, unsigned long long))objc_msgSend)(recordClass, selector, 0ULL);
+        SEL nextSelector = @selector(nextObject);
+        if ([enumerator respondsToSelector:nextSelector]) {
+            NSUInteger guard = 0;
+            while (guard++ < 8192) {
+                id record = ((id (*)(id, SEL))objc_msgSend)(enumerator, nextSelector);
+                if (!record) break;
+                NSString *identifier = FFLSIdentifierFromApplicationObject(record);
+                if (identifier.length) [result addObject:identifier];
             }
-        } else {
-            SEL applicationsOfTypeSelector = NSSelectorFromString(@"applicationsOfType:");
-            if ([workspace respondsToSelector:applicationsOfTypeSelector]) {
-                id (*sendType)(id, SEL, unsigned long long) =
-                    (id (*)(id, SEL, unsigned long long))objc_msgSend;
-                FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 0));
-                FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 1));
-            }
-        }
-
-        for (NSString *selectorName in @[@"allInstalledApplications", @"installedApplications", @"allApplications"]) {
-            SEL selector = NSSelectorFromString(selectorName);
-            if ([workspace respondsToSelector:selector]) {
-                id objects = ((id (*)(id, SEL))objc_msgSend)(workspace, selector);
-                FFLSAddApplicationObjects(result, objects);
+        } else if ([enumerator conformsToProtocol:@protocol(NSFastEnumeration)]) {
+            NSUInteger guard = 0;
+            for (id record in enumerator) {
+                NSString *identifier = FFLSIdentifierFromApplicationObject(record);
+                if (identifier.length) [result addObject:identifier];
+                if (++guard >= 8192) break;
             }
         }
     } @catch (NSException *exception) {
-        FFLogTag(@"LSInventory", @"structured workspace exception=%@", exception.reason ?: exception.name);
+        FFLogTag(@"LSInventory", @"direct record enumerator exception=%@",
+            exception.reason ?: exception.name);
+    }
+    NSUInteger added = result.count - before;
+    FFLogTag(@"LSInventory", @"direct record enumerator identifiers=%lu",
+        (unsigned long)added);
+    return added;
+}
+
+NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void)
+{
+    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+
+    // LSApplicationWorkspace is filtered to zero records for the
+    // MobileHouseArrest identity on the user's iOS 27 build. Try the newer
+    // LSApplicationRecord database enumerator first; it maps the LaunchServices
+    // record layer directly and does not depend on Workspace enumeration.
+    FFLSAddDirectApplicationRecords(result);
+
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (workspaceClass && [workspaceClass respondsToSelector:defaultSelector]) {
+        id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
+        if (workspace) {
+            @try {
+                SEL enumerateSelector = NSSelectorFromString(@"enumerateApplicationsOfType:block:");
+                if ([workspace respondsToSelector:enumerateSelector]) {
+                    typedef void (^FFLSApplicationBlock)(id);
+                    void (*enumerateSend)(id, SEL, unsigned long long, FFLSApplicationBlock) =
+                        (void (*)(id, SEL, unsigned long long, FFLSApplicationBlock))objc_msgSend;
+                    for (unsigned long long type = 0; type <= 1; type++) {
+                        enumerateSend(workspace, enumerateSelector, type, ^(id proxy) {
+                            NSString *identifier = FFLSIdentifierFromApplicationObject(proxy);
+                            if (identifier.length) @synchronized (result) { [result addObject:identifier]; }
+                        });
+                    }
+                } else {
+                    SEL applicationsOfTypeSelector = NSSelectorFromString(@"applicationsOfType:");
+                    if ([workspace respondsToSelector:applicationsOfTypeSelector]) {
+                        id (*sendType)(id, SEL, unsigned long long) =
+                            (id (*)(id, SEL, unsigned long long))objc_msgSend;
+                        FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 0));
+                        FFLSAddApplicationObjects(result, sendType(workspace, applicationsOfTypeSelector, 1));
+                    }
+                }
+
+                for (NSString *selectorName in @[@"allInstalledApplications", @"installedApplications", @"allApplications"]) {
+                    SEL listSelector = NSSelectorFromString(selectorName);
+                    if ([workspace respondsToSelector:listSelector]) {
+                        id objects = ((id (*)(id, SEL))objc_msgSend)(workspace, listSelector);
+                        FFLSAddApplicationObjects(result, objects);
+                    }
+                }
+            } @catch (NSException *exception) {
+                FFLogTag(@"LSInventory", @"structured workspace exception=%@",
+                    exception.reason ?: exception.name);
+            }
+        }
     }
 
     FFLogTag(@"LSInventory", @"structured installed identifiers=%lu",
@@ -400,8 +438,6 @@ static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
         return cached;
     }
 
-    // Case-insensitive dedupe: bundle identifiers are case-insensitive, and
-    // the store can repeat the same id in several case forms.
     NSMutableDictionary<NSString *, NSString *> *byLowercase =
         [NSMutableDictionary dictionary];
     BOOL reachedLimit = NO;
@@ -426,12 +462,9 @@ static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,
                 NSString *candidate = [[NSString alloc]
                     initWithBytes:bytes + start length:length
                     encoding:NSUTF8StringEncoding];
-                if (groupsOnly) {
-                    // Keep only "group.<team>.<name>" shaped identifiers.
-                    if (![candidate hasPrefix:@"group."]) {
-                        start = NSNotFound;
-                        continue;
-                    }
+                if (groupsOnly && ![candidate hasPrefix:@"group."]) {
+                    start = NSNotFound;
+                    continue;
                 }
                 if (FFLSSafeIdentifier(candidate)) {
                     NSString *key = candidate.lowercaseString;
