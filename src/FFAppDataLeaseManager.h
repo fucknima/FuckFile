@@ -1,0 +1,19 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+// Owns process-lifetime class-2 MCM leases. Persistent AppData registry entries
+// never imply that a lease exists; this manager reacquires access lazily for the
+// current process and deduplicates concurrent requests for the same bundle id.
+@interface FFAppDataLeaseManager : NSObject
+
++ (instancetype)sharedManager;
+
+- (nullable NSString *)acquireIdentifier:(NSString *)identifier
+                                   error:(NSError * _Nullable * _Nullable)error;
+- (nullable NSString *)currentRootForIdentifier:(NSString *)identifier;
+- (BOOL)hasLeaseForIdentifier:(NSString *)identifier;
+
+@end
+
+NS_ASSUME_NONNULL_END
