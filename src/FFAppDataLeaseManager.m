@@ -2,6 +2,7 @@
 #import "MCMBridge.h"
 #import "FFLogger.h"
 
+#import <errno.h>
 #import <fcntl.h>
 #import <unistd.h>
 
@@ -77,9 +78,6 @@ static NSString *const kRequiredIdentifier = @"com.apple.mobile.MobileHouseArres
 
 - (MCMLease *)newUsableLeaseForIdentifier:(NSString *)identifier detail:(NSString **)detailOut
 {
-    // Keep the exact flag matrix already proven by MCMManager. The important
-    // difference is concurrency: no process-wide dictionary lock is held while
-    // containermanagerd performs the query/activation/open sequence.
     static NSArray<NSNumber *> *flags;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
