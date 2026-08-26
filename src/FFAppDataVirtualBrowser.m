@@ -16,9 +16,47 @@ typedef NS_ENUM(NSInteger, FFAppDataVirtualSortMode) {
     FFAppDataVirtualSortModeKind,
 };
 
+typedef NS_ENUM(NSInteger, FFAppDataFilterMode) {
+    FFAppDataFilterModeAll = 0,
+    FFAppDataFilterModeUser,
+    FFAppDataFilterModeSystem,
+};
+
+typedef NS_ENUM(NSInteger, FFAppDataApplicationKind) {
+    FFAppDataApplicationKindUser = 1,
+    FFAppDataApplicationKindSystem,
+};
+
+static NSString *const kFFAppDataFilterModeKey = @"FFAppDataFilterModeV1";
+static const void *kFFAppDataFilterControlKey = &kFFAppDataFilterControlKey;
+
 static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
 {
     return entry.displayName.length ? entry.displayName : entry.name;
+}
+
+static FFAppDataFilterMode FFCurrentAppDataFilterMode(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSNumber *saved = [defaults objectForKey:kFFAppDataFilterModeKey];
+    NSInteger value = saved ? saved.integerValue : FFAppDataFilterModeUser;
+    if (value < FFAppDataFilterModeAll || value > FFAppDataFilterModeSystem)
+        value = FFAppDataFilterModeUser;
+    return (FFAppDataFilterMode)value;
+}
+
+// For this AppData browser the practical split is intentionally based on the
+// bundle identifier namespace. iOS exposes many internal/system services whose
+// LaunchServices applicationType is not "System", so relying on that property
+// leaves most Apple components in the user bucket. Treat the com.apple.*
+// namespace as System and everything else as User. This classification is only
+// for presentation/filtering; it never changes discovery, leases or access.
+static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identifier)
+{
+    if (!identifier.length) return FFAppDataApplicationKindUser;
+    NSString *lower = identifier.lowercaseString;
+    BOOL apple = [lower isEqualToString:@"com.apple"] || [lower hasPrefix:@"com.apple."];
+    return apple ? FFAppDataApplicationKindSystem : FFAppDataApplicationKindUser;
 }
 
 @implementation FFBrowserViewController (FFAppDataVirtualBrowser)
@@ -37,7 +75,44 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
         Method virtualOpen = class_getInstanceMethod(cls,
             @selector(ff_appData_openItemAtPath:title:navigationController:completion:));
         if (originalOpen && virtualOpen) method_exchangeImplementations(originalOpen, virtualOpen);
+
+        Method originalViewDidLoad = class_getInstanceMethod(cls, @selector(viewDidLoad));
+        Method virtualViewDidLoad = class_getInstanceMethod(cls, @selector(ff_appData_viewDidLoad));
+        if (originalViewDidLoad && virtualViewDidLoad)
+            method_exchangeImplementations(originalViewDidLoad, virtualViewDidLoad);
     });
+}
+
+- (void)ff_appData_viewDidLoad
+{
+    [self ff_appData_viewDidLoad];
+    if (!FFAppDataIsVirtualRootPath(self.currentPath.stringByStandardizingPath)) return;
+
+    UISegmentedControl *filter = [[UISegmentedControl alloc]
+        initWithItems:@[@"全部", @"用户", @"系统"]];
+    filter.selectedSegmentIndex = FFCurrentAppDataFilterMode();
+    // Match the 44pt navigation action capsule on the right. UISegmentedControl
+    // otherwise keeps its 32pt intrinsic height inside navigationItem.titleView,
+    // which makes the two glass controls look visibly mismatched on iOS 26/27.
+    filter.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [filter.widthAnchor constraintEqualToConstant:204.0],
+        [filter.heightAnchor constraintEqualToConstant:44.0],
+    ]];
+    filter.accessibilityLabel = @"App Data 类型筛选";
+    [filter addTarget:self action:@selector(ff_appData_filterChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView = filter;
+    objc_setAssociatedObject(self, kFFAppDataFilterControlKey, filter,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)ff_appData_filterChanged:(UISegmentedControl *)sender
+{
+    NSInteger selected = sender.selectedSegmentIndex;
+    if (selected < FFAppDataFilterModeAll || selected > FFAppDataFilterModeSystem) return;
+    [NSUserDefaults.standardUserDefaults setInteger:selected forKey:kFFAppDataFilterModeKey];
+    [self reloadEntries];
 }
 
 - (NSArray<FFEntry *> *)ff_appData_loadDirectoryContents
@@ -53,8 +128,21 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
         [registry prepareVirtualRootAndMigrateLegacyLinks];
         [self setValue:nil forKey:@"loadError"];
 
+        FFAppDataFilterMode filterMode = FFCurrentAppDataFilterMode();
         NSMutableArray<FFEntry *> *items = [NSMutableArray array];
+        NSUInteger userCount = 0;
+        NSUInteger systemCount = 0;
+
         for (NSString *identifier in registry.identifiers) {
+            FFAppDataApplicationKind kind = FFApplicationKindForIdentifier(identifier);
+            if (kind == FFAppDataApplicationKindSystem) systemCount++;
+            else userCount++;
+
+            if (filterMode == FFAppDataFilterModeUser && kind != FFAppDataApplicationKindUser)
+                continue;
+            if (filterMode == FFAppDataFilterModeSystem && kind != FFAppDataApplicationKindSystem)
+                continue;
+
             FFEntry *item = [FFEntry new];
             item.name = identifier;
             item.displayName = [registry displayNameForIdentifier:identifier] ?: FFAppDisplayName(identifier);
@@ -63,14 +151,14 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
             item.isSymlink = NO;
             item.isAppContainer = YES;
             item.containerIdentifier = identifier;
-            item.detail = @"App 数据 · 按需连接";
+            item.detail = (kind == FFAppDataApplicationKindSystem)
+                ? @"系统 App 数据 · 按需连接"
+                : @"用户 App 数据 · 按需连接";
             item.fullDetail = item.detail;
 
             // Do not acquire a lease just to sort. If this app is already
             // materialized in the current process, opportunistically expose the
-            // same lightweight stat metadata used by the normal browser. This
-            // makes date/size sorting useful for connected entries without
-            // turning a UI sort into a 200+ container scan.
+            // same lightweight stat metadata used by the normal browser.
             struct stat st = {0};
             if (stat(item.path.fileSystemRepresentation, &st) == 0) {
                 item.size = (unsigned long long)st.st_size;
@@ -79,10 +167,6 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
             [items addObject:item];
         }
 
-        // The virtual-root loader bypasses FFBrowserViewController's normal
-        // loadDirectoryContents implementation, so it must apply the browser's
-        // active sort state itself. Previously this block always sorted by
-        // display name ascending, which made every sort-menu change appear dead.
         NSInteger sortMode = [[self valueForKey:@"sortMode"] integerValue];
         BOOL descending = [[self valueForKey:@"sortDescending"] boolValue];
         [items sortUsingComparator:^NSComparisonResult(FFEntry *left, FFEntry *right) {
@@ -102,9 +186,6 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
                     break;
                 }
                 case FFAppDataVirtualSortModeKind:
-                    // Every virtual AppData node is the same kind (directory),
-                    // so kind sorting intentionally falls through to its stable
-                    // display-name tie breaker.
                     break;
                 case FFAppDataVirtualSortModeName:
                 default:
@@ -119,8 +200,9 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
                 comparison = [left.name compare:right.name options:NSNumericSearch];
             return descending ? -comparison : comparison;
         }];
-        FFLogTag(@"AppDataVirtual", @"root rendered from registry count=%lu sort=%ld descending=%d",
-            (unsigned long)items.count, (long)sortMode, descending);
+        FFLogTag(@"AppDataVirtual", @"root filter=%ld visible=%lu user=%lu system=%lu sort=%ld descending=%d",
+            (long)filterMode, (unsigned long)items.count, (unsigned long)userCount,
+            (unsigned long)systemCount, (long)sortMode, descending);
         return items;
     }
 
@@ -139,9 +221,6 @@ static NSString *FFAppDataVirtualEntrySortName(FFEntry *entry)
         [self setValue:nil forKey:@"loadError"];
     }
 
-    // Swizzled selector now points to the original implementation. Session-only
-    // materialization keeps all existing browser/file-operation paths logical,
-    // while the current process owns the MCM lease that makes them readable.
     return [self ff_appData_loadDirectoryContents];
 }
 

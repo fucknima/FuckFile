@@ -1,5 +1,5 @@
 #import "FFAppDelegate.h"
-#import "FFHomeViewController.h"
+#import "FFRootTabBarController.h"
 #import "FFBrowserViewController.h"
 #import "FFImportService.h"
 #import "FFSharedInboxService.h"
@@ -36,138 +36,102 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [[url.host lowercaseString] isEqualToString:@"share-stream"];
 }
 
-- (BOOL)application:(UIApplication *)application
-    didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
+- (UINavigationController *)activeNavigationController
+{
+    UIViewController *root = self.window.rootViewController;
+    if ([root isKindOfClass:FFRootTabBarController.class])
+        return [(FFRootTabBarController *)root activeNavigationController];
+    return [root isKindOfClass:UINavigationController.class]
+        ? (UINavigationController *)root : nil;
+}
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
     FFLog(@"==== FuckFile launch ====");
     FFLog(@"build=%s %s", __DATE__, __TIME__);
-    FFLog(@"device=%@ iOS=%@ build=%@ bundle=%@ log=%@",
-        UIDevice.currentDevice.model,
-        UIDevice.currentDevice.systemVersion,
-        [NSProcessInfo processInfo].operatingSystemVersionString,
-        NSBundle.mainBundle.bundleIdentifier ?: @"nil",
-        FFLogPath());
+    FFLog(@"device=%@ iOS=%@ build=%@ bundle=%@ log=%@", UIDevice.currentDevice.model,
+        UIDevice.currentDevice.systemVersion, [NSProcessInfo processInfo].operatingSystemVersionString,
+        NSBundle.mainBundle.bundleIdentifier ?: @"nil", FFLogPath());
     FFLog(@"required MCM identity=com.apple.mobile.MobileHouseArrest match=%d",
-        [NSBundle.mainBundle.bundleIdentifier
-            isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
+        [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
 
     FFStorageRootPath();
-    if (!FFSystemAccessManager.sharedManager.enabled)
-        FFPrepareStorageRootForNormalMode();
+    if (!FFSystemAccessManager.sharedManager.enabled) FFPrepareStorageRootForNormalMode();
 
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     self.shareStreamInProgress = [self isShareStreamURL:incoming];
 
-    FFHomeViewController *root = [FFHomeViewController new];
-    UINavigationController *navigation = [[UINavigationController alloc]
-        initWithRootViewController:root];
-    navigation.navigationBar.translucent = NO;
-    navigation.navigationBar.prefersLargeTitles = NO;
-
+    FFRootTabBarController *shell = [FFRootTabBarController new];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.backgroundColor = UIColor.systemBackgroundColor;
-    self.window.rootViewController = navigation;
-    navigation.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.window.rootViewController = shell;
+    shell.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
     __weak typeof(self) weakSelf = self;
     [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
         if (!loaded) return;
-        if (!weakSelf.shareStreamInProgress)
-            [weakSelf processSharedInboxShowingResult:NO];
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:@"FFProbeFinished" object:nil];
+        if (!weakSelf.shareStreamInProgress) [weakSelf processSharedInboxShowingResult:NO];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"FFProbeFinished" object:nil];
+        UINavigationController *nav = [weakSelf activeNavigationController];
+        if ([nav.topViewController isKindOfClass:FFBrowserViewController.class])
+            [(FFBrowserViewController *)nav.topViewController reloadEntries];
     }];
 
-    // Do not race a freshly launched loopback transfer with class-4 recovery.
-    // The old ordering drained Extension Data before the share-stream listener
-    // was even created, which imported the same large file twice.
-    if (!self.shareStreamInProgress)
-        [self processSharedInboxShowingResult:NO];
-
+    if (!self.shareStreamInProgress) [self processSharedInboxShowingResult:NO];
     if (incoming) {
         FFLogTag(@"Import", @"launchOptions url=%@", incoming.absoluteString);
         if ([[incoming.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]])
             [self handleShareWakeURL:incoming];
-        else
-            [self importIncomingFileURL:incoming];
+        else [self importIncomingFileURL:incoming];
     }
     return YES;
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    if (!self.shareStreamInProgress)
-        [self processSharedInboxShowingResult:NO];
+    if (!self.shareStreamInProgress) [self processSharedInboxShowingResult:NO];
 }
 
-#pragma mark - Incoming URLs
-
-- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url
-        options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
+- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
     if ([[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]]) {
         FFLogTag(@"ShareInbox", @"wake URL received=%@", url.absoluteString);
-        [self handleShareWakeURL:url];
-        return YES;
+        [self handleShareWakeURL:url]; return YES;
     }
-
-    if (!url.isFileURL) {
-        FFLogTag(@"Import", @"reject non-file URL=%@", url.absoluteString);
-        return NO;
-    }
-
+    if (!url.isFileURL) { FFLogTag(@"Import", @"reject non-file URL=%@", url.absoluteString); return NO; }
     BOOL openInPlace = [options[UIApplicationOpenURLOptionsOpenInPlaceKey] boolValue];
     NSString *sourceApp = options[UIApplicationOpenURLOptionsSourceApplicationKey];
-    FFLogTag(@"Import", @"openURL file=%@ openInPlace=%d sourceApp=%@",
-        url.path, openInPlace, sourceApp ?: @"?");
+    FFLogTag(@"Import", @"openURL file=%@ openInPlace=%d sourceApp=%@", url.path, openInPlace, sourceApp ?: @"?");
     return [self importIncomingFileURL:url];
 }
 
 - (void)handleShareWakeURL:(NSURL *)url
 {
     if ([self isShareStreamURL:url]) {
-        NSURLComponents *components = [NSURLComponents componentsWithURL:url
-            resolvingAgainstBaseURL:NO];
-        NSString *token = nil;
-        NSUInteger count = 0;
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        NSString *token = nil; NSUInteger count = 0;
         for (NSURLQueryItem *item in components.queryItems ?: @[]) {
             if ([item.name isEqualToString:@"token"]) token = item.value;
             else if ([item.name isEqualToString:@"count"]) count = (NSUInteger)item.value.integerValue;
         }
-        if (!token.length) {
-            self.shareStreamInProgress = NO;
-            FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString);
-            return;
-        }
-
+        if (!token.length) { self.shareStreamInProgress = NO; FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString); return; }
         self.shareStreamInProgress = YES;
-        FFLogTag(@"ShareBridge", @"prepare loopback token=%@ count=%lu",
-            token, (unsigned long)count);
+        FFLogTag(@"ShareBridge", @"prepare loopback token=%@ count=%lu", token, (unsigned long)count);
         __weak typeof(self) weakSelf = self;
-        [[FFLocalShareBridgeServer sharedServer] prepareForToken:token expectedCount:count
-            completion:^(NSUInteger imported, NSArray<NSString *> *destinations,
-                         NSArray<NSError *> *errors) {
-                weakSelf.shareStreamInProgress = NO;
-                [weakSelf presentSharedBridgeResultImported:imported
-                    destinations:destinations errors:errors];
-            }];
+        [[FFLocalShareBridgeServer sharedServer] prepareForToken:token expectedCount:count completion:^(NSUInteger imported, NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
+            weakSelf.shareStreamInProgress = NO;
+            [weakSelf presentSharedBridgeResultImported:imported destinations:destinations errors:errors];
+        }];
         return;
     }
-
     [self processSharedInboxShowingResult:YES];
 }
 
-#pragma mark - File import
-
 - (void)pruneRecentImports
 {
-    NSDate *now = NSDate.date;
-    NSMutableArray<NSString *> *expired = [NSMutableArray array];
-    for (NSString *key in self.recentImports) {
-        if ([now timeIntervalSinceDate:self.recentImports[key]] >= kFFImportDedupTTL)
-            [expired addObject:key];
-    }
+    NSDate *now = NSDate.date; NSMutableArray<NSString *> *expired = [NSMutableArray array];
+    for (NSString *key in self.recentImports) if ([now timeIntervalSinceDate:self.recentImports[key]] >= kFFImportDedupTTL) [expired addObject:key];
     [self.recentImports removeObjectsForKeys:expired];
 }
 
@@ -175,183 +139,101 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 {
     if (!url || !url.isFileURL) return NO;
     NSString *key = url.absoluteString ?: url.path;
-
     @synchronized (self.inFlightImports) {
         [self pruneRecentImports];
-        if ([self.inFlightImports containsObject:key]) {
-            FFLogTag(@"Import", @"skip in-flight=%@", key);
-            return YES;
-        }
+        if ([self.inFlightImports containsObject:key]) { FFLogTag(@"Import", @"skip in-flight=%@", key); return YES; }
         NSDate *recent = self.recentImports[key];
-        if (recent && [NSDate.date timeIntervalSinceDate:recent] < kFFImportDedupTTL) {
-            FFLogTag(@"Import", @"skip recent success=%@", key);
-            return YES;
-        }
+        if (recent && [NSDate.date timeIntervalSinceDate:recent] < kFFImportDedupTTL) { FFLogTag(@"Import", @"skip recent success=%@", key); return YES; }
         [self.inFlightImports addObject:key];
     }
-
-    NSString *importedDirectory = FFImportedDirectoryPath();
-    NSError *mkdirError = nil;
-    if (![NSFileManager.defaultManager createDirectoryAtPath:importedDirectory
-        withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
-        @synchronized (self.inFlightImports) {
-            [self.inFlightImports removeObject:key];
-        }
-        [self presentImportFailure:mkdirError];
-        return NO;
+    NSString *importedDirectory = FFImportedDirectoryPath(); NSError *mkdirError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:importedDirectory withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+        @synchronized (self.inFlightImports) { [self.inFlightImports removeObject:key]; }
+        [self presentImportFailure:mkdirError]; return NO;
     }
-
     FFLogTag(@"Import", @"BEGIN source=%@", url.path);
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        FFImportResult *result = [FFImportService importURL:url
-            displayName:nil toDirectory:importedDirectory];
+        FFImportResult *result = [FFImportService importURL:url displayName:nil toDirectory:importedDirectory];
         dispatch_async(dispatch_get_main_queue(), ^{
-            typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            @synchronized (strongSelf.inFlightImports) {
-                [strongSelf.inFlightImports removeObject:key];
-                if (result.success) strongSelf.recentImports[key] = NSDate.date;
-            }
-            if (result.success)
-                [strongSelf presentImportSuccess:result.destinationPath];
-            else
-                [strongSelf presentImportFailure:result.error];
+            typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+            @synchronized (strongSelf.inFlightImports) { [strongSelf.inFlightImports removeObject:key]; if (result.success) strongSelf.recentImports[key] = NSDate.date; }
+            if (result.success) [strongSelf presentImportSuccess:result.destinationPath]; else [strongSelf presentImportFailure:result.error];
         });
     });
     return YES;
 }
 
-#pragma mark - Shared extension inbox
-
 - (void)processSharedInboxShowingResult:(BOOL)showResult
 {
-    if (self.shareStreamInProgress) {
-        FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active");
-        return;
-    }
-    [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported,
-        NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
+    if (self.shareStreamInProgress) { FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active"); return; }
+    [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported, NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
         if (imported == 0 && errors.count == 0) return;
-        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu",
-            (unsigned long)imported, (unsigned long)errors.count);
+        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu", (unsigned long)imported, (unsigned long)errors.count);
         if (!showResult && imported == 0) return;
         [self presentSharedBridgeResultImported:imported destinations:destinations errors:errors];
     }];
 }
 
-- (void)presentSharedBridgeResultImported:(NSUInteger)imported
-                              destinations:(NSArray<NSString *> *)destinations
-                                    errors:(NSArray<NSError *> *)errors
+- (void)presentSharedBridgeResultImported:(NSUInteger)imported destinations:(NSArray<NSString *> *)destinations errors:(NSArray<NSError *> *)errors
 {
     if (imported == 0 && errors.count == 0) return;
-    UINavigationController *navigation =
-        (UINavigationController *)self.window.rootViewController;
+    UINavigationController *navigation = [self activeNavigationController];
     UIViewController *top = navigation.topViewController ?: navigation;
     if (!top || [top isKindOfClass:UIAlertController.class]) return;
-
     NSString *message = nil;
-    if (imported > 0 && errors.count == 0) {
-        message = [NSString stringWithFormat:@"已导入 %lu 个共享文件。",
-            (unsigned long)imported];
-    } else if (imported > 0) {
-        message = [NSString stringWithFormat:@"已导入 %lu 个文件，%lu 个失败：%@",
-            (unsigned long)imported, (unsigned long)errors.count,
-            errors.firstObject.localizedDescription ?: @"未知错误"];
-    } else {
-        message = [NSString stringWithFormat:@"共享文件导入失败：%@",
-            errors.firstObject.localizedDescription ?: @"未知错误"];
-    }
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-        message:message preferredStyle:UIAlertControllerStyleAlert];
-    if (destinations.count) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
-            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                NSString *directory = destinations.firstObject.stringByDeletingLastPathComponent;
-                [self showImportedDirectory:directory navigationController:navigation];
-            }]];
-    }
-    [alert addAction:[UIAlertAction actionWithTitle:@"好"
-        style:UIAlertActionStyleCancel handler:nil]];
+    if (imported > 0 && errors.count == 0) message = [NSString stringWithFormat:@"已导入 %lu 个共享文件。", (unsigned long)imported];
+    else if (imported > 0) message = [NSString stringWithFormat:@"已导入 %lu 个文件，%lu 个失败：%@", (unsigned long)imported, (unsigned long)errors.count, errors.firstObject.localizedDescription ?: @"未知错误"];
+    else message = [NSString stringWithFormat:@"共享文件导入失败：%@", errors.firstObject.localizedDescription ?: @"未知错误"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件" message:message preferredStyle:UIAlertControllerStyleAlert];
+    if (destinations.count) [alert addAction:[UIAlertAction actionWithTitle:@"前往查看" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self showImportedDirectory:destinations.firstObject.stringByDeletingLastPathComponent navigationController:navigation];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
     [top presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - Imported-folder navigation
-
-- (void)showImportedDirectory:(NSString *)directory
-         navigationController:(UINavigationController *)navigation
+- (void)showImportedDirectory:(NSString *)directory navigationController:(UINavigationController *)navigation
 {
     if (!directory.length || !navigation) return;
-    NSString *target = directory.stringByStandardizingPath;
-    FFBrowserViewController *existing = nil;
-
+    NSString *target = directory.stringByStandardizingPath; FFBrowserViewController *existing = nil;
     for (UIViewController *controller in navigation.viewControllers) {
         if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
         FFBrowserViewController *browser = (FFBrowserViewController *)controller;
-        NSString *path = browser.currentPath.stringByStandardizingPath;
-        if ([path isEqualToString:target]) {
-            existing = browser;
-            break;
-        }
+        if ([browser.currentPath.stringByStandardizingPath isEqualToString:target]) { existing = browser; break; }
     }
-
     if (existing) {
-        FFLogTag(@"ImportUI", @"reuse Imported browser path=%@", target);
-        [existing reloadEntries];
-        if (navigation.topViewController != existing)
-            [navigation popToViewController:existing animated:YES];
-        return;
+        FFLogTag(@"ImportUI", @"reuse Imported browser path=%@", target); [existing reloadEntries];
+        if (navigation.topViewController != existing) [navigation popToViewController:existing animated:YES]; return;
     }
-
     FFLogTag(@"ImportUI", @"push Imported browser path=%@", target);
-    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
-        initWithPath:target];
-    browser.title = @"Imported";
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:target]; browser.title = @"Imported";
     [navigation pushViewController:browser animated:YES];
 }
 
-#pragma mark - Import result UI
-
 - (UIViewController *)topViewController
 {
-    UINavigationController *navigation =
-        (UINavigationController *)self.window.rootViewController;
+    UINavigationController *navigation = [self activeNavigationController];
     return navigation.topViewController ?: navigation;
 }
 
 - (void)presentImportFailure:(NSError *)error
 {
-    UIViewController *top = [self topViewController];
-    if (!top || [top isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-        message:[NSString stringWithFormat:@"导入失败：%@",
-            error.localizedDescription ?: @"无法读取来源文件"]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好"
-        style:UIAlertActionStyleCancel handler:nil]];
-    [top presentViewController:alert animated:YES completion:nil];
+    UIViewController *top = [self topViewController]; if (!top || [top isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件" message:[NSString stringWithFormat:@"导入失败：%@", error.localizedDescription ?: @"无法读取来源文件"] preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]]; [top presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)presentImportSuccess:(NSString *)destination
 {
     if (!destination.length) return;
-    UINavigationController *navigation =
-        (UINavigationController *)self.window.rootViewController;
-    UIViewController *top = navigation.topViewController ?: navigation;
-    if (!top || [top isKindOfClass:UIAlertController.class]) return;
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件"
-        message:[NSString stringWithFormat:@"已导入：\n%@", destination.lastPathComponent]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"前往查看"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [self showImportedDirectory:destination.stringByDeletingLastPathComponent
-                   navigationController:navigation];
-        }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好"
-        style:UIAlertActionStyleCancel handler:nil]];
-    [top presentViewController:alert animated:YES completion:nil];
+    UINavigationController *navigation = [self activeNavigationController];
+    UIViewController *top = navigation.topViewController ?: navigation; if (!top || [top isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件" message:[NSString stringWithFormat:@"已导入：\n%@", destination.lastPathComponent] preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"前往查看" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self showImportedDirectory:destination.stringByDeletingLastPathComponent navigationController:navigation];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]]; [top presentViewController:alert animated:YES completion:nil];
 }
 
 @end

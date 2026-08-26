@@ -15,11 +15,13 @@ DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null &&
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
+	src/FFRootTabBarController.m \
 	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
 	src/FFAppDataScanCoordinator+StructuralInventory.m \
 	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
+	src/FFAppDataScanToast.m \
 	src/FFAppDataRegistry.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \

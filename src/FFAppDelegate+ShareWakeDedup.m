@@ -18,25 +18,18 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         Method original = class_getInstanceMethod(self, NSSelectorFromString(@"handleShareWakeURL:"));
-        Method replacement = class_getInstanceMethod(self,
-            @selector(ff_handleShareWakeURLDeduplicated:));
-        if (original && replacement)
-            method_exchangeImplementations(original, replacement);
+        Method replacement = class_getInstanceMethod(self, @selector(ff_handleShareWakeURLDeduplicated:));
+        if (original && replacement) method_exchangeImplementations(original, replacement);
     });
 }
 
 - (void)ff_handleShareWakeURLDeduplicated:(NSURL *)url
 {
-    BOOL isShareStream =
-        [[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]] &&
+    BOOL isShareStream = [[url.scheme lowercaseString] isEqualToString:[FFShareWakeScheme lowercaseString]] &&
         [[url.host lowercaseString] isEqualToString:@"share-stream"];
-    if (!isShareStream) {
-        [self ff_handleShareWakeURLDeduplicated:url];
-        return;
-    }
+    if (!isShareStream) { [self ff_handleShareWakeURLDeduplicated:url]; return; }
 
-    NSURLComponents *components = [NSURLComponents componentsWithURL:url
-        resolvingAgainstBaseURL:NO];
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     NSString *token = nil;
     for (NSURLQueryItem *item in components.queryItems ?: @[]) {
         if ([item.name isEqualToString:@"token"]) {
@@ -44,13 +37,7 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
             break;
         }
     }
-
-    // Malformed URLs still go through the host implementation so its existing
-    // validation and logging remain authoritative.
-    if (!token.length) {
-        [self ff_handleShareWakeURLDeduplicated:url];
-        return;
-    }
+    if (!token.length) { [self ff_handleShareWakeURLDeduplicated:url]; return; }
 
     @synchronized (self) {
         NSMutableDictionary<NSString *, NSDate *> *handled =
@@ -77,11 +64,6 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
         handled[token] = now;
     }
 
-    // Cold launch can deliver the same custom URL once in launchOptions and
-    // again via application:openURL:. Without token-level deduplication each
-    // delivery starts another serial listener. The first listener imports the
-    // file successfully; the second has no client left and emits the misleading
-    // "等待分享扩展连接超时" alert five seconds later.
     [self ff_handleShareWakeURLDeduplicated:url];
 }
 
