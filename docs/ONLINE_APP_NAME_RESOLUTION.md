@@ -10,16 +10,96 @@ AppData 在 MobileHouseArrest 身份下能够确认第三方应用 Bundle ID，�
 
 不参与 App 枚举、MCM lease、安装状态判断或 AppData 权限判断。
 
-## 实现
+设计原则：Bundle ID 永远是技术身份与路径身份；在线名称只是可读显示层。即使目录名称失效、地区发生变化或第三方 App 下架，用户仍能看到真实 Bundle ID。
 
-实现入口：`FFOnlineAppNameResolver`。
+## 生命周期
 
-触发条件：
+`FFOnlineAppNameResolver` 自己管理完整生命周期，AppData 页面不启动网络：
 
-- 设置「在线补全 App 名称」开启（首次安装默认开启）；
-- AppData Registry 中条目已经存在；
-- Bundle ID 不是 `com.apple` / `com.apple.*`；
-- 当前显示名为空或仍与 Bundle ID 完全相同。
+```text
+高级系统访问关闭
+        ↓
+WaitingForSystemAccess（绝不联网）
+        │
+高级系统访问 Ready
+        ↓
+AppData 正在扫描 ─────→ WaitingForScan
+        │ 扫描完成
+        ↓
+读取稳定 Registry
+        ↓
+缓存 / 本地名称判定
+        ↓
+Resolving（显示进度）
+        ├─ 成功/明确无结果 → 继续
+        ├─ 断网/5xx/异常 → WaitingForRetry → 自动退避重试
+        └─ 429 → 60 秒后自动重试
+        ↓
+Idle
+```
+
+Resolver 在应用生命周期内观察：
+
+- 「在线补全 App 名称」偏好变化；
+- 高级系统访问偏好与 Ready/Failed 状态变化；
+- AppData 扫描状态变化；
+- AppData Registry 变化；
+- App 回到前台。
+
+因此进入/离开 AppData 页面不会决定网络任务是否运行，也不会导致重复请求。
+
+### 总闸门
+
+在线请求必须同时满足：
+
+1. 设置「在线补全 App 名称」开启；
+2. 「启用高级系统访问」开启；
+3. 高级系统访问状态已经 Ready；
+4. AppData 当前不在扫描；
+5. 不处于网络退避窗口。
+
+关闭高级系统访问会立即使在线阶段失去运行资格；用户的「在线补全」子偏好本身保留，下次高级访问重新可用时自动恢复。
+
+## 数据与优先级
+
+AppData Registry 只保存：
+
+- 可访问 Bundle ID；
+- 本地能够可靠取得的名称。
+
+在线名称不再写回 Registry，而是保存在 Resolver 自己的独立 overlay cache。显示优先级：
+
+```text
+本地可靠名称
+    ↓ 没有
+在线精确匹配缓存
+    ↓ 没有
+Bundle ID
+```
+
+这保证未来如果系统/容器 metadata 能拿到真实本地名称，本地名称自然覆盖在线结果；在线错误也不会污染 AppData 的底层 inventory。
+
+## AppData 列表显示
+
+有可读名称：
+
+```text
+微信
+com.tencent.xin · 用户 App 数据
+```
+
+没有可读名称：
+
+```text
+com.example.private
+用户 App 数据
+```
+
+系统 App 同理使用 `Bundle ID · 系统 App 数据`。不再在列表里显示「按需连接」；按需 materialize 属于实现细节，不占用用户最有价值的第二行信息。
+
+`FFEntry.name` 仍保持 Bundle ID，因此虚拟路径、materialize 与技术身份不受显示名变化影响。
+
+## 在线数据源
 
 数据源：Apple 公开 iTunes / App Store Lookup 目录。
 
@@ -41,31 +121,40 @@ AppData 在 MobileHouseArrest 身份下能够确认第三方应用 Bundle ID，�
 
 ## 缓存与失败策略
 
-- 成功结果：缓存 30 天；
-- 所有 storefront 都明确无结果：负缓存 24 小时；
+- 成功结果：30 天后需要后台刷新；旧的精确名称继续显示，采用 stale-while-revalidate，不因 TTL 到期突然退回 Bundle ID；
+- 所有 storefront 都以有效响应明确无结果：负缓存 24 小时；
+- 已有历史精确名称但本次所有 storefront 无结果：保留历史名称并刷新验证时间，兼容下架/地区变化；
 - 网络错误、非 2xx、JSON 结构异常：不写负缓存；
-- 所有 Lookup（含 storefront fallback）之间至少间隔 3.2 秒，主动控制在 Apple 文档给出的约 20 次/分钟限制以下；
-- HTTP 429：暂停新的在线查询 60 秒；
-- 在线失败：继续显示 Bundle ID，不影响 AppData 浏览和打开；
-- 页面加载不等待网络，在线补全始终异步执行；
-- 关闭开关或开始新请求后，旧网络回调通过 request generation 失效，不能污染后续解析状态。
+- 所有 Lookup（含 storefront fallback）之间至少间隔 3.2 秒，主动控制在 Apple 文档约 20 次/分钟的限制以下；
+- HTTP 429：60 秒后自动重试；
+- 其他临时网络失败：30/60/120/240/300 秒指数退避，成功后清零；
+- 关闭开关、关闭高级访问或 AppData 开始扫描时，当前请求立即失效；旧回调由 request generation 丢弃，不能污染新生命周期；
+- 在线失败永远不改变 AppData 的访问能力与 Bundle ID。
 
-Registry 使用批量升级接口 `upgradeFallbackDisplayNames:`，只允许把“空名称 / Bundle ID fallback”升级为真实名称。后续 AppData 重扫若再次只能得到 Bundle ID，不允许把已经补全的名称降级回 Bundle ID；如果以后本地来源取得非 fallback 名称，本地名称仍可覆盖在线结果。
+## 进度与反馈
+
+现有 AppData 扫描底部 toast 扩展为统一后台状态提示，避免多个浮层竞争：
+
+- AppData 扫描优先：`正在更新 App Data` + 扫描进度；
+- 在线阶段：`正在补全 App 名称 · x/y` + 确定进度条；
+- 完成：`App 名称已更新 · 已识别 n/total`；
+- 网络暂停：短暂提示 `App 名称补全暂停 · 稍后自动重试`。
+
+设置页「在线补全 App 名称」副标题同步显示：等待高级访问 / 等待扫描 / 正在补全 / 等待重试 / 已识别数量。
 
 ## 设置与隐私
 
-设置页「系统访问」分组增加：
+设置页「系统访问」分组：
 
-`在线补全 App 名称：开 / 关`
+- `启用高级系统访问`
+- `在线补全 App 名称`
 
-说明明确告知：开启后会把未命名第三方 App 的 Bundle ID 发送给 Apple App Store 公开目录。关闭后立即停止后续在线请求；已经成功补全的名称保留在本地 Registry，不回退成 Bundle ID。
+后者是前者的从属能力。高级系统访问关闭时，在线补全开关置灰并显示「需先开启高级系统访问」；偏好值保留。
 
-## 验证边界
-
-编译验证应至少覆盖 Resolver、Registry、AppData 虚拟浏览器和设置页四个改动单元，并检查 Resolver 已进入主目标 Makefile；完整发布仍以仓库现有 Theos 构建为最终门槛。在线目录不可用时不应阻塞或改变任何 AppData 访问结果。
+说明明确告知：开启后会把未命名第三方 App 的 Bundle ID 发送给 Apple App Store 公开目录。关闭在线补全后停止新请求；已经成功缓存的名称保留，不回退成 Bundle ID。
 
 ## 真机样本依据
 
 2026-08-26 真机日志：AppData Registry 共 240 个可访问条目，其中按当前产品规则分类为 47 个用户 App、193 个 `com.apple.*` 系统条目。对 47 个用户 Bundle ID 的外部核对中，约 89% 可由公开商店元数据直接确认名称；计入项目自身等可精确验证来源时约 91%。主要失败模式是私有、自签或已不可公开检索的 App 无结果，而不是 Bundle ID 错配。
 
-因此实现原则是“宁可不补，也不能猜错”：精确 Bundle ID 校验失败时一律保留原标识符。
+因此实现原则是：**宁可不补，也不能猜错；名称可以失败，Bundle ID 与 AppData 访问链不能被在线服务影响。**

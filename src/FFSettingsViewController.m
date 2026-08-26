@@ -4,7 +4,6 @@
 #import "FFFileAssociationsViewController.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
-#import "FFAppDataRegistry.h"
 #import "FFOnlineAppNameResolver.h"
 #import "FFThumbnailService.h"
 #import "FFLogger.h"
@@ -36,21 +35,28 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     [self reloadPreferences];
-    __weak typeof(self) weakSelf = self;
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFSystemAccessPreferenceDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            [weakSelf reloadPreferences];
-            [weakSelf.tableView reloadData];
-        }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            [weakSelf.tableView reloadData];
-        }];
+
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFSystemAccessPreferenceDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFAppDataScanStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFOnlineAppNameResolutionPreferenceDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFOnlineAppNameResolutionStateDidChangeNotification object:nil];
 }
 
 - (void)dealloc
 {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)settingsDependencyChanged:(NSNotification *)note
+{
+    (void)note;
+    [self reloadPreferences];
+    [self.tableView reloadData];
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -69,6 +75,48 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.foldersFirst = foldersFirst == nil ? YES : [foldersFirst boolValue];
     self.systemAccessEnabled = FFSystemAccessManager.sharedManager.enabled;
     self.onlineAppNamesEnabled = FFOnlineAppNameResolutionEnabled();
+}
+
+- (NSString *)onlineAppNameStatusText
+{
+    FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    FFOnlineAppNameResolver *resolver = FFOnlineAppNameResolver.sharedResolver;
+
+    if (!self.systemAccessEnabled) return @"需先开启高级系统访问";
+    if (!self.onlineAppNamesEnabled) return @"已关闭";
+    if (!access.ready) {
+        if (access.state == FFSystemAccessStateLoading) return @"等待高级系统访问就绪";
+        if (access.state == FFSystemAccessStateFailed) return @"高级系统访问不可用";
+        return @"等待高级系统访问就绪";
+    }
+
+    switch (resolver.state) {
+        case FFOnlineAppNameResolutionStateWaitingForScan:
+            return @"等待 App Data 扫描完成";
+        case FFOnlineAppNameResolutionStateResolving:
+            return [NSString stringWithFormat:@"正在补全 %lu/%lu · 已识别 %lu/%lu",
+                (unsigned long)resolver.passCompleted,
+                (unsigned long)resolver.passTotal,
+                (unsigned long)resolver.namedAppCount,
+                (unsigned long)resolver.userAppTotal];
+        case FFOnlineAppNameResolutionStateWaitingForRetry:
+            return @"网络暂不可用 · 将自动重试";
+        case FFOnlineAppNameResolutionStateDisabled:
+            return @"已关闭";
+        case FFOnlineAppNameResolutionStateWaitingForSystemAccess:
+            return @"等待高级系统访问就绪";
+        case FFOnlineAppNameResolutionStateIdle:
+        default:
+            if (resolver.userAppTotal > 0) {
+                if (resolver.namedAppCount >= resolver.userAppTotal)
+                    return [NSString stringWithFormat:@"已识别全部 %lu 个用户 App",
+                        (unsigned long)resolver.userAppTotal];
+                return [NSString stringWithFormat:@"已识别 %lu/%lu 个用户 App",
+                    (unsigned long)resolver.namedAppCount,
+                    (unsigned long)resolver.userAppTotal];
+            }
+            return @"用 Bundle ID 查询 Apple App Store 公开目录";
+    }
 }
 
 #pragma mark - Table view
@@ -105,7 +153,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 {
     if (section != 3) return nil;
     FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
-    NSString *onlineNote = @"在线补全仅查询非 Apple 的未命名 App，并把 Bundle ID 发送给 Apple App Store 公开目录；关闭后不再发起查询，已经补全的名称会保留。";
+    NSString *onlineNote = @"在线补全依赖高级系统访问：只有高级访问已开启并完成 App Data 扫描后才会联网。仅查询非 Apple 的未命名 App，并把 Bundle ID 发送给 Apple App Store 公开目录；关闭后停止新查询，已缓存名称保留。";
     NSString *accessNote = nil;
     if (access.state == FFSystemAccessStateFailed && access.failureReason.length) {
         accessNote = [NSString stringWithFormat:@"高级系统访问启用失败：%@\n本地文件管理仍可正常使用。", access.failureReason];
@@ -223,12 +271,18 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
                 cell.accessoryView = toggle;
             } else {
                 cell.textLabel.text = @"在线补全 App 名称";
-                cell.detailTextLabel.text = @"用 Bundle ID 查询 Apple App Store 公开目录";
+                cell.detailTextLabel.text = [self onlineAppNameStatusText];
                 cell.imageView.image = [UIImage systemImageNamed:@"text.magnifyingglass"];
                 UISwitch *toggle = [UISwitch new];
                 toggle.on = self.onlineAppNamesEnabled;
+                // This is a subordinate capability. Preserve its preference while
+                // Advanced System Access is off, but do not let it imply that it
+                // can run independently of the master access switch.
+                toggle.enabled = self.systemAccessEnabled;
                 [toggle addTarget:self action:@selector(onlineAppNamesChanged:) forControlEvents:UIControlEventValueChanged];
                 cell.accessoryView = toggle;
+                cell.textLabel.enabled = self.systemAccessEnabled;
+                cell.detailTextLabel.enabled = self.systemAccessEnabled;
             }
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             break;
@@ -360,10 +414,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.onlineAppNamesEnabled = toggle.on;
     FFSetOnlineAppNameResolutionEnabled(toggle.on);
     FFLogTag(@"AppNameOnline", @"preference enabled=%d", toggle.on);
-    if (toggle.on) {
-        [[FFOnlineAppNameResolver sharedResolver]
-            resolveMissingNamesInRegistry:FFAppDataRegistry.sharedRegistry];
-    }
+    [self.tableView reloadData];
 }
 
 - (void)systemAccessChanged:(UISwitch *)toggle

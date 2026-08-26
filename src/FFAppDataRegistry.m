@@ -104,18 +104,19 @@ static NSString *const kFFAppDataRegistryKey = @"FFAppDataVirtualRegistryV1";
     BOOL changed = NO;
     @synchronized (self) {
         NSString *previous = _entries[identifier];
+        BOOL previousResolved = previous.length > 0 && ![previous isEqualToString:identifier];
         BOOL incomingFallback = cleanName.length == 0 || [cleanName isEqualToString:identifier];
-        BOOL previousFallback = previous.length == 0 || [previous isEqualToString:identifier];
+
         if (!previous) {
             _entries[identifier] = cleanName.length ? cleanName : @"";
             changed = YES;
+        } else if (previousResolved && incomingFallback) {
+            // Local metadata availability can be transient. Never throw away a
+            // readable local name merely because a later scan fell back to the
+            // Bundle ID. Online names are not stored here at all.
         } else if (cleanName.length && ![previous isEqualToString:cleanName]) {
-            // Discovery frequently falls back to the raw Bundle ID. Never let a
-            // later rescan downgrade a name that has already been resolved.
-            if (!incomingFallback || previousFallback) {
-                _entries[identifier] = cleanName;
-                changed = YES;
-            }
+            _entries[identifier] = cleanName;
+            changed = YES;
         }
         if (changed) [self persistLocked];
     }
@@ -125,37 +126,6 @@ static NSString *const kFFAppDataRegistryKey = @"FFAppDataVirtualRegistryV1";
         [self publishChange];
     }
     return changed;
-}
-
-- (NSUInteger)upgradeFallbackDisplayNames:(NSDictionary<NSString *,NSString *> *)displayNames
-{
-    if (displayNames.count == 0) return 0;
-    NSMutableArray<NSString *> *changedIdentifiers = [NSMutableArray array];
-    @synchronized (self) {
-        [displayNames enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
-            (void)stop;
-            if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSString.class]) return;
-            NSString *identifier = key;
-            if (![self.class safeIdentifier:identifier]) return;
-            NSString *name = [value stringByTrimmingCharactersInSet:
-                NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            if (!name.length || [name isEqualToString:identifier]) return;
-
-            NSString *previous = self->_entries[identifier];
-            if (!previous) return; // Online metadata never creates inventory entries.
-            BOOL previousFallback = previous.length == 0 || [previous isEqualToString:identifier];
-            if (!previousFallback || [previous isEqualToString:name]) return;
-            self->_entries[identifier] = name;
-            [changedIdentifiers addObject:identifier];
-        }];
-        if (changedIdentifiers.count) [self persistLocked];
-    }
-    if (changedIdentifiers.count) {
-        FFLogTag(@"AppDataRegistry", @"upgraded fallback names count=%lu",
-            (unsigned long)changedIdentifiers.count);
-        [self publishChange];
-    }
-    return changedIdentifiers.count;
 }
 
 - (NSUInteger)removeIdentifiers:(NSArray<NSString *> *)identifiers

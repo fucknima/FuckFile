@@ -1,15 +1,17 @@
 #import <UIKit/UIKit.h>
 #import "FFAppDataScanCoordinator.h"
 #import "FFAppDataRegistry.h"
+#import "FFOnlineAppNameResolver.h"
 
-// AppData discovery is background state, not navigation state. Keep scan
-// feedback non-blocking and deliberately hide internal candidate counts: those
-// counts describe LaunchServices records, not a meaningful number of apps.
+// AppData discovery and online-name enrichment are one background lifecycle from
+// the user's point of view. Reuse one non-blocking bottom toast so scan and name
+// progress never compete for screen space. AppData scanning always has priority.
 @interface FFAppDataScanToast : NSObject
 @property(nonatomic, strong) UIVisualEffectView *toast;
 @property(nonatomic, strong) UILabel *label;
 @property(nonatomic, strong) UIProgressView *progressView;
 @property(nonatomic) BOOL wasScanning;
+@property(nonatomic) BOOL wasNameResolving;
 @property(nonatomic) NSUInteger generation;
 @property(nonatomic) NSTimeInterval lastProgressRender;
 @end
@@ -28,16 +30,18 @@
 {
     self = [super init];
     if (self) {
-        [[NSNotificationCenter defaultCenter] addObserver:self
-            selector:@selector(scanChanged:)
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        [center addObserver:self selector:@selector(scanChanged:)
             name:FFAppDataScanStateDidChangeNotification object:nil];
+        [center addObserver:self selector:@selector(onlineNameChanged:)
+            name:FFOnlineAppNameResolutionStateDidChangeNotification object:nil];
     }
     return self;
 }
 
 - (void)dealloc
 {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (UIWindow *)activeWindow
@@ -96,7 +100,7 @@
 {
     UIWindow *window = [self activeWindow];
     if (!window || !self.toast) return;
-    CGFloat width = MIN(CGRectGetWidth(window.bounds) - 56.0, 300.0);
+    CGFloat width = MIN(CGRectGetWidth(window.bounds) - 56.0, 320.0);
     CGFloat height = 54.0;
     CGFloat bottom = [self bottomClearanceInWindow:window];
     self.toast.frame = CGRectMake((CGRectGetWidth(window.bounds) - width) * 0.5,
@@ -105,12 +109,12 @@
     self.progressView.frame = CGRectMake(18, 36, width - 36, 3);
 }
 
-- (void)showScanningProgress:(float)progress
+- (void)showProgressText:(NSString *)text progress:(float)progress
 {
     [self ensureToast];
     if (!self.toast) return;
     self.generation++;
-    self.label.text = @"正在更新 App Data";
+    self.label.text = text;
     self.progressView.hidden = NO;
     [self.progressView setProgress:MAX(0.0f, MIN(1.0f, progress)) animated:YES];
     [self layoutToast];
@@ -119,19 +123,29 @@
     }
 }
 
-- (void)showCompletion
+- (void)showTransientText:(NSString *)text
 {
     [self ensureToast];
     if (!self.toast) return;
     self.generation++;
     NSUInteger generation = self.generation;
-    NSUInteger count = FFAppDataRegistry.sharedRegistry.identifiers.count;
-    self.label.text = [NSString stringWithFormat:@"App Data 已更新 · %lu 个可访问 App",
-        (unsigned long)count];
+    self.label.text = text;
     self.progressView.hidden = YES;
     [self layoutToast];
     [UIView animateWithDuration:0.18 animations:^{ self.toast.alpha = 1.0; }];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            if (generation != self.generation) return;
+            [UIView animateWithDuration:0.20 animations:^{ self.toast.alpha = 0.0; }];
+        });
+}
+
+- (void)hideSoon
+{
+    if (!self.toast || self.toast.alpha <= 0.0) return;
+    self.generation++;
+    NSUInteger generation = self.generation;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
             if (generation != self.generation) return;
             [UIView animateWithDuration:0.20 animations:^{ self.toast.alpha = 0.0; }];
@@ -151,12 +165,44 @@
         // progress-notification storm.
         if (!self.wasScanning || now - self.lastProgressRender >= 0.12 || rawProgress >= 1.0) {
             self.lastProgressRender = now;
-            [self showScanningProgress:(float)rawProgress];
+            [self showProgressText:@"正在更新 App Data" progress:(float)rawProgress];
         }
     } else if (self.wasScanning) {
-        [self showCompletion];
+        NSUInteger count = FFAppDataRegistry.sharedRegistry.identifiers.count;
+        [self showTransientText:[NSString stringWithFormat:@"App Data 已更新 · %lu 个可访问 App",
+            (unsigned long)count]];
     }
     self.wasScanning = scanning;
+}
+
+- (void)onlineNameChanged:(NSNotification *)note
+{
+    (void)note;
+    // The scan is the authoritative producer of the registry. Never cover its
+    // progress with the secondary name-enrichment phase.
+    if (FFAppDataScanCoordinator.sharedCoordinator.scanning) return;
+
+    FFOnlineAppNameResolver *resolver = FFOnlineAppNameResolver.sharedResolver;
+    FFOnlineAppNameResolutionState state = resolver.state;
+    BOOL resolving = state == FFOnlineAppNameResolutionStateResolving;
+
+    if (resolving) {
+        NSString *text = [NSString stringWithFormat:@"正在补全 App 名称 · %lu/%lu",
+            (unsigned long)resolver.passCompleted, (unsigned long)resolver.passTotal];
+        [self showProgressText:text progress:(float)resolver.progress];
+    } else if (state == FFOnlineAppNameResolutionStateWaitingForRetry && self.wasNameResolving) {
+        [self showTransientText:@"App 名称补全暂停 · 稍后自动重试"];
+    } else if (state == FFOnlineAppNameResolutionStateIdle && self.wasNameResolving) {
+        [self showTransientText:[NSString stringWithFormat:@"App 名称已更新 · 已识别 %lu/%lu",
+            (unsigned long)resolver.namedAppCount, (unsigned long)resolver.userAppTotal]];
+    } else if (self.wasNameResolving &&
+        (state == FFOnlineAppNameResolutionStateDisabled ||
+         state == FFOnlineAppNameResolutionStateWaitingForSystemAccess ||
+         state == FFOnlineAppNameResolutionStateWaitingForScan)) {
+        [self hideSoon];
+    }
+
+    self.wasNameResolving = resolving;
 }
 
 @end
