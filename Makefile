@@ -42,6 +42,7 @@ FuckFile_FILES = \
 	src/FFLocalShareBridgeServer.m \
 	src/MCMManager+ExtensionData.m \
 	src/MCMManager+MobileGestaltLink.m \
+	src/MCMManager+DiagnosticsPlacement.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
@@ -57,6 +58,7 @@ FuckFile_FILES = \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
 	src/FFFileTaskManager+Persistence.m \
+	src/FFFileTaskManager+Responsiveness.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFSearchViewController.m \
