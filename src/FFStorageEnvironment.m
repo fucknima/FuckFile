@@ -28,15 +28,16 @@ NSString *FFAppDataVirtualPath(void)
 
 NSArray<NSString *> *FFManagedSystemEntryNames(void)
 {
-    return @[@"AppData", @"App Data", @"ACCESS MAP.txt"];
+    return @[@"AppData", @"App Data", @"MobileGestalt", @"ACCESS MAP.txt"];
 }
 
 static BOOL FFIsManagedRootName(NSString *name)
 {
     if (!name.length) return NO;
     if ([FFManagedSystemEntryNames() containsObject:name]) return YES;
-    // MCM advanced probes are intentionally namespaced this way. Keep the
-    // predicate generic so future [MHA-*] links do not leak into normal mode.
+    // Legacy advanced probes used the [MHA-*] namespace. Keep recognising
+    // those names so stale links from older builds remain access-gated and can
+    // be removed safely during migration/normal-mode cleanup.
     return [name hasPrefix:@"[MHA-"];
 }
 
@@ -73,6 +74,14 @@ static void FFRemoveGeneratedSymlinksInDirectory(NSString *directory)
         [NSFileManager.defaultManager removeItemAtPath:directory error:nil];
 }
 
+static void FFRemoveGeneratedRootLink(NSString *root, NSString *name)
+{
+    NSString *path = [root stringByAppendingPathComponent:name];
+    struct stat st = {0};
+    if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode))
+        unlink(path.fileSystemRepresentation);
+}
+
 void FFPrepareStorageRootForNormalMode(void)
 {
     NSString *root = FFStorageRootPath();
@@ -82,15 +91,14 @@ void FFPrepareStorageRootForNormalMode(void)
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"AppData"]);
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"App Data"]);
 
-    // Root-level [MHA-*] entries are generated advanced-access symlinks too
-    // (for example MobileGestalt). They must not survive into normal mode.
+    // The current MobileGestalt shortcut uses the concise name. Older builds
+    // used [MHA-C12] MobileGestalt Cache; remove both when advanced access is
+    // disabled so no stale session lease survives across launches/modes.
+    FFRemoveGeneratedRootLink(root, @"MobileGestalt");
     for (NSString *name in [NSFileManager.defaultManager
             contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
         if (![name hasPrefix:@"[MHA-"]) continue;
-        NSString *path = [root stringByAppendingPathComponent:name];
-        struct stat st = {0};
-        if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode))
-            unlink(path.fileSystemRepresentation);
+        FFRemoveGeneratedRootLink(root, name);
     }
 
     NSString *map = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
