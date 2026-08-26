@@ -3,6 +3,25 @@
 #import <sys/stat.h>
 #import <unistd.h>
 
+static void FFMigrateLegacyDiagnosticMap(NSString *documents, NSString *root)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *oldPath = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+        NSString *newPath = [documents stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+        struct stat st = {0};
+        if (lstat(oldPath.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) return;
+        if (![fm fileExistsAtPath:newPath]) {
+            NSError *error = nil;
+            if ([fm moveItemAtPath:oldPath toPath:newPath error:&error]) return;
+        }
+        // If the parent already has a newer diagnostic map, the Device Storage
+        // copy is generated state and can be removed safely.
+        [fm removeItemAtPath:oldPath error:nil];
+    });
+}
+
 NSString *FFStorageRootPath(void)
 {
     NSString *documents = NSSearchPathForDirectoriesInDomains(
@@ -10,6 +29,7 @@ NSString *FFStorageRootPath(void)
     NSString *root = [documents stringByAppendingPathComponent:@"Device Storage"];
     [NSFileManager.defaultManager createDirectoryAtPath:root
         withIntermediateDirectories:YES attributes:nil error:nil];
+    FFMigrateLegacyDiagnosticMap(documents, root);
     return root;
 }
 
@@ -28,15 +48,15 @@ NSString *FFAppDataVirtualPath(void)
 
 NSArray<NSString *> *FFManagedSystemEntryNames(void)
 {
-    return @[@"AppData", @"App Data", @"ACCESS MAP.txt"];
+    // ACCESS MAP.txt remains listed only for legacy safety. New builds place it
+    // one level above Device Storage and never expose it as normal user content.
+    return @[@"AppData", @"App Data", @"MobileGestalt", @"ACCESS MAP.txt"];
 }
 
 static BOOL FFIsManagedRootName(NSString *name)
 {
     if (!name.length) return NO;
     if ([FFManagedSystemEntryNames() containsObject:name]) return YES;
-    // MCM advanced probes are intentionally namespaced this way. Keep the
-    // predicate generic so future [MHA-*] links do not leak into normal mode.
     return [name hasPrefix:@"[MHA-"];
 }
 
@@ -73,26 +93,29 @@ static void FFRemoveGeneratedSymlinksInDirectory(NSString *directory)
         [NSFileManager.defaultManager removeItemAtPath:directory error:nil];
 }
 
+static void FFRemoveGeneratedRootLink(NSString *root, NSString *name)
+{
+    NSString *path = [root stringByAppendingPathComponent:name];
+    struct stat st = {0};
+    if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode))
+        unlink(path.fileSystemRepresentation);
+}
+
 void FFPrepareStorageRootForNormalMode(void)
 {
     NSString *root = FFStorageRootPath();
-    // AppData/App Data are generated containers populated with symlinks. Remove
-    // only generated symlinks and delete the directory only if it becomes empty;
-    // never delete a real user-created file or directory tree.
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"AppData"]);
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"App Data"]);
 
-    // Root-level [MHA-*] entries are generated advanced-access symlinks too
-    // (for example MobileGestalt). They must not survive into normal mode.
+    FFRemoveGeneratedRootLink(root, @"MobileGestalt");
     for (NSString *name in [NSFileManager.defaultManager
             contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
         if (![name hasPrefix:@"[MHA-"]) continue;
-        NSString *path = [root stringByAppendingPathComponent:name];
-        struct stat st = {0};
-        if (lstat(path.fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode))
-            unlink(path.fileSystemRepresentation);
+        FFRemoveGeneratedRootLink(root, name);
     }
 
+    // Legacy cleanup only. Current builds relocate ACCESS MAP.txt to Documents
+    // immediately after it is generated.
     NSString *map = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
     struct stat st = {0};
     if (lstat(map.fileSystemRepresentation, &st) == 0 && S_ISREG(st.st_mode))

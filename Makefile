@@ -19,6 +19,7 @@ FuckFile_FILES = \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
 	src/FFAppDataScanCoordinator+StructuralInventory.m \
+	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
 	src/FFAppDataRegistry.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
@@ -40,6 +41,8 @@ FuckFile_FILES = \
 	src/FFSharedInboxService.m \
 	src/FFLocalShareBridgeServer.m \
 	src/MCMManager+ExtensionData.m \
+	src/MCMManager+MobileGestaltLink.m \
+	src/MCMManager+DiagnosticsPlacement.m \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
@@ -55,6 +58,7 @@ FuckFile_FILES = \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
 	src/FFFileTaskManager+Persistence.m \
+	src/FFFileTaskManager+Responsiveness.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFSearchViewController.m \
