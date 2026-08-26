@@ -23,6 +23,7 @@ FuckFile_FILES = \
 	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
 	src/FFAppDataScanToast.m \
 	src/FFAppDataRegistry.m \
+	src/FFOnlineAppNameResolver.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
 	src/FFAppDataVirtualBrowser.m \
