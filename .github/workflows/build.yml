@@ -69,9 +69,6 @@ jobs:
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
 
-      - name: Office host JavaScript syntax
-        run: node --check resources/office/office-host.js
-
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
           xcrun --sdk iphoneos clang -fobjc-arc -c -x objective-c-header \
@@ -83,14 +80,6 @@ jobs:
           set -euo pipefail
           export THEOS=/opt/theos
           make clean
-          # Important: generate OfficeAssets before the real `make` process
-          # parses Theos resource variables. Generating them from before-all is
-          # too late for resource-file discovery on this pinned Theos version.
-          bash scripts/prepare_office_runtime.sh
-          test -s .office-runtime/OfficeAssets/index.html
-          test -s .office-runtime/OfficeAssets/docx-preview.min.js
-          test -s .office-runtime/OfficeAssets/pptx-renderer.browser.es.js
-          test -s .office-runtime/OfficeAssets/xlsx.full.min.js
           make
 
       - name: Package unsigned IPA
@@ -149,19 +138,6 @@ jobs:
           done
           test -f "$APP/Languages/c/highlights.scm"
 
-          # Defensive final packaging copy. The Office viewer refuses to start
-          # without index.html, so never publish an IPA where the generated
-          # runtime silently disappeared from Theos' app bundle.
-          if [ ! -s "$APP/OfficeAssets/index.html" ]; then
-            echo "OfficeAssets missing from Theos bundle; injecting generated runtime"
-            rm -rf "$APP/OfficeAssets"
-            ditto .office-runtime/OfficeAssets "$APP/OfficeAssets"
-          fi
-          for file in index.html office-host.js office.css jszip.min.js docx-preview.min.js pptx-renderer.browser.es.js xlsx.full.min.js NOTICE.txt; do
-            test -s "$APP/OfficeAssets/$file" || { echo "ERROR: missing packaged Office asset: $file"; exit 1; }
-          done
-          echo "Office runtime packaged: $(du -sh "$APP/OfficeAssets" | awk '{print $1}')"
-
           rm -rf "$APP/PlugIns/FuckFileShare.appex"
           mkdir -p "$APP/PlugIns"
           ditto "$EXT_BUILD" "$APP/PlugIns/FuckFileShare.appex"
@@ -193,10 +169,6 @@ jobs:
           zip -qry "$IPA_NAME" Payload
           test -f "$IPA_NAME"
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/index.html'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/docx-preview.min.js'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/pptx-renderer.browser.es.js'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/xlsx.full.min.js'
           echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
       - name: Upload build ${{ env.BUILD_NUMBER }}
