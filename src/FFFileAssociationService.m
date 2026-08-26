@@ -48,8 +48,23 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"zip": @"archive", @"tar": @"archive", @"tar.gz": @"archive",
             @"gz": @"archive", @"7z": @"archive", @"rar": @"archive",
             @"xz": @"archive", @"bz2": @"archive",
-            // PDF 阅读器
-            @"pdf": @"pdf",
+
+            // 系统 Quick Look：工作常用文档只查看，不重复实现 Office/PDF 渲染器。
+            @"pdf": @"quicklook",
+            @"doc": @"quicklook", @"docx": @"quicklook", @"docm": @"quicklook",
+            @"dot": @"quicklook", @"dotx": @"quicklook", @"dotm": @"quicklook",
+            @"rtf": @"quicklook", @"rtfd": @"quicklook",
+            @"xls": @"quicklook", @"xlsx": @"quicklook", @"xlsm": @"quicklook",
+            @"xlsb": @"quicklook", @"xlt": @"quicklook", @"xltx": @"quicklook",
+            @"xltm": @"quicklook", @"csv": @"quicklook", @"tsv": @"quicklook",
+            @"ppt": @"quicklook", @"pptx": @"quicklook", @"pptm": @"quicklook",
+            @"pps": @"quicklook", @"ppsx": @"quicklook", @"ppsm": @"quicklook",
+            @"pot": @"quicklook", @"potx": @"quicklook", @"potm": @"quicklook",
+            @"pages": @"quicklook", @"numbers": @"quicklook", @"key": @"quicklook",
+            @"odt": @"quicklook", @"ods": @"quicklook", @"odp": @"quicklook",
+            @"fods": @"quicklook", @"wps": @"quicklook", @"et": @"quicklook",
+            @"dps": @"quicklook", @"dif": @"quicklook", @"dbf": @"quicklook",
+            @"slk": @"quicklook", @"sylk": @"quicklook",
         };
     });
     return table;
