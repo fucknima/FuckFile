@@ -56,6 +56,7 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
     FFAppDataRegistry *_activeRegistry;
     NSURLSessionDataTask *_activeTask;
     NSUInteger _activeIndex;
+    NSUInteger _requestGeneration;
     BOOL _running;
     BOOL _rerunRequested;
     BOOL _cancelled;
@@ -180,6 +181,7 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
     dispatch_async(_queue, ^{
         self->_cancelled = YES;
         self->_rerunRequested = NO;
+        self->_requestGeneration++;
         [self->_activeTask cancel];
         self->_activeTask = nil;
         [self flushResolvedNames];
@@ -316,14 +318,19 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"GET";
     request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    NSUInteger requestGeneration = ++_requestGeneration;
     __weak typeof(self) weakSelf = self;
-    __block NSURLSessionDataTask *task = nil;
-    task = [_session dataTaskWithRequest:request
+    NSURLSessionDataTask *task = [_session dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             __strong typeof(weakSelf) self = weakSelf;
             if (!self) return;
             dispatch_async(self->_queue, ^{
-                if (self->_activeTask == task) self->_activeTask = nil;
+                // A cancelled/replaced request must never mutate the state of a
+                // newer pass. Generation comparison avoids capturing the task
+                // itself from its completion block and therefore avoids a retain
+                // cycle while still providing exact stale-callback suppression.
+                if (requestGeneration != self->_requestGeneration) return;
+                self->_activeTask = nil;
                 if (self->_cancelled || !FFOnlineAppNameResolutionEnabled()) {
                     completion(nil, nil, NO, NO);
                     return;
