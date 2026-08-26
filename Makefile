@@ -21,6 +21,7 @@ FuckFile_FILES = \
 	src/FFAppDataScanCoordinator.m \
 	src/FFAppDataScanCoordinator+StructuralInventory.m \
 	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
+	src/FFAppDataScanToast.m \
 	src/FFAppDataRegistry.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
