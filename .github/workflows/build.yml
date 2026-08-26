@@ -3,15 +3,14 @@ name: build-unsigned-ipa
 on:
   push:
     branches:
-      - '**'
-      - '!build-counter'
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Every code push enters a single numbered-build lane. New commits cancel stale
-# runs; cancelled/failed runs never advance the successful-build counter.
+# Only main pushes build automatically. Feature/other branches are built manually
+# with Run workflow. Cancelled/failed runs never advance the successful-build counter.
 concurrency:
   group: fuckfile-numbered-build
   cancel-in-progress: true
