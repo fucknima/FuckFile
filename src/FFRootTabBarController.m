@@ -3,12 +3,10 @@
 #import "FFBookmarksViewController.h"
 #import "FFTasksViewController.h"
 #import "FFSettingsViewController.h"
-#import "FFSearchViewController.h"
 #import "FFStorageEnvironment.h"
+#import "FFFileTaskManager.h"
 
 @interface FFRootTabBarController () <UITabBarControllerDelegate>
-@property(nonatomic, strong) UIVisualEffectView *searchChrome;
-@property(nonatomic, strong) UIButton *searchButton;
 @end
 
 @implementation FFRootTabBarController
@@ -55,70 +53,32 @@
     self.tabBar.standardAppearance = appearance;
     if (@available(iOS 15.0, *)) self.tabBar.scrollEdgeAppearance = appearance;
 
-    [self installSearchChrome];
-    [self updateSearchClearance];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(fileTasksChanged:)
+        name:FFFileTaskManagerDidChangeNotification object:nil];
+    [self updateTaskBadge];
 }
 
-- (void)installSearchChrome
+- (void)dealloc
 {
-    UIBlurEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
-    self.searchChrome = [[UIVisualEffectView alloc] initWithEffect:effect];
-    self.searchChrome.translatesAutoresizingMaskIntoConstraints = NO;
-    self.searchChrome.layer.cornerRadius = 22.0;
-    self.searchChrome.layer.cornerCurve = kCACornerCurveContinuous;
-    self.searchChrome.clipsToBounds = YES;
-
-    self.searchButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.searchButton.translatesAutoresizingMaskIntoConstraints = NO;
-    self.searchButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    self.searchButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightRegular];
-    self.searchButton.tintColor = UIColor.secondaryLabelColor;
-    [self.searchButton setTitleColor:UIColor.secondaryLabelColor forState:UIControlStateNormal];
-    [self.searchButton setImage:[UIImage systemImageNamed:@"magnifyingglass"] forState:UIControlStateNormal];
-    [self.searchButton setTitle:@"  搜索文件与 App Data" forState:UIControlStateNormal];
-    self.searchButton.accessibilityLabel = @"全局搜索";
-    [self.searchButton addTarget:self action:@selector(searchTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    [self.searchChrome.contentView addSubview:self.searchButton];
-    [self.view addSubview:self.searchChrome];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [self.searchChrome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [self.searchChrome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [self.searchChrome.bottomAnchor constraintEqualToAnchor:self.tabBar.topAnchor constant:-10],
-        [self.searchChrome.heightAnchor constraintEqualToConstant:44],
-        [self.searchButton.leadingAnchor constraintEqualToAnchor:self.searchChrome.contentView.leadingAnchor constant:14],
-        [self.searchButton.trailingAnchor constraintEqualToAnchor:self.searchChrome.contentView.trailingAnchor constant:-10],
-        [self.searchButton.topAnchor constraintEqualToAnchor:self.searchChrome.contentView.topAnchor],
-        [self.searchButton.bottomAnchor constraintEqualToAnchor:self.searchChrome.contentView.bottomAnchor],
-    ]];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)viewDidLayoutSubviews
+- (void)fileTasksChanged:(NSNotification *)note
 {
-    [super viewDidLayoutSubviews];
-    [self.view bringSubviewToFront:self.searchChrome];
-    [self updateSearchClearance];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self updateTaskBadge]; });
 }
 
-- (void)updateSearchClearance
+- (void)updateTaskBadge
 {
-    // Tab bar already reserves its own height. This extra inset reserves only
-    // the floating search pill + gap, keeping lists/grids tappable behind it.
-    CGFloat extra = 64.0;
-    for (UIViewController *controller in self.viewControllers) {
-        controller.additionalSafeAreaInsets = UIEdgeInsetsMake(0, 0, extra, 0);
+    if (self.viewControllers.count <= 3) return;
+    NSUInteger active = 0;
+    for (FFFileTask *task in FFFileTaskManager.sharedManager.tasks) {
+        if (task.state == FFFileTaskStateQueued || task.state == FFFileTaskStateRunning) active++;
     }
-}
-
-- (void)searchTapped
-{
-    UINavigationController *nav = [self activeNavigationController];
-    if (!nav) return;
-    if ([nav.topViewController isKindOfClass:FFSearchViewController.class]) return;
-    FFSearchViewController *search = [FFSearchViewController new];
-    search.title = @"搜索";
-    [nav pushViewController:search animated:YES];
+    UITabBarItem *item = self.viewControllers[3].tabBarItem;
+    item.badgeValue = active > 0 ? [NSString stringWithFormat:@"%lu", (unsigned long)active] : nil;
+    item.accessibilityValue = active > 0
+        ? [NSString stringWithFormat:@"%lu 个任务进行中", (unsigned long)active] : nil;
 }
 
 - (UINavigationController *)activeNavigationController
