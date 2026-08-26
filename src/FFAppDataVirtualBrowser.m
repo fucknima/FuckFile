@@ -3,6 +3,7 @@
 #import "FFAppDataVirtualPath.h"
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
+#import "FFOnlineAppNameResolver.h"
 #import "FFAppNames.h"
 #import "FFLogger.h"
 
@@ -72,8 +73,7 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
 
         Method originalOpen = class_getInstanceMethod(cls,
             @selector(openItemAtPath:title:navigationController:completion:));
-        Method virtualOpen = class_getInstanceMethod(cls,
-            @selector(ff_appData_openItemAtPath:title:navigationController:completion:));
+        Method virtualOpen = class_getInstanceMethod(cls, @selector(ff_appData_openItemAtPath:title:navigationController:completion:));
         if (originalOpen && virtualOpen) method_exchangeImplementations(originalOpen, virtualOpen);
 
         Method originalViewDidLoad = class_getInstanceMethod(cls, @selector(viewDidLoad));
@@ -126,6 +126,10 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
 
         FFAppDataRegistry *registry = FFAppDataRegistry.sharedRegistry;
         [registry prepareVirtualRootAndMigrateLegacyLinks];
+        // This call only queues best-effort work. Directory loading stays purely
+        // local and returns immediately; cached/online names arrive through the
+        // registry's existing change notification and refresh the list in place.
+        [[FFOnlineAppNameResolver sharedResolver] resolveMissingNamesInRegistry:registry];
         [self setValue:nil forKey:@"loadError"];
 
         FFAppDataFilterMode filterMode = FFCurrentAppDataFilterMode();
