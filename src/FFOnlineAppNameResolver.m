@@ -15,7 +15,10 @@ static NSString *const kFFOnlineAppNameCacheMissing = @"Missing";
 
 static const NSTimeInterval kFFOnlineAppNamePositiveTTL = 30.0 * 24.0 * 60.0 * 60.0;
 static const NSTimeInterval kFFOnlineAppNameNegativeTTL = 24.0 * 60.0 * 60.0;
-static const NSTimeInterval kFFOnlineAppNameRequestSpacing = 0.75;
+// Apple's public iTunes Search API documents an approximate 20 calls/minute
+// limit. 3.2 seconds keeps FuckFile below that ceiling (~18.75/minute) even
+// when one Bundle ID has to fall through several storefronts.
+static const NSTimeInterval kFFOnlineAppNameRequestSpacing = 3.2;
 static const NSUInteger kFFOnlineAppNameApplyBatchSize = 5;
 
 BOOL FFOnlineAppNameResolutionEnabled(void)
@@ -396,7 +399,8 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
                 }
 
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                    (int64_t)(0.25 * NSEC_PER_SEC)), self->_queue, ^{
+                    (int64_t)(kFFOnlineAppNameRequestSpacing * NSEC_PER_SEC)),
+                    self->_queue, ^{
                     [self lookupIdentifier:identifier storefronts:storefronts
                                      index:index + 1 completion:completion];
                 });
