@@ -255,6 +255,7 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
                 }
                 if (rateLimited) {
                     self->_backoffUntil = NSDate.date.timeIntervalSince1970 + 60.0;
+                    self->_rerunRequested = NO;
                     FFLogTag(@"AppNameOnline", @"rate limited; pause new lookups for 60s");
                     [self flushResolvedNames];
                     [self finishPass];
@@ -316,7 +317,8 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
     request.HTTPMethod = @"GET";
     request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [_session dataTaskWithRequest:request
+    __block NSURLSessionDataTask *task = nil;
+    task = [_session dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             __strong typeof(weakSelf) self = weakSelf;
             if (!self) return;
@@ -415,7 +417,8 @@ static BOOL FFOnlineAppNameIsAppleIdentifier(NSString *identifier)
     _activeRegistry = nil;
     _activeIndex = 0;
     _running = NO;
-    BOOL rerun = _rerunRequested && !_cancelled && FFOnlineAppNameResolutionEnabled();
+    BOOL rerun = _rerunRequested && !_cancelled && FFOnlineAppNameResolutionEnabled() &&
+        NSDate.date.timeIntervalSince1970 >= _backoffUntil;
     _rerunRequested = NO;
     if (rerun) {
         // A registry update landed while the pass was active (for example the
