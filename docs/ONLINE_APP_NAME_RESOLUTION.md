@@ -162,3 +162,5 @@ com.example.private
 ## 发布门槛
 
 该功能只有在仓库原有 `build.yml` 完整通过 Theos 编译、Share Extension 打包、签名校验和 IPA 产物检查后才视为可真机验证；不以静态阅读或临时 CI 代替正式构建。
+
+交付的 IPA 必须由当前功能分支 HEAD 直接构建；旧 SHA 的成功 artifact 不可替代当前 HEAD 的验证与交付。
