@@ -17,9 +17,17 @@ FOUNDATION_EXPORT NSNotificationName const FFAppDataRegistryDidChangeNotificatio
 - (nullable NSString *)displayNameForIdentifier:(NSString *)identifier;
 - (BOOL)containsIdentifier:(NSString *)identifier;
 
-// Returns YES when the registry changed.
+// Returns YES when the registry changed. A fallback display name that is equal
+// to the Bundle ID never replaces an already resolved, non-fallback name.
 - (BOOL)registerIdentifier:(NSString *)identifier
                displayName:(nullable NSString *)displayName;
+
+// Upgrades only entries whose current display name is empty or still equal to
+// the Bundle ID. This is used by best-effort external name resolvers so they can
+// never overwrite a name obtained from an authoritative local source. Changes
+// are persisted and published as one batch.
+- (NSUInteger)upgradeFallbackDisplayNames:
+    (NSDictionary<NSString *, NSString *> *)displayNames;
 
 // Removes identifiers that have been positively reconciled as no longer
 // installed. The operation is batched so UI observers receive one refresh.
