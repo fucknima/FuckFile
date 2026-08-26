@@ -6,7 +6,6 @@
 #import "FFAppNames.h"
 #import "FFLogger.h"
 
-#import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
 
@@ -24,8 +23,7 @@ typedef NS_ENUM(NSInteger, FFAppDataFilterMode) {
 };
 
 typedef NS_ENUM(NSInteger, FFAppDataApplicationKind) {
-    FFAppDataApplicationKindUnknown = 0,
-    FFAppDataApplicationKindUser,
+    FFAppDataApplicationKindUser = 1,
     FFAppDataApplicationKindSystem,
 };
 
@@ -47,53 +45,18 @@ static FFAppDataFilterMode FFCurrentAppDataFilterMode(void)
     return (FFAppDataFilterMode)value;
 }
 
-// LaunchServices already owns the authoritative System/User distinction.  Use
-// LSApplicationProxy dynamically so FuckFile does not duplicate that policy or
-// misclassify apps merely because their bundle identifier starts with com.apple.
+// For this AppData browser the practical split is intentionally based on the
+// bundle identifier namespace. iOS exposes many internal/system services whose
+// LaunchServices applicationType is not "System", so relying on that property
+// leaves most Apple components in the user bucket. Treat the com.apple.*
+// namespace as System and everything else as User. This classification is only
+// for presentation/filtering; it never changes discovery, leases or access.
 static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identifier)
 {
-    if (!identifier.length) return FFAppDataApplicationKindUnknown;
-
-    static NSMutableDictionary<NSString *, NSNumber *> *cache;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ cache = [NSMutableDictionary dictionary]; });
-
-    @synchronized (cache) {
-        NSNumber *cached = cache[identifier];
-        if (cached) return (FFAppDataApplicationKind)cached.integerValue;
-    }
-
-    FFAppDataApplicationKind kind = FFAppDataApplicationKindUnknown;
-    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
-    SEL factory = NSSelectorFromString(@"applicationProxyForIdentifier:");
-    if (proxyClass && [proxyClass respondsToSelector:factory]) {
-        id proxy = ((id (*)(id, SEL, id))objc_msgSend)((id)proxyClass, factory, identifier);
-        SEL typeSelector = NSSelectorFromString(@"applicationType");
-        if (proxy && [proxy respondsToSelector:typeSelector]) {
-            id value = ((id (*)(id, SEL))objc_msgSend)(proxy, typeSelector);
-            if ([value isKindOfClass:NSString.class]) {
-                NSString *type = (NSString *)value;
-                if ([type caseInsensitiveCompare:@"System"] == NSOrderedSame)
-                    kind = FFAppDataApplicationKindSystem;
-                else if ([type caseInsensitiveCompare:@"User"] == NSOrderedSame)
-                    kind = FFAppDataApplicationKindUser;
-            }
-        }
-
-        // Older/newer LaunchServices builds may omit applicationType while still
-        // exposing this boolean.  It is a structural fallback, not a bundle-ID
-        // naming heuristic.
-        if (kind == FFAppDataApplicationKindUnknown && proxy) {
-            SEL systemSelector = NSSelectorFromString(@"isSystemOrInternalApp");
-            if ([proxy respondsToSelector:systemSelector]) {
-                BOOL system = ((BOOL (*)(id, SEL))objc_msgSend)(proxy, systemSelector);
-                kind = system ? FFAppDataApplicationKindSystem : FFAppDataApplicationKindUser;
-            }
-        }
-    }
-
-    @synchronized (cache) { cache[identifier] = @(kind); }
-    return kind;
+    if (!identifier.length) return FFAppDataApplicationKindUser;
+    NSString *lower = identifier.lowercaseString;
+    BOOL apple = [lower isEqualToString:@"com.apple"] || [lower hasPrefix:@"com.apple."];
+    return apple ? FFAppDataApplicationKindSystem : FFAppDataApplicationKindUser;
 }
 
 @implementation FFBrowserViewController (FFAppDataVirtualBrowser)
@@ -162,18 +125,13 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
         NSMutableArray<FFEntry *> *items = [NSMutableArray array];
         NSUInteger userCount = 0;
         NSUInteger systemCount = 0;
-        NSUInteger unknownCount = 0;
 
         for (NSString *identifier in registry.identifiers) {
             FFAppDataApplicationKind kind = FFApplicationKindForIdentifier(identifier);
             if (kind == FFAppDataApplicationKindSystem) systemCount++;
-            else if (kind == FFAppDataApplicationKindUser) userCount++;
-            else unknownCount++;
+            else userCount++;
 
-            // Unknown records stay with the user-facing set instead of being
-            // silently hidden. Only positively confirmed System records enter
-            // the System filter.
-            if (filterMode == FFAppDataFilterModeUser && kind == FFAppDataApplicationKindSystem)
+            if (filterMode == FFAppDataFilterModeUser && kind != FFAppDataApplicationKindUser)
                 continue;
             if (filterMode == FFAppDataFilterModeSystem && kind != FFAppDataApplicationKindSystem)
                 continue;
@@ -186,12 +144,9 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
             item.isSymlink = NO;
             item.isAppContainer = YES;
             item.containerIdentifier = identifier;
-            if (kind == FFAppDataApplicationKindSystem)
-                item.detail = @"系统 App 数据 · 按需连接";
-            else if (kind == FFAppDataApplicationKindUser)
-                item.detail = @"用户 App 数据 · 按需连接";
-            else
-                item.detail = @"App 数据 · 按需连接";
+            item.detail = (kind == FFAppDataApplicationKindSystem)
+                ? @"系统 App 数据 · 按需连接"
+                : @"用户 App 数据 · 按需连接";
             item.fullDetail = item.detail;
 
             // Do not acquire a lease just to sort. If this app is already
@@ -238,9 +193,9 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
                 comparison = [left.name compare:right.name options:NSNumericSearch];
             return descending ? -comparison : comparison;
         }];
-        FFLogTag(@"AppDataVirtual", @"root filter=%ld visible=%lu user=%lu system=%lu unknown=%lu sort=%ld descending=%d",
+        FFLogTag(@"AppDataVirtual", @"root filter=%ld visible=%lu user=%lu system=%lu sort=%ld descending=%d",
             (long)filterMode, (unsigned long)items.count, (unsigned long)userCount,
-            (unsigned long)systemCount, (unsigned long)unknownCount, (long)sortMode, descending);
+            (unsigned long)systemCount, (long)sortMode, descending);
         return items;
     }
 
