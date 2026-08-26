@@ -1,0 +1,54 @@
+name: appdata-name-compile-check
+
+on:
+  push:
+    branches:
+      - feature/appdata-app-name-resolution
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt/theos
+          sudo chown "$(whoami)" /opt/theos
+          git clone --recursive https://github.com/theos/theos.git /opt/theos
+          cd /opt/theos
+          git checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
+          git submodule update --init --recursive
+          curl -fL -o /tmp/ldid \
+            https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_macosx_arm64
+          chmod +x /tmp/ldid
+          sudo mv /tmp/ldid /usr/local/bin/ldid
+
+      - name: Self-check core logic
+        run: |
+          clang -fobjc-arc -framework Foundation -lz -I src \
+            tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
+            src/FFSearchSession.m src/FFLogger.m \
+            -o /tmp/ff_selfcheck
+          /tmp/ff_selfcheck
+
+      - name: Swift bridge header sanity
+        run: |
+          xcrun --sdk iphoneos clang -fobjc-arc -c -x objective-c-header \
+            -I src -I third_party/tree-sitter/include \
+            FuckFile-Bridging-Header.h -o /tmp/ff_bridge.pch
+
+      - name: Compile FuckFile
+        run: |
+          set -euo pipefail
+          export THEOS=/opt/theos
+          make clean
+          make
