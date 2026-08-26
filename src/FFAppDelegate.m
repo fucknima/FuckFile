@@ -1,4 +1,5 @@
 #import "FFAppDelegate.h"
+#import "FFRootTabBarController.h"
 #import "FFBrowserViewController.h"
 #import "FFImportService.h"
 #import "FFSharedInboxService.h"
@@ -35,6 +36,15 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         [[url.host lowercaseString] isEqualToString:@"share-stream"];
 }
 
+- (UINavigationController *)activeNavigationController
+{
+    UIViewController *root = self.window.rootViewController;
+    if ([root isKindOfClass:FFRootTabBarController.class])
+        return [(FFRootTabBarController *)root activeNavigationController];
+    return [root isKindOfClass:UINavigationController.class]
+        ? (UINavigationController *)root : nil;
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
     FFLog(@"==== FuckFile launch ====");
@@ -51,16 +61,11 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     self.shareStreamInProgress = [self isShareStreamURL:incoming];
 
-    FFBrowserViewController *root = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
-    root.title = @"Device Storage";
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:root];
-    navigation.navigationBar.translucent = NO;
-    navigation.navigationBar.prefersLargeTitles = NO;
-
+    FFRootTabBarController *shell = [FFRootTabBarController new];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.backgroundColor = UIColor.systemBackgroundColor;
-    self.window.rootViewController = navigation;
-    navigation.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.window.rootViewController = shell;
+    shell.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
 
     __weak typeof(self) weakSelf = self;
@@ -68,7 +73,9 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         if (!loaded) return;
         if (!weakSelf.shareStreamInProgress) [weakSelf processSharedInboxShowingResult:NO];
         [[NSNotificationCenter defaultCenter] postNotificationName:@"FFProbeFinished" object:nil];
-        [root reloadEntries];
+        UINavigationController *nav = [weakSelf activeNavigationController];
+        if ([nav.topViewController isKindOfClass:FFBrowserViewController.class])
+            [(FFBrowserViewController *)nav.topViewController reloadEntries];
     }];
 
     if (!self.shareStreamInProgress) [self processSharedInboxShowingResult:NO];
@@ -171,7 +178,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 - (void)presentSharedBridgeResultImported:(NSUInteger)imported destinations:(NSArray<NSString *> *)destinations errors:(NSArray<NSError *> *)errors
 {
     if (imported == 0 && errors.count == 0) return;
-    UINavigationController *navigation = (UINavigationController *)self.window.rootViewController;
+    UINavigationController *navigation = [self activeNavigationController];
     UIViewController *top = navigation.topViewController ?: navigation;
     if (!top || [top isKindOfClass:UIAlertController.class]) return;
     NSString *message = nil;
@@ -206,7 +213,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 
 - (UIViewController *)topViewController
 {
-    UINavigationController *navigation = (UINavigationController *)self.window.rootViewController;
+    UINavigationController *navigation = [self activeNavigationController];
     return navigation.topViewController ?: navigation;
 }
 
@@ -220,7 +227,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
 - (void)presentImportSuccess:(NSString *)destination
 {
     if (!destination.length) return;
-    UINavigationController *navigation = (UINavigationController *)self.window.rootViewController;
+    UINavigationController *navigation = [self activeNavigationController];
     UIViewController *top = navigation.topViewController ?: navigation; if (!top || [top isKindOfClass:UIAlertController.class]) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"接收文件" message:[NSString stringWithFormat:@"已导入：\n%@", destination.lastPathComponent] preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"前往查看" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
