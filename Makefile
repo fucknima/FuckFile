@@ -14,6 +14,7 @@ FuckFile_FILES = \
 	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
+	src/FFAppDataScanCoordinator+StructuralInventory.m \
 	src/FFAppDataRegistry.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
@@ -43,10 +44,12 @@ FuckFile_FILES = \
 	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
 	src/FFOfficeViewerViewController.m \
+	src/FFOfficeViewerViewController+Safety.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
+	src/FFFileTaskManager+Persistence.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFSearchViewController.m \
@@ -55,6 +58,7 @@ FuckFile_FILES = \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m \
+	src/FFLSStoreInventory.m \
 	third_party/minizip/unzip.c \
 	third_party/minizip/ioapi.c \
 	src/FFViewerRegistry.m \
@@ -66,6 +70,7 @@ FuckFile_FILES = \
 	src/FFSQLiteBrowserViewController.m \
 	src/FFArchiveService.m \
 	src/FFArchiveBrowserViewController.m \
+	src/FFArchiveBrowserViewController+Encrypted.m \
 	src/FFIPaInstallerViewController.m \
 	src/FFSupportedViewersViewController.m \
 	src/FFFileAssociationsViewController.m \
