@@ -69,6 +69,9 @@ jobs:
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
 
+      - name: Office host JavaScript syntax
+        run: node --check resources/office/office-host.js
+
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
           xcrun --sdk iphoneos clang -fobjc-arc -c -x objective-c-header \
