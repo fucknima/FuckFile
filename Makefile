@@ -43,8 +43,6 @@ FuckFile_FILES = \
 	src/FFPdfReaderViewController.m \
 	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
-	src/FFOfficeViewerViewController.m \
-	src/FFOfficeViewerViewController+Safety.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
@@ -128,10 +126,6 @@ FuckFile_FILES = \
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
 
-# OfficeAssets is generated from pinned open-source browser runtimes before build.
-# BUNDLE_RESOURCE_FILES copies the OfficeAssets directory itself into the .app.
-FuckFile_BUNDLE_RESOURCE_FILES = .office-runtime/OfficeAssets
-
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 	-I$(PWD)/third_party/tree-sitter/include \
 	-I$(PWD)/third_party/tree-sitter/src \
@@ -162,11 +156,6 @@ FuckFileShare_INFOPLIST = ShareExtension/Info.plist
 FuckFileShare_INSTALL_PATH = /Applications/FuckFile.app/PlugIns
 
 FuckFile_INSTALL_PATH = /Applications
-
-# Build-time only: fetch pinned Office renderers and stage them as local assets.
-# Runtime rendering stays offline; documents are never uploaded to a service.
-before-all::
-	@bash scripts/prepare_office_runtime.sh
 
 include $(THEOS_MAKE_PATH)/application.mk
 include $(THEOS_MAKE_PATH)/appex.mk
