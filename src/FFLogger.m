@@ -1,11 +1,15 @@
 #import "FFLogger.h"
 
-#import <objc/runtime.h>
-
 static NSString *gLogPath;
 static dispatch_queue_t gLogQueue;
 static NSDateFormatter *gFormatter;
-static const unsigned long long kFFLogRotationBytes = 1024 * 1024;
+
+static NSString *const kFFLogEnabledKey = @"FFLogFileEnabledV1";
+static NSString *const kFFLogMaxBytesKey = @"FFLogMaxBytesV1";
+static NSString *const kFFLogMaxAgeDaysKey = @"FFLogMaxAgeDaysV1";
+static NSString *const kFFLogEpochKey = @"FFLogEpochV1";
+static const unsigned long long kFFDefaultLogMaxBytes = 5ULL * 1024ULL * 1024ULL;
+static const NSUInteger kFFDefaultLogMaxAgeDays = 30;
 
 static void FFEnsureState(void)
 {
@@ -17,6 +21,46 @@ static void FFEnsureState(void)
     });
 }
 
+static NSUserDefaults *FFLogDefaults(void)
+{
+    return NSUserDefaults.standardUserDefaults;
+}
+
+BOOL FFLogFileEnabled(void)
+{
+    id value = [FFLogDefaults() objectForKey:kFFLogEnabledKey];
+    return value == nil ? YES : [value boolValue];
+}
+
+void FFSetLogFileEnabled(BOOL enabled)
+{
+    [FFLogDefaults() setBool:enabled forKey:kFFLogEnabledKey];
+}
+
+unsigned long long FFLogMaxBytes(void)
+{
+    id value = [FFLogDefaults() objectForKey:kFFLogMaxBytesKey];
+    return value == nil ? kFFDefaultLogMaxBytes : [value unsignedLongLongValue];
+}
+
+void FFSetLogMaxBytes(unsigned long long bytes)
+{
+    [FFLogDefaults() setObject:@(bytes) forKey:kFFLogMaxBytesKey];
+    FFPerformLogCleanup();
+}
+
+NSUInteger FFLogMaxAgeDays(void)
+{
+    id value = [FFLogDefaults() objectForKey:kFFLogMaxAgeDaysKey];
+    return value == nil ? kFFDefaultLogMaxAgeDays : [value unsignedIntegerValue];
+}
+
+void FFSetLogMaxAgeDays(NSUInteger days)
+{
+    [FFLogDefaults() setObject:@(days) forKey:kFFLogMaxAgeDaysKey];
+    FFPerformLogCleanup();
+}
+
 // Path redaction: container UUIDs collapse to their first segment and
 // the /private/var mount prefix is normalized, so shared logs never
 // leak full container identifiers.
@@ -24,7 +68,6 @@ static NSString *FFRedactPath(NSString *input)
 {
     if (!input.length) return input;
     NSMutableString *result = [input mutableCopy];
-    // Full UUIDs (36 hex-dash chars) collapse to their first 8 chars.
     NSRegularExpression *shortUuid = [NSRegularExpression
         regularExpressionWithPattern:@"([0-9A-Fa-f]{8})-[0-9A-Fa-f-]{27}"
         options:0 error:nil];
@@ -35,48 +78,114 @@ static NSString *FFRedactPath(NSString *input)
     return result;
 }
 
+static void FFMigrateLegacyLogIfNeeded(NSString *documents, NSString *newPath)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *oldPath = [[documents stringByAppendingPathComponent:@"Device Storage"]
+        stringByAppendingPathComponent:@"FuckFile Log.txt"];
+    NSString *oldRotated = [[[oldPath stringByDeletingPathExtension]
+        stringByAppendingString:@".old"] stringByAppendingPathExtension:@"txt"];
+
+    if ([fm fileExistsAtPath:oldPath]) {
+        if (![fm fileExistsAtPath:newPath]) {
+            NSError *moveError = nil;
+            if (![fm moveItemAtPath:oldPath toPath:newPath error:&moveError])
+                [fm removeItemAtPath:oldPath error:nil];
+        } else {
+            [fm removeItemAtPath:oldPath error:nil];
+        }
+    }
+    // Old builds could leave a rotated file in Device Storage. It is diagnostic
+    // state, not user content, so remove it during migration rather than exposing
+    // a second generated file in the browser.
+    [fm removeItemAtPath:oldRotated error:nil];
+}
+
 NSString *FFLogPath(void)
 {
     FFEnsureState();
-    if (!gLogPath) {
+    static dispatch_once_t pathOnce;
+    dispatch_once(&pathOnce, ^{
         NSString *documents = NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        gLogPath = [[documents stringByAppendingPathComponent:@"Device Storage"]
-            stringByAppendingPathComponent:@"FuckFile Log.txt"];
-    }
+            NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
+        gLogPath = [documents stringByAppendingPathComponent:@"FuckFile Log.txt"];
+        FFMigrateLegacyLogIfNeeded(documents, gLogPath);
+    });
     return gLogPath;
 }
 
-static void FFAppendLine(NSString *line)
+static BOOL FFLogShouldResetLocked(NSString *path)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:path]) {
+        [FFLogDefaults() setObject:@(NSDate.date.timeIntervalSince1970) forKey:kFFLogEpochKey];
+        return NO;
+    }
+
+    unsigned long long maxBytes = FFLogMaxBytes();
+    if (maxBytes > 0) {
+        NSNumber *size = [fm attributesOfItemAtPath:path error:nil][NSFileSize];
+        if (size.unsignedLongLongValue >= maxBytes) return YES;
+    }
+
+    NSUInteger maxDays = FFLogMaxAgeDays();
+    if (maxDays > 0) {
+        NSTimeInterval epoch = [[FFLogDefaults() objectForKey:kFFLogEpochKey] doubleValue];
+        if (epoch <= 0) {
+            NSDate *created = [fm attributesOfItemAtPath:path error:nil][NSFileCreationDate];
+            epoch = created ? created.timeIntervalSince1970 : NSDate.date.timeIntervalSince1970;
+            [FFLogDefaults() setObject:@(epoch) forKey:kFFLogEpochKey];
+        }
+        NSTimeInterval maxAge = (NSTimeInterval)maxDays * 24.0 * 60.0 * 60.0;
+        if (NSDate.date.timeIntervalSince1970 - epoch >= maxAge) return YES;
+    }
+    return NO;
+}
+
+static void FFResetLogLocked(NSString *path)
+{
+    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    [FFLogDefaults() setObject:@(NSDate.date.timeIntervalSince1970) forKey:kFFLogEpochKey];
+}
+
+void FFPerformLogCleanup(void)
 {
     FFEnsureState();
     dispatch_sync(gLogQueue, ^{
         NSString *path = FFLogPath();
+        if (FFLogShouldResetLocked(path)) FFResetLogLocked(path);
+    });
+}
+
+unsigned long long FFLogFileSize(void)
+{
+    NSNumber *size = [NSFileManager.defaultManager
+        attributesOfItemAtPath:FFLogPath() error:nil][NSFileSize];
+    return size.unsignedLongLongValue;
+}
+
+static void FFAppendLine(NSString *line)
+{
+    if (!FFLogFileEnabled() || !line.length) return;
+    FFEnsureState();
+    dispatch_sync(gLogQueue, ^{
+        NSString *path = FFLogPath();
+        if (FFLogShouldResetLocked(path)) FFResetLogLocked(path);
+
         NSString *directory = path.stringByDeletingLastPathComponent;
-        [[NSFileManager defaultManager] createDirectoryAtPath:directory
+        [NSFileManager.defaultManager createDirectoryAtPath:directory
             withIntermediateDirectories:YES attributes:nil error:nil];
 
-        // Rotation: once the log exceeds the cap, the current file is
-        // archived to "<name>.old.txt" and a fresh file starts.
-        NSNumber *size = [[NSFileManager defaultManager]
-            attributesOfItemAtPath:path error:nil][NSFileSize];
-        if (size.unsignedLongLongValue > kFFLogRotationBytes) {
-            NSString *oldPath = [[path stringByDeletingPathExtension]
-                stringByAppendingString:@".old.txt"];
-            [[NSFileManager defaultManager] removeItemAtPath:oldPath error:nil];
-            [[NSFileManager defaultManager] moveItemAtPath:path toPath:oldPath error:nil];
-        }
-
-        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
             [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        } else {
-            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-            if (handle) {
-                [handle seekToEndOfFile];
-                [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-                [handle closeFile];
-            }
+            [FFLogDefaults() setObject:@(NSDate.date.timeIntervalSince1970) forKey:kFFLogEpochKey];
+            return;
         }
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!handle) return;
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
     });
 }
 
@@ -84,13 +193,15 @@ static void FFWriteMessage(NSString *tag, NSString *message)
 {
     FFEnsureState();
     NSString *redacted = FFRedactPath(message);
+    NSLog(@"[%@] %@", tag ?: @"FuckFile", redacted);
+    if (!FFLogFileEnabled()) return;
+
     __block NSString *line = nil;
     dispatch_sync(gLogQueue, ^{
         NSString *stamp = [gFormatter stringFromDate:NSDate.date];
         line = [NSString stringWithFormat:@"[%@] [%@] %@\n",
             stamp, tag ?: @"FuckFile", redacted];
     });
-    NSLog(@"[%@] %@", tag ?: @"FuckFile", redacted);
     FFAppendLine(line);
 }
 
