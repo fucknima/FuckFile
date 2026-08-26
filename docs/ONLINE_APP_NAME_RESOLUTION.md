@@ -59,6 +59,10 @@ Registry 使用批量升级接口 `upgradeFallbackDisplayNames:`，只允许把�
 
 说明明确告知：开启后会把未命名第三方 App 的 Bundle ID 发送给 Apple App Store 公开目录。关闭后立即停止后续在线请求；已经成功补全的名称保留在本地 Registry，不回退成 Bundle ID。
 
+## 验证边界
+
+编译验证应至少覆盖 Resolver、Registry、AppData 虚拟浏览器和设置页四个改动单元，并检查 Resolver 已进入主目标 Makefile；完整发布仍以仓库现有 Theos 构建为最终门槛。在线目录不可用时不应阻塞或改变任何 AppData 访问结果。
+
 ## 真机样本依据
 
 2026-08-26 真机日志：AppData Registry 共 240 个可访问条目，其中按当前产品规则分类为 47 个用户 App、193 个 `com.apple.*` 系统条目。对 47 个用户 Bundle ID 的外部核对中，约 89% 可由公开商店元数据直接确认名称；计入项目自身等可精确验证来源时约 91%。主要失败模式是私有、自签或已不可公开检索的 App 无结果，而不是 Bundle ID 错配。
