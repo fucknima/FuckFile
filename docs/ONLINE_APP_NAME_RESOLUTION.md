@@ -44,6 +44,7 @@ AppData 在 MobileHouseArrest 身份下能够确认第三方应用 Bundle ID，�
 - 成功结果：缓存 30 天；
 - 所有 storefront 都明确无结果：负缓存 24 小时；
 - 网络错误、非 2xx、JSON 结构异常：不写负缓存；
+- 所有 Lookup（含 storefront fallback）之间至少间隔 3.2 秒，主动控制在 Apple 文档给出的约 20 次/分钟限制以下；
 - HTTP 429：暂停新的在线查询 60 秒；
 - 在线失败：继续显示 Bundle ID，不影响 AppData 浏览和打开；
 - 页面加载不等待网络，在线补全始终异步执行；
