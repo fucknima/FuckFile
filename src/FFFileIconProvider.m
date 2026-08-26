@@ -51,7 +51,7 @@
             for (NSString *e in exts) m[e] = [self styleWithColor:color symbol:symbol label:label square:square];
         };
 
-        // Office / documents: familiar semantic colours, but no vendor artwork.
+        // Office / documents.
         set(@[@"doc",@"docx",@"docm",@"dot",@"dotx",@"dotm"], UIColor.systemBlueColor, nil, @"DOC", NO);
         set(@[@"xls",@"xlsx",@"xlsm",@"xlsb",@"xlt",@"xltx",@"xltm",@"csv",@"tsv"], UIColor.systemGreenColor, nil, @"XLS", NO);
         set(@[@"ppt",@"pptx",@"pptm",@"pps",@"ppsx",@"ppsm",@"pot",@"potx",@"potm"], UIColor.systemOrangeColor, nil, @"PPT", NO);
@@ -140,12 +140,11 @@
     return [[renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         (void)ctx;
         UIColor *color = [self resolved:base];
-        UIColor *tab = [color colorWithAlphaComponent:0.78];
+        UIColor *tab = [color colorWithAlphaComponent:0.8];
         [tab setFill];
-        UIBezierPath *tabPath = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(3, 7, 26, 15) cornerRadius:5];
-        [tabPath fill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(2, 5, 28, 16) cornerRadius:5] fill];
         [color setFill];
-        UIBezierPath *body = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(2, 13, 44, 31) cornerRadius:8];
+        UIBezierPath *body = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0.5, 11, 47, 36) cornerRadius:9];
         [body fill];
         [[UIColor.whiteColor colorWithAlphaComponent:0.16] setStroke];
         body.lineWidth = 1;
@@ -162,12 +161,12 @@
         (void)ctx;
         UIColor *color = [self resolved:style.color];
         [color setFill];
-        UIBezierPath *card = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(2, 2, 44, 44) cornerRadius:10];
+        UIBezierPath *card = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0.5, 0.5, 47, 47) cornerRadius:11];
         [card fill];
         [[UIColor.whiteColor colorWithAlphaComponent:0.18] setStroke];
         card.lineWidth = 1;
         [card stroke];
-        CGRect glyphRect = CGRectMake(11, 11, 26, 26);
+        CGRect glyphRect = CGRectMake(10, 10, 28, 28);
         if (style.label.length) [self drawLabel:style.label color:UIColor.whiteColor inRect:glyphRect];
         else [self drawCenteredSymbol:style.symbol ?: @"doc.fill" color:UIColor.whiteColor inRect:glyphRect];
     }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
@@ -182,28 +181,25 @@
         (void)ctx;
         UIColor *color = [self resolved:style.color];
 
-        // Broad document silhouette: almost fills the same 48pt optical box as
-        // real app thumbnails, with only a small folded-corner affordance.
         UIBezierPath *body = [UIBezierPath bezierPath];
-        [body moveToPoint:CGPointMake(7, 2)];
-        [body addLineToPoint:CGPointMake(34, 2)];
-        [body addLineToPoint:CGPointMake(46, 14)];
-        [body addLineToPoint:CGPointMake(46, 41)];
-        [body addQuadCurveToPoint:CGPointMake(41, 46) controlPoint:CGPointMake(46, 46)];
-        [body addLineToPoint:CGPointMake(7, 46)];
-        [body addQuadCurveToPoint:CGPointMake(2, 41) controlPoint:CGPointMake(2, 46)];
-        [body addLineToPoint:CGPointMake(2, 7)];
-        [body addQuadCurveToPoint:CGPointMake(7, 2) controlPoint:CGPointMake(2, 2)];
+        [body moveToPoint:CGPointMake(6, 0.5)];
+        [body addLineToPoint:CGPointMake(35, 0.5)];
+        [body addLineToPoint:CGPointMake(47.5, 13)];
+        [body addLineToPoint:CGPointMake(47.5, 42)];
+        [body addQuadCurveToPoint:CGPointMake(42, 47.5) controlPoint:CGPointMake(47.5, 47.5)];
+        [body addLineToPoint:CGPointMake(6, 47.5)];
+        [body addQuadCurveToPoint:CGPointMake(0.5, 42) controlPoint:CGPointMake(0.5, 47.5)];
+        [body addLineToPoint:CGPointMake(0.5, 6)];
+        [body addQuadCurveToPoint:CGPointMake(6, 0.5) controlPoint:CGPointMake(0.5, 0.5)];
         [body closePath];
         [color setFill];
         [body fill];
 
-        // Fold is intentionally subtle so the silhouette stays dense at 40pt.
         [[UIColor.whiteColor colorWithAlphaComponent:0.32] setFill];
         UIBezierPath *fold = [UIBezierPath bezierPath];
-        [fold moveToPoint:CGPointMake(34, 2)];
-        [fold addLineToPoint:CGPointMake(34, 14)];
-        [fold addLineToPoint:CGPointMake(46, 14)];
+        [fold moveToPoint:CGPointMake(35, 0.5)];
+        [fold addLineToPoint:CGPointMake(35, 13)];
+        [fold addLineToPoint:CGPointMake(47.5, 13)];
         [fold closePath];
         [fold fill];
 
@@ -211,7 +207,7 @@
         body.lineWidth = 1;
         [body stroke];
 
-        CGRect glyphRect = CGRectMake(9, 14, 30, 24);
+        CGRect glyphRect = CGRectMake(8, 14, 32, 25);
         if (style.label.length) [self drawLabel:style.label color:UIColor.whiteColor inRect:glyphRect];
         else [self drawCenteredSymbol:style.symbol ?: @"doc.fill" color:UIColor.whiteColor inRect:glyphRect];
     }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
