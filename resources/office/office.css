@@ -24,12 +24,6 @@ button,input { font:inherit; }
 button { color:var(--accent); background:transparent; border:0; }
 button:active { opacity:.55; }
 .hidden { display:none !important; }
-/*
- * WKWebView is intentionally allowed to extend edge-to-edge when the native
- * navigation bar is hidden.  Keep the Office chrome inside the current iOS
- * safe area so the status bar / Dynamic Island / landscape sensor housing and
- * home indicator never cover the document toolbar.
- */
 #app {
   height:100vh;
   height:100dvh;
@@ -58,7 +52,7 @@ button:active { opacity:.55; }
 .sheet-tab { flex:0 0 auto; height:29px; padding:0 12px; border-radius:8px; background:var(--surface-2); border:.5px solid var(--border); color:var(--text); font-size:12px; }
 .sheet-tab.active { color:#fff; background:var(--accent); border-color:transparent; }
 #workspace { flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
-.content { flex:1 1 auto; min-width:0; overflow:auto; position:relative; background:var(--bg); -webkit-overflow-scrolling:touch; }
+.content { flex:1 1 auto; min-width:0; min-height:0; overflow:auto; position:relative; background:var(--bg); -webkit-overflow-scrolling:touch; }
 .state-card { max-width:440px; margin:18vh auto 24px; padding:24px; display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center; color:var(--secondary); }
 .state-card strong { color:var(--text); font-size:16px; }
 .state-card p { margin:0; font-size:13px; line-height:1.5; }
@@ -81,13 +75,31 @@ button:active { opacity:.55; }
 .ppt-root { min-height:100%; padding:12px 10px 48px; }
 .ppt-root > * { margin-left:auto !important; margin-right:auto !important; }
 
-.sheet-root { min-width:100%; min-height:100%; padding:0 0 60px; background:var(--surface); }
-.sheet-scroll { overflow:auto; min-width:100%; min-height:100%; }
-#ff-sheet-table { border-collapse:separate; border-spacing:0; min-width:100%; background:var(--surface); color:var(--text); font-size:12px; }
-#ff-sheet-table td,#ff-sheet-table th { max-width:440px; min-width:72px; padding:6px 8px; border-right:.5px solid var(--border); border-bottom:.5px solid var(--border); white-space:pre-wrap; overflow-wrap:anywhere; vertical-align:top; }
-#ff-sheet-table tr:first-child td,#ff-sheet-table tr:first-child th { border-top:.5px solid var(--border); }
-#ff-sheet-table td:first-child,#ff-sheet-table th:first-child { border-left:.5px solid var(--border); }
-#ff-sheet-table td.ff-search-hit { outline:2px solid #ff9f0a; outline-offset:-2px; background:color-mix(in srgb,#ff9f0a 18%,var(--surface)); }
+/* Virtual spreadsheet grid. The JS positions every visible cell with left/top/width/height. */
+.sheet-root { width:100%; height:100%; min-width:0; min-height:0; padding:0; overflow:hidden; position:relative; background:var(--surface); }
+.sheet-viewport { position:absolute; inset:0; width:100%; height:100%; overflow:auto; background:var(--surface); -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
+.sheet-canvas { position:relative; min-width:1px; min-height:1px; background:var(--surface); box-shadow:inset 1px 1px 0 var(--border); }
+.sheet-cell-layer { position:absolute; inset:0; }
+.sheet-cell {
+  position:absolute;
+  display:flex;
+  align-items:center;
+  padding:3px 7px;
+  overflow:hidden;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  line-height:1.25;
+  color:var(--text);
+  background:var(--surface);
+  border-right:.5px solid var(--border);
+  border-bottom:.5px solid var(--border);
+  -webkit-user-select:text;
+  user-select:text;
+  contain:layout paint style;
+}
+.sheet-cell.number { justify-content:flex-end; text-align:right; }
+.sheet-cell.boolean { justify-content:center; text-align:center; }
+.sheet-cell.search-current { z-index:2; outline:2px solid #ff9f0a; outline-offset:-2px; background:color-mix(in srgb,#ff9f0a 16%,var(--surface)); }
 .search-mark { background:#ffd60a !important; color:#111 !important; border-radius:2px; }
 
 @media (max-width:700px) and (orientation:portrait) {
