@@ -46,7 +46,8 @@ AppData 在 MobileHouseArrest 身份下能够确认第三方应用 Bundle ID，�
 - 网络错误、非 2xx、JSON 结构异常：不写负缓存；
 - HTTP 429：暂停新的在线查询 60 秒；
 - 在线失败：继续显示 Bundle ID，不影响 AppData 浏览和打开；
-- 页面加载不等待网络，在线补全始终异步执行。
+- 页面加载不等待网络，在线补全始终异步执行；
+- 关闭开关或开始新请求后，旧网络回调通过 request generation 失效，不能污染后续解析状态。
 
 Registry 使用批量升级接口 `upgradeFallbackDisplayNames:`，只允许把“空名称 / Bundle ID fallback”升级为真实名称。后续 AppData 重扫若再次只能得到 Bundle ID，不允许把已经补全的名称降级回 Bundle ID；如果以后本地来源取得非 fallback 名称，本地名称仍可覆盖在线结果。
 
