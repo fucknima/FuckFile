@@ -130,7 +130,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
-FuckFile_BUNDLE_RESOURCE_FILES = .docx-runtime/DocxAssets
+FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets
 
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 	-I$(PWD)/third_party/tree-sitter/include \
