@@ -3,6 +3,25 @@
 #import <sys/stat.h>
 #import <unistd.h>
 
+static void FFMigrateLegacyDiagnosticMap(NSString *documents, NSString *root)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *oldPath = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+        NSString *newPath = [documents stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+        struct stat st = {0};
+        if (lstat(oldPath.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) return;
+        if (![fm fileExistsAtPath:newPath]) {
+            NSError *error = nil;
+            if ([fm moveItemAtPath:oldPath toPath:newPath error:&error]) return;
+        }
+        // If the parent already has a newer diagnostic map, the Device Storage
+        // copy is generated state and can be removed safely.
+        [fm removeItemAtPath:oldPath error:nil];
+    });
+}
+
 NSString *FFStorageRootPath(void)
 {
     NSString *documents = NSSearchPathForDirectoriesInDomains(
@@ -10,6 +29,7 @@ NSString *FFStorageRootPath(void)
     NSString *root = [documents stringByAppendingPathComponent:@"Device Storage"];
     [NSFileManager.defaultManager createDirectoryAtPath:root
         withIntermediateDirectories:YES attributes:nil error:nil];
+    FFMigrateLegacyDiagnosticMap(documents, root);
     return root;
 }
 
@@ -28,6 +48,8 @@ NSString *FFAppDataVirtualPath(void)
 
 NSArray<NSString *> *FFManagedSystemEntryNames(void)
 {
+    // ACCESS MAP.txt remains listed only for legacy safety. New builds place it
+    // one level above Device Storage and never expose it as normal user content.
     return @[@"AppData", @"App Data", @"MobileGestalt", @"ACCESS MAP.txt"];
 }
 
@@ -35,9 +57,6 @@ static BOOL FFIsManagedRootName(NSString *name)
 {
     if (!name.length) return NO;
     if ([FFManagedSystemEntryNames() containsObject:name]) return YES;
-    // Legacy advanced probes used the [MHA-*] namespace. Keep recognising
-    // those names so stale links from older builds remain access-gated and can
-    // be removed safely during migration/normal-mode cleanup.
     return [name hasPrefix:@"[MHA-"];
 }
 
@@ -85,15 +104,9 @@ static void FFRemoveGeneratedRootLink(NSString *root, NSString *name)
 void FFPrepareStorageRootForNormalMode(void)
 {
     NSString *root = FFStorageRootPath();
-    // AppData/App Data are generated containers populated with symlinks. Remove
-    // only generated symlinks and delete the directory only if it becomes empty;
-    // never delete a real user-created file or directory tree.
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"AppData"]);
     FFRemoveGeneratedSymlinksInDirectory([root stringByAppendingPathComponent:@"App Data"]);
 
-    // The current MobileGestalt shortcut uses the concise name. Older builds
-    // used [MHA-C12] MobileGestalt Cache; remove both when advanced access is
-    // disabled so no stale session lease survives across launches/modes.
     FFRemoveGeneratedRootLink(root, @"MobileGestalt");
     for (NSString *name in [NSFileManager.defaultManager
             contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
@@ -101,6 +114,8 @@ void FFPrepareStorageRootForNormalMode(void)
         FFRemoveGeneratedRootLink(root, name);
     }
 
+    // Legacy cleanup only. Current builds relocate ACCESS MAP.txt to Documents
+    // immediately after it is generated.
     NSString *map = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
     struct stat st = {0};
     if (lstat(map.fileSystemRepresentation, &st) == 0 && S_ISREG(st.st_mode))
