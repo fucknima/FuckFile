@@ -7,6 +7,7 @@
 #import <stdio.h>
 #import <string.h>
 #import <sys/stat.h>
+#import <time.h>
 #import <unistd.h>
 #import <zlib.h>
 
@@ -156,8 +157,8 @@ static BOOL FFZipCollectEntries(NSString *absolutePath, NSString *prefix,
     }
     children = [children sortedArrayUsingSelector:@selector(compare:)];
     for (NSString *child in children) {
-        if (![FFZipCollectEntries([absolutePath stringByAppendingPathComponent:child],
-            relative, entries, names, error)]) return NO;
+        if (!FFZipCollectEntries([absolutePath stringByAppendingPathComponent:child],
+            relative, entries, names, error)) return NO;
     }
     return YES;
 }
