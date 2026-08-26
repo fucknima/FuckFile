@@ -8,12 +8,17 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = FuckFile
 APPEX_NAME = FuckFileShare
 
+# Prepare the tiny DOCX-only browser runtime while Make parses resources. The
+# script is cached, so normal incremental builds do not reinstall dependencies.
+DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null && echo yes)
+
 FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
 	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFSystemAccessManager.m \
 	src/FFAppDataScanCoordinator.m \
+	src/FFAppDataScanCoordinator+StructuralInventory.m \
 	src/FFAppDataRegistry.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
@@ -42,10 +47,12 @@ FuckFile_FILES = \
 	src/FFPdfReaderViewController.m \
 	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
+	src/FFDocxViewerViewController.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
+	src/FFFileTaskManager+Persistence.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFSearchViewController.m \
@@ -54,6 +61,7 @@ FuckFile_FILES = \
 	src/MCMBridge.m \
 	src/MCMManager.m \
 	src/FFLSDiscovery.m \
+	src/FFLSStoreInventory.m \
 	third_party/minizip/unzip.c \
 	third_party/minizip/ioapi.c \
 	src/FFViewerRegistry.m \
@@ -65,6 +73,7 @@ FuckFile_FILES = \
 	src/FFSQLiteBrowserViewController.m \
 	src/FFArchiveService.m \
 	src/FFArchiveBrowserViewController.m \
+	src/FFArchiveBrowserViewController+Encrypted.m \
 	src/FFIPaInstallerViewController.m \
 	src/FFSupportedViewersViewController.m \
 	src/FFFileAssociationsViewController.m \
@@ -121,6 +130,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
+FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets
 
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 	-I$(PWD)/third_party/tree-sitter/include \
@@ -138,7 +148,7 @@ FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/FuckFile-Bridging-Header.h
 FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
-FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit
+FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit UniformTypeIdentifiers
 FuckFile_LIBRARIES = z sqlite3
 FuckFile_INFOPLIST = Info.plist
 

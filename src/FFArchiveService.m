@@ -1,31 +1,44 @@
 #import "FFArchiveService.h"
-
+#import "FFZipExtract.h"
 #import "unzip.h"
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <fcntl.h>
-#import <unistd.h>
 #import <string.h>
 #import <sys/stat.h>
+#import <unistd.h>
 #import <zlib.h>
 
-// Built on minizip (third_party/minizip) instead of a hand-written
-// central-directory parser: real-world archives (Actions artifacts,
-// Windows tools, data-descriptor zips, ZIP64) all work through the
-// battle-tested code path. Safety rules preserved on top of it:
-//  - entry count cap and per-entry uncompressed size cap
-//  - entry-name sanitization before anything touches the filesystem
-//  - symlink entries rejected on extraction
-//  - CRC verified by minizip on unzCloseCurrentFile
-
-static const unsigned long long kMaxEntrySize = 2ULL * 1024 * 1024 * 1024; // 单条目 2 GiB
+static const unsigned long long kMaxEntrySize = 2ULL * 1024 * 1024 * 1024;
 static const NSUInteger kMaxEntries = 100000;
 static const NSUInteger kMaxArchiveNameBytes = 64 * 1024;
 
 static NSError *FFArchiveError(NSString *message)
 {
     return [NSError errorWithDomain:@"FFArchive" code:-1
-        userInfo:@{NSLocalizedDescriptionKey: message}];
+        userInfo:@{NSLocalizedDescriptionKey: message ?: @"归档读取失败"}];
+}
+
+static NSError *FFArchivePasswordError(FFZipExtractErrorCode code, NSString *message)
+{
+    return [NSError errorWithDomain:FFZipExtractErrorDomain code:code
+        userInfo:@{NSLocalizedDescriptionKey:message}];
+}
+
+static NSCache<NSString *, NSString *> *FFArchivePasswordCache(void)
+{
+    static NSCache<NSString *, NSString *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSCache new];
+        cache.countLimit = 8;
+    });
+    return cache;
+}
+
+static NSString *FFArchivePasswordKey(NSString *path)
+{
+    return path.stringByStandardizingPath ?: @"";
 }
 
 static uint16_t FFArchiveReadLE16(const uint8_t *bytes)
@@ -41,12 +54,6 @@ static uint32_t FFArchiveReadLE32(const uint8_t *bytes)
         ((uint32_t)bytes[3] << 24);
 }
 
-// Info-ZIP Unicode Path extra field (0x7075 / "up"):
-//   version[1] + CRC32(raw filename)[4] + UTF-8 path[n]
-// A large number of Windows-created Chinese ZIPs keep the central-directory
-// filename in GBK/OEM bytes with UTF-8 flag bit 11 clear, then put the actual
-// Unicode path here. Ignoring this field made every such entry fail UTF-8
-// decoding and the archive browser incorrectly reported "空归档".
 static NSString *FFArchiveUnicodePathFromExtra(NSData *rawName, NSData *extra)
 {
     const uint8_t *bytes = extra.bytes;
@@ -56,7 +63,6 @@ static NSString *FFArchiveUnicodePathFromExtra(NSData *rawName, NSData *extra)
         uint16_t payloadSize = FFArchiveReadLE16(bytes + offset + 2);
         offset += 4;
         if ((NSUInteger)payloadSize > extra.length - offset) break;
-
         if (headerID == 0x7075 && payloadSize >= 5) {
             const uint8_t *payload = bytes + offset;
             if (payload[0] == 1) {
@@ -65,8 +71,7 @@ static NSString *FFArchiveUnicodePathFromExtra(NSData *rawName, NSData *extra)
                 actualCRC = crc32(actualCRC, rawName.bytes, (uInt)rawName.length);
                 if ((uint32_t)actualCRC == expectedCRC) {
                     NSString *unicode = [[NSString alloc]
-                        initWithBytes:payload + 5
-                        length:(NSUInteger)payloadSize - 5
+                        initWithBytes:payload + 5 length:(NSUInteger)payloadSize - 5
                         encoding:NSUTF8StringEncoding];
                     if (unicode.length) return unicode;
                 }
@@ -77,13 +82,9 @@ static NSString *FFArchiveUnicodePathFromExtra(NSData *rawName, NSData *extra)
     return nil;
 }
 
-// Reads the current minizip record without assuming the raw filename is UTF-8.
-// `infoOut` describes exactly the same current entry and can be used directly
-// by the extraction path after a decoded-name match.
 static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut)
 {
     if (!zip) return nil;
-
     unz_file_info64 info;
     memset(&info, 0, sizeof(info));
     if (unzGetCurrentFileInfo64(zip, &info, NULL, 0, NULL, 0, NULL, 0) != UNZ_OK)
@@ -101,27 +102,20 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
         return nil;
 
     NSString *name = nil;
-    BOOL declaresUTF8 = (info.flag & (1U << 11)) != 0;
-    if (declaresUTF8) {
+    if ((info.flag & (1U << 11)) != 0) {
         name = [[NSString alloc] initWithData:rawName encoding:NSUTF8StringEncoding];
     } else {
-        // Prefer the standard Unicode path extra when present and CRC-valid.
         name = FFArchiveUnicodePathFromExtra(rawName, extra);
-        // Some writers emit UTF-8 bytes but forget bit 11.
         if (!name.length)
             name = [[NSString alloc] initWithData:rawName encoding:NSUTF8StringEncoding];
-        // Common Windows Chinese ZIP fallback (GBK is a subset of GB18030).
         if (!name.length) {
             NSStringEncoding gb18030 = CFStringConvertEncodingToNSStringEncoding(
                 kCFStringEncodingGB_18030_2000);
             name = [[NSString alloc] initWithData:rawName encoding:gb18030];
         }
-        // Last-resort reversible display path: never silently turn a non-empty
-        // archive into an empty one merely because its legacy code page is odd.
         if (!name.length)
             name = [[NSString alloc] initWithData:rawName encoding:NSISOLatin1StringEncoding];
     }
-
     if (infoOut) *infoOut = info;
     return name;
 }
@@ -136,7 +130,6 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
     static NSSet<NSString *> *extensions;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 与 Browser 的 isArchiveEntry 集合一致：真实 zip 容器家族。
         extensions = [NSSet setWithArray:@[
             @"zip", @"ipa", @"xcarchive", @"appex", @"app",
             @"bundle", @"framework", @"war", @"jar", @"crx", @"xpi",
@@ -158,20 +151,36 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
     return [extensions containsObject:extension.lowercaseString];
 }
 
-// 条目名消毒：拒绝绝对路径、路径穿越与超长名。列表允许展示，但提取前
-// 必须通过本检查（与 FFZipExtract 的历史规则一致）。
++ (NSString *)cachedPasswordForArchivePath:(NSString *)archivePath
+{
+    return archivePath.length ? [FFArchivePasswordCache() objectForKey:FFArchivePasswordKey(archivePath)] : nil;
+}
+
++ (void)cachePassword:(NSString *)password forArchivePath:(NSString *)archivePath
+{
+    if (!password.length || !archivePath.length) return;
+    [FFArchivePasswordCache() setObject:[password copy] forKey:FFArchivePasswordKey(archivePath)];
+}
+
++ (void)clearCachedPasswordForArchivePath:(NSString *)archivePath
+{
+    if (!archivePath.length) return;
+    [FFArchivePasswordCache() removeObjectForKey:FFArchivePasswordKey(archivePath)];
+}
+
 + (BOOL)safeEntryName:(NSString *)name
 {
     if (name.length == 0 || name.length > 1024) return NO;
     if ([name hasPrefix:@"/"] || [name hasPrefix:@"\\"]) return NO;
-    if ([name rangeOfString:@".."].location != NSNotFound) return NO;
+    NSString *slashName = [name stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+    for (NSString *component in [slashName componentsSeparatedByString:@"/"])
+        if ([component isEqualToString:@".."] || [component isEqualToString:@"."]) return NO;
     return YES;
 }
 
-#pragma mark - Listing
-
 - (NSArray<FFArchiveEntry *> *)listEntries:(NSString *)archivePath error:(NSError **)error
 {
+    if (error) *error = nil;
     unzFile zip = unzOpen64(archivePath.fileSystemRepresentation);
     if (!zip) {
         if (error) *error = FFArchiveError(@"无法打开归档（不是有效的 ZIP 或已损坏）");
@@ -179,43 +188,56 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
     }
 
     NSMutableArray<FFArchiveEntry *> *entries = [NSMutableArray array];
-    if (unzGoToFirstFile(zip) != UNZ_OK) {
-        // 空归档是合法状态。
+    int rc = unzGoToFirstFile(zip);
+    if (rc == UNZ_END_OF_LIST_OF_FILE) {
         unzClose(zip);
         return entries;
     }
+    if (rc != UNZ_OK) {
+        unzClose(zip);
+        if (error) *error = FFArchiveError(@"无法读取归档目录");
+        return nil;
+    }
 
-    NSUInteger count = 0;
     do {
         unz_file_info64 info;
         NSString *name = FFArchiveCurrentEntryName(zip, &info);
-        if (!name.length) continue; // malformed entry name only; keep scanning
-
+        if (!name.length) continue;
         FFArchiveEntry *entry = [FFArchiveEntry new];
         entry.entryPath = name;
         entry.isDirectory = [name hasSuffix:@"/"];
+        entry.encrypted = (info.flag & 0x1) != 0;
         entry.size = info.uncompressed_size;
         entry.compressedSize = info.compressed_size;
         [entries addObject:entry];
-
-        if (++count >= kMaxEntries) {
+        if (entries.count >= kMaxEntries) {
             unzClose(zip);
-            if (error) *error = FFArchiveError(
-                [NSString stringWithFormat:@"归档条目超过 %lu 个，仅列出部分",
-                    (unsigned long)kMaxEntries]);
+            if (error) *error = FFArchiveError(@"归档条目超过 100000 个，仅列出部分");
             return entries;
         }
-    } while (unzGoToNextFile(zip) == UNZ_OK);
+    } while ((rc = unzGoToNextFile(zip)) == UNZ_OK);
 
+    if (rc != UNZ_END_OF_LIST_OF_FILE) {
+        unzClose(zip);
+        if (error) *error = FFArchiveError(@"归档中央目录读取失败");
+        return nil;
+    }
     unzClose(zip);
     return entries;
 }
 
-#pragma mark - Single-entry extraction
-
 - (NSString *)extractEntry:(NSString *)entryName fromArchive:(NSString *)archivePath
                toDirectory:(NSString *)destinationDirectory error:(NSError **)error
 {
+    return [self extractEntry:entryName fromArchive:archivePath toDirectory:destinationDirectory
+        password:[FFArchiveService cachedPasswordForArchivePath:archivePath] error:error];
+}
+
+- (NSString *)extractEntry:(NSString *)entryName fromArchive:(NSString *)archivePath
+               toDirectory:(NSString *)destinationDirectory password:(NSString *)password
+                      error:(NSError **)error
+{
+    if (error) *error = nil;
     if ([entryName hasSuffix:@"/"]) {
         if (error) *error = FFArchiveError(@"目录条目无法直接提取为文件");
         return nil;
@@ -231,22 +253,19 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
         return nil;
     }
 
-    // Do not use unzLocateFile(entryName.fileSystemRepresentation) here.
-    // The UI name may come from a 0x7075 Unicode extra field while the central
-    // directory stores completely different GBK/OEM bytes. Walk records and
-    // compare the same decoded display path used by listEntries instead.
     BOOL found = NO;
     unz_file_info64 info;
-    if (unzGoToFirstFile(zip) == UNZ_OK) {
-        do {
-            unz_file_info64 candidateInfo;
-            NSString *candidate = FFArchiveCurrentEntryName(zip, &candidateInfo);
-            if (candidate.length && [candidate isEqualToString:entryName]) {
-                info = candidateInfo;
-                found = YES;
-                break;
-            }
-        } while (unzGoToNextFile(zip) == UNZ_OK);
+    memset(&info, 0, sizeof(info));
+    int rc = unzGoToFirstFile(zip);
+    while (rc == UNZ_OK) {
+        unz_file_info64 candidateInfo;
+        NSString *candidate = FFArchiveCurrentEntryName(zip, &candidateInfo);
+        if (candidate.length && [candidate isEqualToString:entryName]) {
+            info = candidateInfo;
+            found = YES;
+            break;
+        }
+        rc = unzGoToNextFile(zip);
     }
     if (!found) {
         unzClose(zip);
@@ -254,22 +273,22 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
         return nil;
     }
 
-    // 符号链接条目拒绝提取（external attrs 高 16 位为 unix mode）。
-    mode_t unixMode = (mode_t)((info.external_fa >> 16) & 0xFFFF);
-    if ((unixMode & S_IFMT) == S_IFLNK) {
+    mode_t unixMode = (mode_t)((info.external_fa >> 16) & 0xffff);
+    if ((unixMode & S_IFMT) == S_IFLNK && unixMode != 0) {
         unzClose(zip);
         if (error) *error = FFArchiveError(@"符号链接条目已拒绝提取");
         return nil;
     }
-    // 加密条目明确拒绝（flag bit 0）。
-    if (info.flag & 0x1) {
+    BOOL encrypted = (info.flag & 0x1) != 0;
+    if (encrypted && password.length == 0) {
         unzClose(zip);
-        if (error) *error = FFArchiveError(@"加密条目暂不支持提取");
+        if (error) *error = FFArchivePasswordError(FFZipExtractErrorPasswordRequired,
+            @"该 ZIP 已加密，需要输入密码");
         return nil;
     }
     if (info.uncompressed_size > kMaxEntrySize) {
         unzClose(zip);
-        if (error) *error = FFArchiveError(@"条目过大（超过 2 GiB），拒绝提取");
+        if (error) *error = FFArchiveError(@"条目过大（超过 2 GiB），拒绝单独提取");
         return nil;
     }
     if (info.compression_method != 0 && info.compression_method != 8) {
@@ -278,72 +297,86 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
         return nil;
     }
 
-    NSString *base = entryName.lastPathComponent;
-    if (base.length == 0) base = @"entry";
-    NSString *destination =
-        [destinationDirectory stringByAppendingPathComponent:base];
-
+    NSString *base = entryName.lastPathComponent.length ? entryName.lastPathComponent : @"entry";
+    NSString *destination = [destinationDirectory stringByAppendingPathComponent:base];
     int output = open(destination.fileSystemRepresentation,
-        O_WRONLY | O_CREAT | O_TRUNC | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (output < 0) {
+        int saved = errno;
         unzClose(zip);
-        if (error) *error = FFArchiveError(
-            [NSString stringWithFormat:@"创建临时文件失败：%s", strerror(errno)]);
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved
+            userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:
+                @"创建临时文件失败：%s", strerror(saved)]}];
         return nil;
     }
 
-    if (unzOpenCurrentFile(zip) != UNZ_OK) {
+    int openResult = encrypted ? unzOpenCurrentFilePassword(zip, password.UTF8String)
+                               : unzOpenCurrentFile(zip);
+    if (openResult != UNZ_OK) {
         close(output);
         unlink(destination.fileSystemRepresentation);
         unzClose(zip);
-        if (error) *error = FFArchiveError(@"打开条目数据失败（可能使用了不支持的格式）");
+        if (encrypted) {
+            [FFArchiveService clearCachedPasswordForArchivePath:archivePath];
+            if (error) *error = FFArchivePasswordError(FFZipExtractErrorWrongPassword,
+                @"ZIP 密码错误或加密数据已损坏");
+        } else if (error) *error = FFArchiveError(@"打开条目数据失败");
         return nil;
     }
 
-    static uint8_t readBuffer[64 * 1024];
-    unsigned long long producedTotal = 0;
-    BOOL ok = YES;
-    NSString *failure = nil;
-    for (;;) {
-        int bytesRead = unzReadCurrentFile(zip, readBuffer, sizeof(readBuffer));
-        if (bytesRead == 0) break; // EOF
+    uint8_t *buffer = malloc(64 * 1024);
+    BOOL ok = buffer != NULL;
+    NSString *failure = buffer ? nil : @"无法分配解压缓冲区";
+    unsigned long long produced = 0;
+    while (ok) {
+        int bytesRead = unzReadCurrentFile(zip, buffer, 64 * 1024);
+        if (bytesRead == 0) break;
         if (bytesRead < 0) {
             ok = NO;
-            failure = @"解压数据读取失败";
+            failure = encrypted ? @"ZIP 密码错误或加密数据已损坏" : @"解压数据读取失败";
             break;
         }
-        ssize_t written = write(output, readBuffer, (size_t)bytesRead);
-        if (written != bytesRead) {
+        size_t offset = 0;
+        while (offset < (size_t)bytesRead) {
+            ssize_t written = write(output, buffer + offset, (size_t)bytesRead - offset);
+            if (written > 0) { offset += (size_t)written; continue; }
+            if (written < 0 && errno == EINTR) continue;
             ok = NO;
-            failure = [NSString stringWithFormat:@"写入临时文件失败：%s", strerror(errno)];
+            failure = [NSString stringWithFormat:@"写入临时文件失败：%s", strerror(errno ?: EIO)];
             break;
         }
-        producedTotal += (unsigned long long)bytesRead;
-        if (producedTotal > kMaxEntrySize + (1ULL << 20)) { // 容差 1 MiB
+        produced += (unsigned long long)bytesRead;
+        if (produced > info.uncompressed_size || produced > kMaxEntrySize) {
             ok = NO;
-            failure = @"解压数据超出预期大小，已中止";
-            break;
+            failure = @"解压数据超出声明大小，已中止";
         }
     }
+    if (buffer) free(buffer);
 
-    // minizip 在关闭当前文件时校验 CRC：UNZ_CRCERROR 表示数据损坏。
-    if (ok && unzCloseCurrentFile(zip) != UNZ_OK) {
+    int closeResult = unzCloseCurrentFile(zip);
+    if (ok && closeResult != UNZ_OK) {
         ok = NO;
-        failure = @"CRC 校验失败：数据损坏或不完整";
+        failure = encrypted ? @"ZIP 密码错误或 CRC 校验失败" : @"CRC 校验失败：数据损坏或不完整";
     }
-    if (ok && producedTotal != info.uncompressed_size) {
+    if (ok && produced != info.uncompressed_size) {
         ok = NO;
-        failure = @"解压后大小与声明不符";
+        failure = encrypted ? @"ZIP 密码错误或解压大小不符" : @"解压后大小与声明不符";
     }
-
     close(output);
     unzClose(zip);
 
     if (!ok) {
         unlink(destination.fileSystemRepresentation);
-        if (error) *error = FFArchiveError(failure ?: @"提取失败");
+        if (encrypted) {
+            [FFArchiveService clearCachedPasswordForArchivePath:archivePath];
+            if (error) *error = FFArchivePasswordError(FFZipExtractErrorWrongPassword,
+                failure ?: @"ZIP 密码错误或加密数据已损坏");
+        } else if (error && !*error) *error = FFArchiveError(failure ?: @"提取失败");
         return nil;
     }
+
+    if (encrypted && password.length)
+        [FFArchiveService cachePassword:password forArchivePath:archivePath];
     return destination;
 }
 
