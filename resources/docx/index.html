@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=4,user-scalable=yes,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-src 'none'">
+<link rel="stylesheet" href="assets/docx.css">
+<title>DOCX</title>
+</head>
+<body>
+<header id="toolbar">
+  <input id="search" type="search" placeholder="在文档中搜索" autocomplete="off" autocorrect="off" spellcheck="false">
+  <button id="prev" aria-label="上一个">↑</button>
+  <button id="next" aria-label="下一个">↓</button>
+  <span id="count"></span>
+  <button id="minus" aria-label="缩小">−</button>
+  <button id="zoom">100%</button>
+  <button id="plus" aria-label="放大">＋</button>
+</header>
+<main id="viewport"><div id="doc"></div></main>
+<div id="state">正在打开 Word 文档…</div>
+<script src="assets/jszip.min.js"></script>
+<script src="assets/docx-preview.min.js"></script>
+<script src="assets/docx-host.js"></script>
+</body>
+</html>
