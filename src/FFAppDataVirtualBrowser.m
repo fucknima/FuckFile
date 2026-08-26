@@ -91,7 +91,14 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
     UISegmentedControl *filter = [[UISegmentedControl alloc]
         initWithItems:@[@"全部", @"用户", @"系统"]];
     filter.selectedSegmentIndex = FFCurrentAppDataFilterMode();
-    filter.frame = CGRectMake(0, 0, 176, 32);
+    // Match the 44pt navigation action capsule on the right. UISegmentedControl
+    // otherwise keeps its 32pt intrinsic height inside navigationItem.titleView,
+    // which makes the two glass controls look visibly mismatched on iOS 26/27.
+    filter.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [filter.widthAnchor constraintEqualToConstant:204.0],
+        [filter.heightAnchor constraintEqualToConstant:44.0],
+    ]];
     filter.accessibilityLabel = @"App Data 类型筛选";
     [filter addTarget:self action:@selector(ff_appData_filterChanged:)
         forControlEvents:UIControlEventValueChanged];
