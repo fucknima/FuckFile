@@ -4,6 +4,8 @@
 
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
+#import <float.h>
+#import <string.h>
 
 static NSString * const FFOfficeSafetyScheme = @"ffoffice";
 static NSString * const FFOfficeSafetyHost = @"local";
