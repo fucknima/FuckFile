@@ -29,6 +29,8 @@ FuckFile_FILES = \
 	src/FFBrowserViewController.m \
 	src/FFBrowserViewController+LocalSearchFix.m \
 	src/FFBrowserViewController+IPAThumbnail.m \
+	src/FFBrowserViewController+FileIcons.m \
+	src/FFFileIconProvider.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
 	src/FFCopyEngine.m \
