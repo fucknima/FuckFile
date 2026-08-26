@@ -71,6 +71,7 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
 }
 
 static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overrides";
+static NSString * const kFFRemovedOfficeReadingStatesKey = @"FFOfficeReadingStatesV1";
 
 @implementation FFFileAssociationService
 
@@ -80,6 +81,26 @@ static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overri
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         service = [FFFileAssociationService new];
+
+        // The removed custom Office viewer used viewerID="office". Migrate any
+        // explicit user overrides to Quick Look once so upgrades never flash an
+        // "unknown viewer" toast before falling back. Its reading-state cache is
+        // dead data after the renderer removal and can be discarded safely.
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        NSDictionary *stored = [defaults dictionaryForKey:kFFAssociationOverridesKey];
+        if ([stored isKindOfClass:NSDictionary.class] && stored.count) {
+            NSMutableDictionary *migrated = [stored mutableCopy];
+            __block BOOL changed = NO;
+            [stored enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+                (void)stop;
+                if ([value isKindOfClass:NSString.class] && [value isEqualToString:@"office"]) {
+                    migrated[key] = @"quicklook";
+                    changed = YES;
+                }
+            }];
+            if (changed) [defaults setObject:migrated forKey:kFFAssociationOverridesKey];
+        }
+        [defaults removeObjectForKey:kFFRemovedOfficeReadingStatesKey];
     });
     return service;
 }
