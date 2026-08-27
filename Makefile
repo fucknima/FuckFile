@@ -50,6 +50,8 @@ FuckFile_FILES = \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
 	src/FFTextEditorViewController.m \
+	src/FFPlistDocument.m \
+	src/FFPlistValueEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
 	src/FFPdfReaderViewController.m \
