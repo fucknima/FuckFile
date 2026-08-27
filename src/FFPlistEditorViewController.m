@@ -20,6 +20,12 @@ static BOOL FFPlistNumberIsReal(NSNumber *value)
            strcmp(type, @encode(double)) == 0;
 }
 
+static BOOL FFPlistIsContainer(id value)
+{
+    return [value isKindOfClass:NSDictionary.class] ||
+           [value isKindOfClass:NSArray.class];
+}
+
 static NSString *FFPlistTypeName(id value)
 {
     if ([value isKindOfClass:NSDictionary.class]) return @"字典";
@@ -35,8 +41,6 @@ static NSString *FFPlistTypeName(id value)
 
 static NSString *FFPlistSymbolName(id value)
 {
-    if ([value isKindOfClass:NSDictionary.class]) return @"curlybraces.square";
-    if ([value isKindOfClass:NSArray.class]) return @"list.number";
     if ([value isKindOfClass:NSString.class]) return @"textformat";
     if ([value isKindOfClass:NSData.class]) return @"doc.on.doc";
     if ([value isKindOfClass:NSDate.class]) return @"calendar";
@@ -102,6 +106,15 @@ static NSString *FFPlistFormatName(NSPropertyListFormat format)
     }
 }
 
+static BOOL FFPlistPathHasPrefix(NSArray *path, NSArray *prefix)
+{
+    if (path.count < prefix.count) return NO;
+    for (NSUInteger i = 0; i < prefix.count; i++) {
+        if (![path[i] isEqual:prefix[i]]) return NO;
+    }
+    return YES;
+}
+
 typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     FFPlistNewValueString = 0,
     FFPlistNewValueBoolean,
@@ -113,16 +126,25 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     FFPlistNewValueArray,
 };
 
+@interface FFPlistTreeRow : NSObject
+@property(nonatomic, copy) NSArray *keyPath;
+@property(nonatomic, strong, nullable) id component;
+@property(nonatomic, strong) id value;
+@property(nonatomic) NSUInteger depth;
+@property(nonatomic) BOOL root;
+@end
+
+@implementation FFPlistTreeRow
+@end
+
 @interface FFPlistEditorViewController () <UISearchResultsUpdating, UIGestureRecognizerDelegate>
 @property(nonatomic, strong) FFPlistDocument *document;
-@property(nonatomic, copy) NSArray *keyPath;
-@property(nonatomic, strong) id scope;
-@property(nonatomic, copy) NSArray *rowComponents;
+@property(nonatomic, copy) NSArray<FFPlistTreeRow *> *treeRows;
+@property(nonatomic, strong) NSMutableSet<NSArray *> *expandedKeyPaths;
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, strong) UIBarButtonItem *saveButton;
 @property(nonatomic, strong) UIBarButtonItem *addButton;
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
-@property(nonatomic) BOOL ownsDocument;
 @end
 
 @implementation FFPlistEditorViewController
@@ -132,23 +154,8 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
         _document = [[FFPlistDocument alloc] initWithPath:path];
-        _keyPath = @[];
-        _ownsDocument = YES;
+        _expandedKeyPaths = [NSMutableSet setWithObject:@[]];
         self.title = path.lastPathComponent;
-    }
-    return self;
-}
-
-- (instancetype)initWithDocument:(FFPlistDocument *)document
-                         keyPath:(NSArray *)keyPath
-                           title:(NSString *)title
-{
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) {
-        _document = document;
-        _keyPath = [keyPath copy];
-        _ownsDocument = NO;
-        self.title = title;
     }
     return self;
 }
@@ -181,26 +188,32 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     self.addButton = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:nil action:nil];
     self.navigationItem.rightBarButtonItems = @[self.saveButton, self.addButton];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"返回" style:UIBarButtonItemStylePlain
+        target:self action:@selector(backTapped)];
+    self.navigationController.interactivePopGestureRecognizer.delegate = self;
 
-    if (self.ownsDocument) {
-        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-            initWithTitle:@"返回" style:UIBarButtonItemStylePlain
-            target:self action:@selector(backTapped)];
-        self.navigationController.interactivePopGestureRecognizer.delegate = self;
-    }
+    UILabel *footer = [UILabel new];
+    footer.text = @"点按字典或数组可原地展开；长按条目可添加、复制、改类型或删除。";
+    footer.textColor = UIColor.secondaryLabelColor;
+    footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    footer.textAlignment = NSTextAlignmentCenter;
+    footer.numberOfLines = 0;
+    footer.frame = CGRectMake(0, 0, 1, 52);
+    self.tableView.tableFooterView = footer;
 
     [NSNotificationCenter.defaultCenter addObserver:self
         selector:@selector(documentDidChange:)
         name:FFPlistDocumentDidChangeNotification object:self.document];
 
-    if (self.document.isLoaded) [self refreshScopeAndUI];
+    if (self.document.isLoaded) [self refreshTreeAndUI];
     else [self beginLoading];
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    [self refreshScopeAndUI];
+    [self refreshTreeAndUI];
 }
 
 #pragma mark - Loading / state
@@ -231,7 +244,9 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
                 [self showLoadError:error];
                 return;
             }
-            [self refreshScopeAndUI];
+            [self.expandedKeyPaths removeAllObjects];
+            [self.expandedKeyPaths addObject:@[]];
+            [self refreshTreeAndUI];
         });
     });
 }
@@ -252,7 +267,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 - (void)documentDidChange:(NSNotification *)note
 {
     if (note.object != self.document) return;
-    [self refreshScopeAndUI];
+    [self refreshTreeAndUI];
 }
 
 - (id)objectAtKeyPath:(NSArray *)keyPath
@@ -274,75 +289,160 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     return current;
 }
 
-- (void)refreshScopeAndUI
+- (NSArray *)childComponentsForObject:(id)object
+{
+    if ([object isKindOfClass:NSDictionary.class]) {
+        return [[object allKeys] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+            return [[a description] localizedCaseInsensitiveCompare:[b description]];
+        }];
+    }
+    if ([object isKindOfClass:NSArray.class]) {
+        NSMutableArray *indices = [NSMutableArray arrayWithCapacity:[object count]];
+        for (NSUInteger i = 0; i < [object count]; i++) [indices addObject:@(i)];
+        return indices;
+    }
+    return @[];
+}
+
+- (id)childOfObject:(id)object component:(id)component
+{
+    if ([object isKindOfClass:NSDictionary.class] &&
+        [component isKindOfClass:NSString.class]) return object[component];
+    if ([object isKindOfClass:NSArray.class] &&
+        [component isKindOfClass:NSNumber.class]) {
+        NSUInteger index = [component unsignedIntegerValue];
+        return index < [object count] ? object[index] : nil;
+    }
+    return nil;
+}
+
+- (FFPlistTreeRow *)rowWithPath:(NSArray *)path
+                      component:(id)component
+                          value:(id)value
+                          depth:(NSUInteger)depth
+                           root:(BOOL)root
+{
+    FFPlistTreeRow *row = [FFPlistTreeRow new];
+    row.keyPath = [path copy];
+    row.component = component;
+    row.value = value;
+    row.depth = depth;
+    row.root = root;
+    return row;
+}
+
+- (void)appendVisibleRowsForObject:(id)object
+                              path:(NSArray *)path
+                         component:(id)component
+                             depth:(NSUInteger)depth
+                              root:(BOOL)root
+                              into:(NSMutableArray *)rows
+{
+    if (!object) return;
+    [rows addObject:[self rowWithPath:path component:component value:object depth:depth root:root]];
+    if (!FFPlistIsContainer(object) || ![self.expandedKeyPaths containsObject:path]) return;
+
+    for (id childComponent in [self childComponentsForObject:object]) {
+        id child = [self childOfObject:object component:childComponent];
+        if (!child) continue;
+        NSArray *childPath = [path arrayByAddingObject:childComponent];
+        [self appendVisibleRowsForObject:child path:childPath component:childComponent
+            depth:depth + 1 root:NO into:rows];
+    }
+}
+
+- (void)appendAllRowsForObject:(id)object
+                          path:(NSArray *)path
+                     component:(id)component
+                         depth:(NSUInteger)depth
+                          root:(BOOL)root
+                          into:(NSMutableArray *)rows
+{
+    if (!object) return;
+    [rows addObject:[self rowWithPath:path component:component value:object depth:depth root:root]];
+    if (!FFPlistIsContainer(object)) return;
+    for (id childComponent in [self childComponentsForObject:object]) {
+        id child = [self childOfObject:object component:childComponent];
+        if (!child) continue;
+        NSArray *childPath = [path arrayByAddingObject:childComponent];
+        [self appendAllRowsForObject:child path:childPath component:childComponent
+            depth:depth + 1 root:NO into:rows];
+    }
+}
+
+- (NSString *)displayNameForRow:(FFPlistTreeRow *)row
+{
+    if (row.root) return @"Root";
+    if ([row.component isKindOfClass:NSNumber.class])
+        return [NSString stringWithFormat:@"[%@]", row.component];
+    return [row.component description] ?: @"";
+}
+
+- (BOOL)row:(FFPlistTreeRow *)row matchesQuery:(NSString *)query
+{
+    if (query.length == 0) return YES;
+    NSString *name = [self displayNameForRow:row];
+    NSString *summary = FFPlistValueSummary(row.value);
+    NSString *type = FFPlistTypeName(row.value);
+    NSString *path = [self pathStringForKeyPath:row.keyPath];
+    return [name rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+           [summary rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+           [type rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+           [path rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+- (NSArray<FFPlistTreeRow *> *)searchRowsForQuery:(NSString *)query
+{
+    NSMutableArray *allRows = [NSMutableArray array];
+    [self appendAllRowsForObject:self.document.rootObject path:@[] component:nil
+        depth:0 root:YES into:allRows];
+
+    NSMutableSet<NSArray *> *visiblePaths = [NSMutableSet set];
+    for (FFPlistTreeRow *row in allRows) {
+        if (![self row:row matchesQuery:query]) continue;
+        for (NSUInteger length = 0; length <= row.keyPath.count; length++) {
+            [visiblePaths addObject:[row.keyPath subarrayWithRange:NSMakeRange(0, length)]];
+        }
+    }
+    if (visiblePaths.count == 0) return @[];
+
+    NSMutableArray *result = [NSMutableArray array];
+    for (FFPlistTreeRow *row in allRows) {
+        if ([visiblePaths containsObject:row.keyPath]) [result addObject:row];
+    }
+    return result;
+}
+
+- (void)refreshTreeAndUI
 {
     if (!self.document.isLoaded) return;
-    self.scope = [self objectAtKeyPath:self.keyPath];
-
-    if (!self.scope && self.keyPath.count > 0) {
-        [self.navigationController popViewControllerAnimated:YES];
-        return;
-    }
 
     NSString *query = [self.searchController.searchBar.text
         stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray *rows = [NSMutableArray array];
-
-    if ([self.scope isKindOfClass:NSDictionary.class]) {
-        NSArray *keys = [[self.scope allKeys] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
-            return [[a description] localizedCaseInsensitiveCompare:[b description]];
-        }];
-        for (NSString *key in keys) {
-            id value = self.scope[key];
-            if (query.length == 0 ||
-                [key rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                [FFPlistValueSummary(value) rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                [FFPlistTypeName(value) rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound)
-                [rows addObject:key];
-        }
-    } else if ([self.scope isKindOfClass:NSArray.class]) {
-        for (NSUInteger index = 0; index < [self.scope count]; index++) {
-            id value = self.scope[index];
-            NSString *indexText = [NSString stringWithFormat:@"#%lu", (unsigned long)index];
-            if (query.length == 0 ||
-                [indexText rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                [FFPlistValueSummary(value) rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                [FFPlistTypeName(value) rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound)
-                [rows addObject:@(index)];
-        }
+    if (query.length > 0) {
+        self.treeRows = [self searchRowsForQuery:query];
+    } else {
+        NSMutableArray *rows = [NSMutableArray array];
+        [self appendVisibleRowsForObject:self.document.rootObject path:@[] component:nil
+            depth:0 root:YES into:rows];
+        self.treeRows = rows;
     }
 
-    self.rowComponents = rows;
     self.saveButton.enabled = self.document.isDirty;
-    self.addButton.enabled = [self.scope isKindOfClass:NSDictionary.class] ||
-                             [self.scope isKindOfClass:NSArray.class];
-    self.addButton.menu = [self buildAddMenu];
+    self.addButton.enabled = FFPlistIsContainer(self.document.rootObject);
+    self.addButton.menu = [self buildAddMenuForContainerPath:@[] title:@"添加到 Root"];
 
     NSString *format = FFPlistFormatName(self.document.format);
     NSString *dirty = self.document.isDirty ? @" · 已修改" : @"";
-    self.navigationItem.prompt = [NSString stringWithFormat:@"%@%@ · %@",
-        format, dirty, [self pathDisplayString]];
+    self.navigationItem.prompt = [NSString stringWithFormat:@"%@%@ · 树形视图", format, dirty];
 
     [self.tableView reloadData];
     [self updateEmptyState];
 }
 
-- (NSString *)pathDisplayString
-{
-    if (self.keyPath.count == 0) return @"Root";
-    NSMutableArray *parts = [NSMutableArray arrayWithObject:@"Root"];
-    for (id component in self.keyPath) {
-        if ([component isKindOfClass:NSNumber.class])
-            [parts addObject:[NSString stringWithFormat:@"[%@]", component]];
-        else
-            [parts addObject:[component description]];
-    }
-    return [parts componentsJoinedByString:@" › "];
-}
-
 - (void)updateEmptyState
 {
-    if (!self.document.isLoaded || self.rowComponents.count > 0) {
+    if (!self.document.isLoaded || self.treeRows.count > 0) {
         self.tableView.backgroundView = nil;
         return;
     }
@@ -352,7 +452,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     label.numberOfLines = 0;
     label.text = self.searchController.searchBar.text.length ?
-        @"没有匹配的 Key 或 Value" : @"当前容器为空\n点击右上角 + 添加条目";
+        @"没有匹配的 Key 或 Value" : @"属性表为空";
     self.tableView.backgroundView = label;
 }
 
@@ -360,7 +460,35 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 
 - (void)updateSearchResultsForSearchController:(__unused UISearchController *)searchController
 {
-    [self refreshScopeAndUI];
+    [self refreshTreeAndUI];
+}
+
+- (void)expandAncestorsForPath:(NSArray *)path
+{
+    for (NSUInteger length = 0; length <= path.count; length++) {
+        NSArray *prefix = [path subarrayWithRange:NSMakeRange(0, length)];
+        id value = [self objectAtKeyPath:prefix];
+        if (FFPlistIsContainer(value)) [self.expandedKeyPaths addObject:prefix];
+    }
+}
+
+- (void)revealPathAfterSearch:(NSArray *)path
+{
+    [self expandAncestorsForPath:path];
+    self.searchController.searchBar.text = @"";
+    self.searchController.active = NO;
+    [self refreshTreeAndUI];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSUInteger index = [self.treeRows indexOfObjectPassingTest:^BOOL(FFPlistTreeRow *row, NSUInteger idx, BOOL *stop) {
+            (void)idx; (void)stop;
+            return [row.keyPath isEqual:path];
+        }];
+        if (index != NSNotFound) {
+            [self.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:(NSInteger)index inSection:0]
+                atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
+        }
+    });
 }
 
 #pragma mark - Table
@@ -368,79 +496,92 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     (void)tableView; (void)section;
-    return (NSInteger)self.rowComponents.count;
+    return (NSInteger)self.treeRows.count;
 }
 
-- (id)valueForComponent:(id)component
+- (BOOL)isRowExpandedAtIndex:(NSUInteger)index
 {
-    if ([self.scope isKindOfClass:NSDictionary.class] &&
-        [component isKindOfClass:NSString.class]) return self.scope[component];
-    if ([self.scope isKindOfClass:NSArray.class] &&
-        [component isKindOfClass:NSNumber.class]) {
-        NSUInteger index = [component unsignedIntegerValue];
-        return index < [self.scope count] ? self.scope[index] : nil;
-    }
-    return nil;
+    if (index >= self.treeRows.count) return NO;
+    FFPlistTreeRow *row = self.treeRows[index];
+    if (!FFPlistIsContainer(row.value)) return NO;
+
+    NSString *query = [self.searchController.searchBar.text
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (query.length == 0) return [self.expandedKeyPaths containsObject:row.keyPath];
+
+    if (index + 1 >= self.treeRows.count) return NO;
+    return self.treeRows[index + 1].depth > row.depth;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    static NSString *identifier = @"PlistNode";
+    static NSString *identifier = @"PlistTreeNode";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
             reuseIdentifier:identifier];
 
-    id component = self.rowComponents[indexPath.row];
-    id value = [self valueForComponent:component];
-    BOOL dictionary = [self.scope isKindOfClass:NSDictionary.class];
+    FFPlistTreeRow *row = self.treeRows[(NSUInteger)indexPath.row];
+    BOOL container = FFPlistIsContainer(row.value);
+    BOOL expanded = [self isRowExpandedAtIndex:(NSUInteger)indexPath.row];
 
-    cell.textLabel.text = dictionary ? [component description] :
-        [NSString stringWithFormat:@"[%@]", component];
-    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    cell.indentationWidth = 20.0;
+    cell.indentationLevel = (NSInteger)MIN(row.depth, 12);
+    cell.textLabel.text = [self displayNameForRow:row];
+    cell.textLabel.font = row.root
+        ? [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]
+        : (container ? [UIFont preferredFontForTextStyle:UIFontTextStyleBody]
+                     : [UIFont preferredFontForTextStyle:UIFontTextStyleBody]);
     cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@",
-        FFPlistTypeName(value), FFPlistValueSummary(value)];
+        FFPlistTypeName(row.value), FFPlistValueSummary(row.value)];
     cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     cell.detailTextLabel.numberOfLines = 2;
-    cell.imageView.image = [UIImage systemImageNamed:FFPlistSymbolName(value)];
-    cell.imageView.tintColor = UIColor.systemBlueColor;
-    BOOL container = [value isKindOfClass:NSDictionary.class] ||
-                     [value isKindOfClass:NSArray.class];
-    cell.accessoryType = container ? UITableViewCellAccessoryDisclosureIndicator :
-                                     UITableViewCellAccessoryNone;
+
+    if (container) {
+        cell.imageView.image = [UIImage systemImageNamed:(expanded ? @"chevron.down" : @"chevron.right")];
+        cell.imageView.tintColor = UIColor.secondaryLabelColor;
+    } else {
+        cell.imageView.image = [UIImage systemImageNamed:FFPlistSymbolName(row.value)];
+        cell.imageView.tintColor = UIColor.systemBlueColor;
+    }
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = nil;
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    [self openComponent:self.rowComponents[indexPath.row]];
+    FFPlistTreeRow *row = self.treeRows[(NSUInteger)indexPath.row];
+    [self openRow:row];
 }
 
-- (void)openComponent:(id)component
+- (void)openRow:(FFPlistTreeRow *)row
 {
-    id value = [self valueForComponent:component];
-    if (!value) return;
+    if (!row.value) return;
+    if (FFPlistIsContainer(row.value)) {
+        NSString *query = [self.searchController.searchBar.text
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (query.length > 0) {
+            [self revealPathAfterSearch:row.keyPath];
+            return;
+        }
 
-    if ([value isKindOfClass:NSDictionary.class] || [value isKindOfClass:NSArray.class]) {
-        NSString *title = [component isKindOfClass:NSNumber.class]
-            ? [NSString stringWithFormat:@"[%@]", component] : [component description];
-        FFPlistEditorViewController *next = [[FFPlistEditorViewController alloc]
-            initWithDocument:self.document
-            keyPath:[self.keyPath arrayByAddingObject:component]
-            title:title];
-        [self.navigationController pushViewController:next animated:YES];
+        if ([self.expandedKeyPaths containsObject:row.keyPath])
+            [self.expandedKeyPaths removeObject:row.keyPath];
+        else
+            [self.expandedKeyPaths addObject:row.keyPath];
+        [self refreshTreeAndUI];
         return;
     }
 
     __weak typeof(self) weakSelf = self;
     FFPlistValueEditorViewController *editor =
-        [[FFPlistValueEditorViewController alloc] initWithValue:value
-            title:[component isKindOfClass:NSNumber.class]
-                ? [NSString stringWithFormat:@"[%@]", component] : [component description]
+        [[FFPlistValueEditorViewController alloc] initWithValue:row.value
+            title:[self displayNameForRow:row]
             commitHandler:^(id newValue) {
-                [weakSelf replaceComponent:component withValue:newValue];
+                [weakSelf replaceValueAtPath:row.keyPath withValue:newValue];
             }];
     [self.navigationController pushViewController:editor animated:YES];
 }
@@ -449,13 +590,15 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     (void)tableView;
-    id component = self.rowComponents[indexPath.row];
+    FFPlistTreeRow *row = self.treeRows[(NSUInteger)indexPath.row];
+    if (row.root) return nil;
+
     __weak typeof(self) weakSelf = self;
     UIContextualAction *deleteAction = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleDestructive
         title:@"删除" handler:^(__unused UIContextualAction *action,
             __unused UIView *sourceView, void (^completionHandler)(BOOL)) {
-            [weakSelf confirmDeleteComponent:component completion:completionHandler];
+            [weakSelf confirmDeletePath:row.keyPath completion:completionHandler];
         }];
     deleteAction.image = [UIImage systemImageNamed:@"trash"];
     return [UISwipeActionsConfiguration configurationWithActions:@[deleteAction]];
@@ -466,107 +609,210 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
                                       point:(CGPoint)point
 {
     (void)tableView; (void)point;
-    id component = self.rowComponents[indexPath.row];
+    FFPlistTreeRow *row = self.treeRows[(NSUInteger)indexPath.row];
     __weak typeof(self) weakSelf = self;
+
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
         previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggested) {
-            UIAction *open = [UIAction actionWithTitle:@"打开 / 编辑"
-                image:[UIImage systemImageNamed:@"pencil"] identifier:nil
-                handler:^(__unused UIAction *action) { [weakSelf openComponent:component]; }];
-            UIAction *copyValue = [UIAction actionWithTitle:@"复制值"
+            NSMutableArray *children = [NSMutableArray array];
+
+            if (FFPlistIsContainer(row.value)) {
+                BOOL expanded = [weakSelf.expandedKeyPaths containsObject:row.keyPath];
+                [children addObject:[UIAction actionWithTitle:(expanded ? @"收起" : @"展开")
+                    image:[UIImage systemImageNamed:(expanded ? @"chevron.up" : @"chevron.down")]
+                    identifier:nil handler:^(__unused UIAction *action) { [weakSelf openRow:row]; }]];
+                [children addObject:[weakSelf buildAddMenuForContainerPath:row.keyPath title:@"添加子项"]];
+            } else {
+                [children addObject:[UIAction actionWithTitle:@"编辑"
+                    image:[UIImage systemImageNamed:@"pencil"] identifier:nil
+                    handler:^(__unused UIAction *action) { [weakSelf openRow:row]; }]];
+            }
+
+            [children addObject:[UIAction actionWithTitle:@"复制值"
                 image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
-                handler:^(__unused UIAction *action) { [weakSelf copyValueForComponent:component]; }];
-            UIAction *copyPath = [UIAction actionWithTitle:@"复制 Key Path"
+                handler:^(__unused UIAction *action) { [weakSelf copyValueAtPath:row.keyPath]; }]];
+            [children addObject:[UIAction actionWithTitle:@"复制 Key Path"
                 image:[UIImage systemImageNamed:@"point.topleft.down.curvedto.point.bottomright.up"]
                 identifier:nil handler:^(__unused UIAction *action) {
-                    [UIPasteboard generalPasteboard].string = [weakSelf pathStringForComponent:component];
-                }];
-            NSMutableArray *children = [NSMutableArray arrayWithObjects:open, copyValue, copyPath, nil];
+                    [UIPasteboard generalPasteboard].string = [weakSelf pathStringForKeyPath:row.keyPath];
+                }]];
 
-            if ([weakSelf.scope isKindOfClass:NSDictionary.class]) {
-                UIAction *rename = [UIAction actionWithTitle:@"重命名 Key"
+            if (row.root) {
+                [children addObject:[UIAction actionWithTitle:@"全部展开"
+                    image:[UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left"] identifier:nil
+                    handler:^(__unused UIAction *action) { [weakSelf expandAll]; }]];
+                [children addObject:[UIAction actionWithTitle:@"全部收起"
+                    image:[UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right"] identifier:nil
+                    handler:^(__unused UIAction *action) { [weakSelf collapseAll]; }]];
+                return [UIMenu menuWithTitle:@"" children:children];
+            }
+
+            id parent = [weakSelf parentObjectForPath:row.keyPath];
+            if ([parent isKindOfClass:NSDictionary.class]) {
+                [children addObject:[UIAction actionWithTitle:@"重命名 Key"
                     image:[UIImage systemImageNamed:@"character.cursor.ibeam"] identifier:nil
-                    handler:^(__unused UIAction *action) { [weakSelf promptRenameComponent:component]; }];
-                [children addObject:rename];
+                    handler:^(__unused UIAction *action) { [weakSelf promptRenamePath:row.keyPath]; }]];
             }
 
             [children addObject:[UIAction actionWithTitle:@"复制条目"
                 image:[UIImage systemImageNamed:@"plus.square.on.square"] identifier:nil
-                handler:^(__unused UIAction *action) { [weakSelf duplicateComponent:component]; }]];
+                handler:^(__unused UIAction *action) { [weakSelf duplicatePath:row.keyPath]; }]];
 
-            if ([weakSelf.scope isKindOfClass:NSArray.class]) {
-                NSUInteger idx = [component unsignedIntegerValue];
+            if ([parent isKindOfClass:NSArray.class]) {
+                NSUInteger idx = [row.keyPath.lastObject unsignedIntegerValue];
                 if (idx > 0)
                     [children addObject:[UIAction actionWithTitle:@"上移"
                         image:[UIImage systemImageNamed:@"arrow.up"] identifier:nil
-                        handler:^(__unused UIAction *action) { [weakSelf moveArrayComponent:component offset:-1]; }]];
-                if (idx + 1 < [weakSelf.scope count])
+                        handler:^(__unused UIAction *action) { [weakSelf moveArrayPath:row.keyPath offset:-1]; }]];
+                if (idx + 1 < [parent count])
                     [children addObject:[UIAction actionWithTitle:@"下移"
                         image:[UIImage systemImageNamed:@"arrow.down"] identifier:nil
-                        handler:^(__unused UIAction *action) { [weakSelf moveArrayComponent:component offset:1]; }]];
+                        handler:^(__unused UIAction *action) { [weakSelf moveArrayPath:row.keyPath offset:1]; }]];
             }
 
-            [children addObject:[weakSelf changeTypeMenuForComponent:component]];
-            UIAction *deleteMenuAction = [UIAction actionWithTitle:@"删除"
+            [children addObject:[weakSelf changeTypeMenuForPath:row.keyPath]];
+            [children addObject:[UIAction actionWithTitle:@"删除"
                 image:[UIImage systemImageNamed:@"trash"] identifier:nil
                 handler:^(__unused UIAction *action) {
-                    [weakSelf confirmDeleteComponent:component completion:nil];
-                }];
-            [children addObject:deleteMenuAction];
+                    [weakSelf confirmDeletePath:row.keyPath completion:nil];
+                }]];
             return [UIMenu menuWithTitle:@"" children:children];
         }];
 }
 
+#pragma mark - Tree expansion
+
+- (void)collectContainerPathsForObject:(id)object path:(NSArray *)path into:(NSMutableSet *)paths
+{
+    if (!FFPlistIsContainer(object)) return;
+    [paths addObject:path];
+    for (id component in [self childComponentsForObject:object]) {
+        id child = [self childOfObject:object component:component];
+        if (!child) continue;
+        [self collectContainerPathsForObject:child
+            path:[path arrayByAddingObject:component] into:paths];
+    }
+}
+
+- (void)expandAll
+{
+    NSMutableSet *paths = [NSMutableSet set];
+    [self collectContainerPathsForObject:self.document.rootObject path:@[] into:paths];
+    self.expandedKeyPaths = paths;
+    [self refreshTreeAndUI];
+}
+
+- (void)collapseAll
+{
+    [self.expandedKeyPaths removeAllObjects];
+    if (FFPlistIsContainer(self.document.rootObject)) [self.expandedKeyPaths addObject:@[]];
+    [self refreshTreeAndUI];
+}
+
+- (void)removeExpandedPathsWithPrefix:(NSArray *)prefix
+{
+    NSArray *snapshot = self.expandedKeyPaths.allObjects;
+    for (NSArray *path in snapshot) {
+        if (FFPlistPathHasPrefix(path, prefix)) [self.expandedKeyPaths removeObject:path];
+    }
+}
+
+- (void)removeExpandedDescendantsOfPath:(NSArray *)path
+{
+    NSArray *snapshot = self.expandedKeyPaths.allObjects;
+    for (NSArray *candidate in snapshot) {
+        if (candidate.count > path.count && FFPlistPathHasPrefix(candidate, path))
+            [self.expandedKeyPaths removeObject:candidate];
+    }
+}
+
+- (void)remapExpandedPathsFromPrefix:(NSArray *)oldPrefix toPrefix:(NSArray *)newPrefix
+{
+    NSArray *snapshot = self.expandedKeyPaths.allObjects;
+    for (NSArray *path in snapshot) {
+        if (!FFPlistPathHasPrefix(path, oldPrefix)) continue;
+        NSArray *suffix = [path subarrayWithRange:NSMakeRange(oldPrefix.count, path.count - oldPrefix.count)];
+        NSArray *replacement = [newPrefix arrayByAddingObjectsFromArray:suffix];
+        [self.expandedKeyPaths removeObject:path];
+        [self.expandedKeyPaths addObject:replacement];
+    }
+}
+
 #pragma mark - Mutations
 
-- (void)replaceComponent:(id)component withValue:(id)value
+- (id)parentObjectForPath:(NSArray *)path
 {
-    if (!value) return;
-    if ([self.scope isKindOfClass:NSDictionary.class] && [component isKindOfClass:NSString.class])
-        self.scope[component] = value;
-    else if ([self.scope isKindOfClass:NSArray.class] && [component isKindOfClass:NSNumber.class]) {
+    if (path.count == 0) return nil;
+    NSArray *parentPath = [path subarrayWithRange:NSMakeRange(0, path.count - 1)];
+    return [self objectAtKeyPath:parentPath];
+}
+
+- (void)replaceValueAtPath:(NSArray *)path withValue:(id)value
+{
+    if (!value || path.count == 0) return;
+    id parent = [self parentObjectForPath:path];
+    id component = path.lastObject;
+    if ([parent isKindOfClass:NSDictionary.class] && [component isKindOfClass:NSString.class]) {
+        parent[component] = value;
+    } else if ([parent isKindOfClass:NSArray.class] && [component isKindOfClass:NSNumber.class]) {
         NSUInteger index = [component unsignedIntegerValue];
-        if (index >= [self.scope count]) return;
-        [self.scope replaceObjectAtIndex:index withObject:value];
+        if (index >= [parent count]) return;
+        [parent replaceObjectAtIndex:index withObject:value];
     } else return;
+
+    if (!FFPlistIsContainer(value)) [self removeExpandedPathsWithPrefix:path];
     [self.document markChanged];
 }
 
-- (void)confirmDeleteComponent:(id)component completion:(void (^ _Nullable)(BOOL))completion
+- (void)confirmDeletePath:(NSArray *)path completion:(void (^ _Nullable)(BOOL))completion
 {
+    NSString *name = path.count ? [path.lastObject description] : @"Root";
+    if ([path.lastObject isKindOfClass:NSNumber.class])
+        name = [NSString stringWithFormat:@"[%@]", path.lastObject];
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除条目？"
-        message:[NSString stringWithFormat:@"将删除 %@。此操作在保存文件前仍可通过放弃修改撤销。",
-            [component isKindOfClass:NSNumber.class]
-                ? [NSString stringWithFormat:@"[%@]", component] : [component description]]
+        message:[NSString stringWithFormat:@"将删除 %@。此操作在保存文件前仍可通过放弃修改撤销。", name]
         preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel
         handler:^(__unused UIAlertAction *action) { if (completion) completion(NO); }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
-            BOOL removed = [weakSelf removeComponent:component];
+            BOOL removed = [weakSelf removePath:path];
             if (completion) completion(removed);
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (BOOL)removeComponent:(id)component
+- (BOOL)removePath:(NSArray *)path
 {
-    if ([self.scope isKindOfClass:NSDictionary.class] && [component isKindOfClass:NSString.class]) {
-        if (!self.scope[component]) return NO;
-        [self.scope removeObjectForKey:component];
-    } else if ([self.scope isKindOfClass:NSArray.class] && [component isKindOfClass:NSNumber.class]) {
+    if (path.count == 0) return NO;
+    id parent = [self parentObjectForPath:path];
+    id component = path.lastObject;
+    NSArray *parentPath = [path subarrayWithRange:NSMakeRange(0, path.count - 1)];
+
+    if ([parent isKindOfClass:NSDictionary.class] && [component isKindOfClass:NSString.class]) {
+        if (!parent[component]) return NO;
+        [parent removeObjectForKey:component];
+        [self removeExpandedPathsWithPrefix:path];
+    } else if ([parent isKindOfClass:NSArray.class] && [component isKindOfClass:NSNumber.class]) {
         NSUInteger index = [component unsignedIntegerValue];
-        if (index >= [self.scope count]) return NO;
-        [self.scope removeObjectAtIndex:index];
+        if (index >= [parent count]) return NO;
+        [parent removeObjectAtIndex:index];
+        [self removeExpandedDescendantsOfPath:parentPath];
     } else return NO;
+
     [self.document markChanged];
     return YES;
 }
 
-- (void)promptRenameComponent:(NSString *)component
+- (void)promptRenamePath:(NSArray *)path
 {
-    if (![self.scope isKindOfClass:NSDictionary.class]) return;
+    if (path.count == 0) return;
+    id parent = [self parentObjectForPath:path];
+    NSString *component = [path.lastObject isKindOfClass:NSString.class] ? path.lastObject : nil;
+    if (![parent isKindOfClass:NSDictionary.class] || !component) return;
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重命名 Key"
         message:nil preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -583,53 +829,69 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (newKey.length == 0) { [weakSelf showMessage:@"Key 不能为空" title:@"无法重命名"]; return; }
             if ([newKey isEqualToString:component]) return;
-            if (weakSelf.scope[newKey] != nil) {
+            if (parent[newKey] != nil) {
                 [weakSelf showMessage:@"同名 Key 已存在，不会覆盖原值。" title:@"无法重命名"];
                 return;
             }
-            id value = weakSelf.scope[component];
+            id value = parent[component];
             if (!value) return;
-            weakSelf.scope[newKey] = value;
-            [weakSelf.scope removeObjectForKey:component];
+            parent[newKey] = value;
+            [parent removeObjectForKey:component];
+
+            NSArray *parentPath = [path subarrayWithRange:NSMakeRange(0, path.count - 1)];
+            NSArray *newPath = [parentPath arrayByAddingObject:newKey];
+            [weakSelf remapExpandedPathsFromPrefix:path toPrefix:newPath];
             [weakSelf.document markChanged];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)duplicateComponent:(id)component
+- (void)duplicatePath:(NSArray *)path
 {
-    id value = [self valueForComponent:component];
-    if (!value) return;
+    if (path.count == 0) return;
+    id value = [self objectAtKeyPath:path];
+    id parent = [self parentObjectForPath:path];
+    id component = path.lastObject;
+    if (!value || !parent) return;
     id copy = FFPlistEditableCopy(value);
-    if ([self.scope isKindOfClass:NSDictionary.class]) {
+
+    if ([parent isKindOfClass:NSDictionary.class] && [component isKindOfClass:NSString.class]) {
         NSString *base = [NSString stringWithFormat:@"%@ copy", component];
         NSString *candidate = base;
         NSUInteger n = 2;
-        while (self.scope[candidate] != nil)
+        while (parent[candidate] != nil)
             candidate = [NSString stringWithFormat:@"%@ %lu", base, (unsigned long)n++];
-        self.scope[candidate] = copy;
-    } else if ([self.scope isKindOfClass:NSArray.class]) {
+        parent[candidate] = copy;
+    } else if ([parent isKindOfClass:NSArray.class] && [component isKindOfClass:NSNumber.class]) {
         NSUInteger index = [component unsignedIntegerValue];
-        if (index >= [self.scope count]) return;
-        [self.scope insertObject:copy atIndex:index + 1];
-    }
+        if (index >= [parent count]) return;
+        [parent insertObject:copy atIndex:index + 1];
+        NSArray *parentPath = [path subarrayWithRange:NSMakeRange(0, path.count - 1)];
+        [self removeExpandedDescendantsOfPath:parentPath];
+    } else return;
+
     [self.document markChanged];
 }
 
-- (void)moveArrayComponent:(NSNumber *)component offset:(NSInteger)offset
+- (void)moveArrayPath:(NSArray *)path offset:(NSInteger)offset
 {
-    if (![self.scope isKindOfClass:NSArray.class]) return;
-    NSInteger from = component.integerValue, to = from + offset;
-    if (from < 0 || to < 0 || from >= (NSInteger)[self.scope count] || to >= (NSInteger)[self.scope count]) return;
-    id value = self.scope[(NSUInteger)from];
-    [self.scope removeObjectAtIndex:(NSUInteger)from];
-    [self.scope insertObject:value atIndex:(NSUInteger)to];
+    if (path.count == 0) return;
+    id parent = [self parentObjectForPath:path];
+    if (![parent isKindOfClass:NSArray.class]) return;
+
+    NSInteger from = [path.lastObject integerValue], to = from + offset;
+    if (from < 0 || to < 0 || from >= (NSInteger)[parent count] || to >= (NSInteger)[parent count]) return;
+    id value = parent[(NSUInteger)from];
+    [parent removeObjectAtIndex:(NSUInteger)from];
+    [parent insertObject:value atIndex:(NSUInteger)to];
+    NSArray *parentPath = [path subarrayWithRange:NSMakeRange(0, path.count - 1)];
+    [self removeExpandedDescendantsOfPath:parentPath];
     [self.document markChanged];
 }
 
-- (void)copyValueForComponent:(id)component
+- (void)copyValueAtPath:(NSArray *)path
 {
-    id value = [self valueForComponent:component];
+    id value = [self objectAtKeyPath:path];
     NSString *text = nil;
     if ([value isKindOfClass:NSData.class]) text = [value base64EncodedStringWithOptions:0];
     else if ([value isKindOfClass:NSDate.class]) text = [value description];
@@ -639,10 +901,10 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     [UIPasteboard generalPasteboard].string = text ?: @"";
 }
 
-- (NSString *)pathStringForComponent:(id)component
+- (NSString *)pathStringForKeyPath:(NSArray *)keyPath
 {
     NSMutableString *path = [NSMutableString stringWithString:@"Root"];
-    for (id part in [self.keyPath arrayByAddingObject:component]) {
+    for (id part in keyPath) {
         if ([part isKindOfClass:NSNumber.class]) [path appendFormat:@"[%@]", part];
         else [path appendFormat:@".%@", part];
     }
@@ -651,8 +913,11 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 
 #pragma mark - Add / type
 
-- (UIMenu *)buildAddMenu
+- (UIMenu *)buildAddMenuForContainerPath:(NSArray *)containerPath title:(NSString *)title
 {
+    id container = [self objectAtKeyPath:containerPath];
+    if (!FFPlistIsContainer(container)) return [UIMenu menuWithTitle:title children:@[]];
+
     NSMutableArray *actions = [NSMutableArray array];
     NSArray *specs = @[
         @[@(FFPlistNewValueString), @"字符串", @"textformat"],
@@ -669,9 +934,9 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
         FFPlistNewValueType type = [spec[0] integerValue];
         [actions addObject:[UIAction actionWithTitle:spec[1]
             image:[UIImage systemImageNamed:spec[2]] identifier:nil
-            handler:^(__unused UIAction *action) { [weakSelf addValueOfType:type]; }]];
+            handler:^(__unused UIAction *action) { [weakSelf addValueOfType:type toContainerPath:containerPath]; }]];
     }
-    return [UIMenu menuWithTitle:@"添加条目" children:actions];
+    return [UIMenu menuWithTitle:title children:actions];
 }
 
 - (id)defaultValueForType:(FFPlistNewValueType)type
@@ -702,18 +967,20 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     }
 }
 
-- (void)addValueOfType:(FFPlistNewValueType)type
+- (void)addValueOfType:(FFPlistNewValueType)type toContainerPath:(NSArray *)containerPath
 {
-    if ([self.scope isKindOfClass:NSArray.class]) {
-        [self.scope addObject:[self defaultValueForType:type]];
+    id container = [self objectAtKeyPath:containerPath];
+    if ([container isKindOfClass:NSArray.class]) {
+        [container addObject:[self defaultValueForType:type]];
+        [self.expandedKeyPaths addObject:containerPath];
         [self.document markChanged];
         return;
     }
-    if (![self.scope isKindOfClass:NSDictionary.class]) return;
+    if (![container isKindOfClass:NSDictionary.class]) return;
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:
         [NSString stringWithFormat:@"添加%@", [self nameForType:type]]
-        message:@"输入新的 Key；已有 Key 不会被覆盖。"
+        message:[NSString stringWithFormat:@"添加到 %@；已有 Key 不会被覆盖。", [self pathStringForKeyPath:containerPath]]
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"Key";
@@ -727,17 +994,18 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
             NSString *key = [alert.textFields.firstObject.text
                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (key.length == 0) { [weakSelf showMessage:@"Key 不能为空" title:@"无法添加"]; return; }
-            if (weakSelf.scope[key] != nil) {
+            if (container[key] != nil) {
                 [weakSelf showMessage:@"同名 Key 已存在，不会覆盖原值。" title:@"无法添加"];
                 return;
             }
-            weakSelf.scope[key] = [weakSelf defaultValueForType:type];
+            container[key] = [weakSelf defaultValueForType:type];
+            [weakSelf.expandedKeyPaths addObject:containerPath];
             [weakSelf.document markChanged];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (UIMenu *)changeTypeMenuForComponent:(id)component
+- (UIMenu *)changeTypeMenuForPath:(NSArray *)path
 {
     NSArray *specs = @[
         @[@(FFPlistNewValueString), @"字符串"], @[@(FFPlistNewValueBoolean), @"布尔"],
@@ -750,14 +1018,14 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     for (NSArray *spec in specs) {
         FFPlistNewValueType type = [spec[0] integerValue];
         [actions addObject:[UIAction actionWithTitle:spec[1] image:nil identifier:nil
-            handler:^(__unused UIAction *action) { [weakSelf confirmChangeComponent:component toType:type]; }]];
+            handler:^(__unused UIAction *action) { [weakSelf confirmChangePath:path toType:type]; }]];
     }
     return [UIMenu menuWithTitle:@"更改类型（重置值）"
         image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"] identifier:nil
         options:0 children:actions];
 }
 
-- (void)confirmChangeComponent:(id)component toType:(FFPlistNewValueType)type
+- (void)confirmChangePath:(NSArray *)path toType:(FFPlistNewValueType)type
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"更改类型？"
         message:[NSString stringWithFormat:@"当前值将被重置为新的%@默认值。", [self nameForType:type]]
@@ -766,7 +1034,8 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"更改" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
-            [weakSelf replaceComponent:component withValue:[weakSelf defaultValueForType:type]];
+            [weakSelf removeExpandedPathsWithPrefix:path];
+            [weakSelf replaceValueAtPath:path withValue:[weakSelf defaultValueForType:type]];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -856,28 +1125,17 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     else [self showMessage:error.localizedDescription ?: @"副本写入失败" title:@"副本保存失败"];
 }
 
-- (FFPlistEditorViewController *)rootEditor
-{
-    for (UIViewController *controller in self.navigationController.viewControllers) {
-        if ([controller isKindOfClass:FFPlistEditorViewController.class]) {
-            FFPlistEditorViewController *editor = (FFPlistEditorViewController *)controller;
-            if (editor.document == self.document && editor.keyPath.count == 0) return editor;
-        }
-    }
-    return self;
-}
-
 - (void)reloadFromDiskDiscardingChanges
 {
-    FFPlistEditorViewController *root = [self rootEditor];
-    if (self != root) [self.navigationController popToViewController:root animated:NO];
     NSError *error = nil;
     if (![self.document loadWithMaximumBytes:FFPlistEditorMaximumEditableBytes error:&error]) {
-        [root showMessage:error.localizedDescription ?: @"重新载入失败" title:@"重新载入失败"];
+        [self showMessage:error.localizedDescription ?: @"重新载入失败" title:@"重新载入失败"];
         return;
     }
-    [root refreshScopeAndUI];
-    [root flash:@"已重新载入磁盘版本"];
+    [self.expandedKeyPaths removeAllObjects];
+    if (FFPlistIsContainer(self.document.rootObject)) [self.expandedKeyPaths addObject:@[]];
+    [self refreshTreeAndUI];
+    [self flash:@"已重新载入磁盘版本"];
 }
 
 #pragma mark - Back / unsaved
@@ -905,7 +1163,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
 {
-    if (self.ownsDocument && gestureRecognizer == self.navigationController.interactivePopGestureRecognizer && self.document.isDirty) {
+    if (gestureRecognizer == self.navigationController.interactivePopGestureRecognizer && self.document.isDirty) {
         [self backTapped];
         return NO;
     }
