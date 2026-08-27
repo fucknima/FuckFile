@@ -41,12 +41,28 @@ static NSString *FFPlistTypeName(id value)
 
 static NSString *FFPlistSymbolName(id value)
 {
-    if ([value isKindOfClass:NSString.class]) return @"textformat";
-    if ([value isKindOfClass:NSData.class]) return @"doc.on.doc";
+    if ([value isKindOfClass:NSDictionary.class]) return @"curlybraces.square";
+    if ([value isKindOfClass:NSArray.class]) return @"list.number";
+    if ([value isKindOfClass:NSString.class]) return @"text.quote";
+    if ([value isKindOfClass:NSData.class]) return @"tray.full";
     if ([value isKindOfClass:NSDate.class]) return @"calendar";
-    if (FFPlistIsBoolean(value)) return @"switch.2";
-    if ([value isKindOfClass:NSNumber.class]) return @"number";
+    if (FFPlistIsBoolean(value)) return [value boolValue] ? @"checkmark.circle.fill" : @"xmark.circle";
+    if ([value isKindOfClass:NSNumber.class])
+        return FFPlistNumberIsReal(value) ? @"function" : @"number.square";
     return @"questionmark.square.dashed";
+}
+
+static UIColor *FFPlistTypeTintColor(id value)
+{
+    if ([value isKindOfClass:NSDictionary.class]) return UIColor.systemOrangeColor;
+    if ([value isKindOfClass:NSArray.class]) return UIColor.systemPurpleColor;
+    if ([value isKindOfClass:NSString.class]) return UIColor.systemBlueColor;
+    if ([value isKindOfClass:NSData.class]) return UIColor.systemGrayColor;
+    if ([value isKindOfClass:NSDate.class]) return UIColor.systemRedColor;
+    if (FFPlistIsBoolean(value)) return [value boolValue] ? UIColor.systemGreenColor : UIColor.systemGrayColor;
+    if ([value isKindOfClass:NSNumber.class])
+        return FFPlistNumberIsReal(value) ? UIColor.systemIndigoColor : UIColor.systemTealColor;
+    return UIColor.secondaryLabelColor;
 }
 
 static NSString *FFPlistValueSummary(id value)
@@ -97,15 +113,6 @@ static id FFPlistEditableCopy(id object)
     return [object conformsToProtocol:@protocol(NSCopying)] ? [object copy] : object;
 }
 
-static NSString *FFPlistFormatName(NSPropertyListFormat format)
-{
-    switch (format) {
-        case NSPropertyListBinaryFormat_v1_0: return @"Binary";
-        case NSPropertyListOpenStepFormat: return @"OpenStep";
-        default: return @"XML";
-    }
-}
-
 static BOOL FFPlistPathHasPrefix(NSArray *path, NSArray *prefix)
 {
     if (path.count < prefix.count) return NO;
@@ -135,6 +142,167 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 @end
 
 @implementation FFPlistTreeRow
+@end
+
+@interface FFPlistTreeGuideView : UIView
+@property(nonatomic) NSUInteger depth;
+@end
+
+@implementation FFPlistTreeGuideView
+
+- (instancetype)init
+{
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+        self.userInteractionEnabled = NO;
+        self.contentMode = UIViewContentModeRedraw;
+    }
+    return self;
+}
+
+- (void)setDepth:(NSUInteger)depth
+{
+    if (_depth == depth) return;
+    _depth = depth;
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect
+{
+    if (self.depth == 0) return;
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    if (!context) return;
+
+    UIColor *lineColor = [UIColor.separatorColor colorWithAlphaComponent:0.72];
+    CGContextSetStrokeColorWithColor(context, lineColor.CGColor);
+    CGContextSetLineWidth(context, 1.0 / UIScreen.mainScreen.scale);
+
+    const CGFloat step = 18.0;
+    const CGFloat firstX = 9.0;
+    const CGFloat midY = CGRectGetMidY(rect);
+    for (NSUInteger level = 0; level < self.depth; level++) {
+        CGFloat x = firstX + (CGFloat)level * step;
+        CGContextMoveToPoint(context, x, CGRectGetMinY(rect));
+        CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
+    }
+
+    CGFloat branchX = firstX + (CGFloat)(self.depth - 1) * step;
+    CGContextMoveToPoint(context, branchX, midY);
+    CGContextAddLineToPoint(context, CGRectGetMaxX(rect), midY);
+    CGContextStrokePath(context);
+}
+
+@end
+
+@interface FFPlistTreeCell : UITableViewCell
+@property(nonatomic, strong) FFPlistTreeGuideView *guideView;
+@property(nonatomic, strong) UIImageView *disclosureIconView;
+@property(nonatomic, strong) UIImageView *typeIconView;
+@property(nonatomic, strong) UILabel *nodeTitleLabel;
+@property(nonatomic, strong) UILabel *nodeDetailLabel;
+@property(nonatomic, strong) NSLayoutConstraint *guideWidthConstraint;
+@end
+
+@implementation FFPlistTreeCell
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier
+{
+    self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseIdentifier];
+    if (!self) return nil;
+
+    self.guideView = [FFPlistTreeGuideView new];
+    self.disclosureIconView = [UIImageView new];
+    self.typeIconView = [UIImageView new];
+    self.nodeTitleLabel = [UILabel new];
+    self.nodeDetailLabel = [UILabel new];
+
+    for (UIView *view in @[self.guideView, self.disclosureIconView, self.typeIconView,
+                           self.nodeTitleLabel, self.nodeDetailLabel]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:view];
+    }
+
+    self.disclosureIconView.contentMode = UIViewContentModeScaleAspectFit;
+    self.disclosureIconView.tintColor = UIColor.tertiaryLabelColor;
+    self.typeIconView.contentMode = UIViewContentModeScaleAspectFit;
+    self.nodeTitleLabel.numberOfLines = 1;
+    self.nodeTitleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.nodeDetailLabel.numberOfLines = 2;
+    self.nodeDetailLabel.textColor = UIColor.secondaryLabelColor;
+    self.nodeDetailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+
+    self.guideWidthConstraint = [self.guideView.widthAnchor constraintEqualToConstant:0.0];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.guideView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:8.0],
+        [self.guideView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [self.guideView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+        self.guideWidthConstraint,
+
+        [self.disclosureIconView.leadingAnchor constraintEqualToAnchor:self.guideView.trailingAnchor constant:4.0],
+        [self.disclosureIconView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.disclosureIconView.widthAnchor constraintEqualToConstant:18.0],
+        [self.disclosureIconView.heightAnchor constraintEqualToConstant:18.0],
+
+        [self.typeIconView.leadingAnchor constraintEqualToAnchor:self.disclosureIconView.trailingAnchor constant:6.0],
+        [self.typeIconView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.typeIconView.widthAnchor constraintEqualToConstant:22.0],
+        [self.typeIconView.heightAnchor constraintEqualToConstant:22.0],
+
+        [self.nodeTitleLabel.leadingAnchor constraintEqualToAnchor:self.typeIconView.trailingAnchor constant:10.0],
+        [self.nodeTitleLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-12.0],
+        [self.nodeTitleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:8.0],
+
+        [self.nodeDetailLabel.leadingAnchor constraintEqualToAnchor:self.nodeTitleLabel.leadingAnchor],
+        [self.nodeDetailLabel.trailingAnchor constraintEqualToAnchor:self.nodeTitleLabel.trailingAnchor],
+        [self.nodeDetailLabel.topAnchor constraintEqualToAnchor:self.nodeTitleLabel.bottomAnchor constant:2.0],
+        [self.nodeDetailLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-8.0],
+    ]];
+
+    return self;
+}
+
+- (void)prepareForReuse
+{
+    [super prepareForReuse];
+    self.guideView.depth = 0;
+    self.guideWidthConstraint.constant = 0.0;
+    self.disclosureIconView.image = nil;
+    self.typeIconView.image = nil;
+    self.nodeTitleLabel.text = nil;
+    self.nodeDetailLabel.text = nil;
+}
+
+- (void)configureWithName:(NSString *)name
+                    value:(id)value
+                    depth:(NSUInteger)depth
+                     root:(BOOL)root
+                container:(BOOL)container
+                 expanded:(BOOL)expanded
+{
+    NSUInteger visualDepth = MIN(depth, 12);
+    self.guideView.depth = visualDepth;
+    self.guideWidthConstraint.constant = (CGFloat)visualDepth * 18.0;
+
+    self.disclosureIconView.image = container
+        ? [UIImage systemImageNamed:(expanded ? @"chevron.down" : @"chevron.right")]
+        : nil;
+    self.typeIconView.image = [UIImage systemImageNamed:FFPlistSymbolName(value)];
+    self.typeIconView.tintColor = FFPlistTypeTintColor(value);
+
+    self.nodeTitleLabel.text = name;
+    if (root) {
+        self.nodeTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    } else if (container) {
+        self.nodeTitleLabel.font = [UIFont systemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize
+            weight:UIFontWeightSemibold];
+    } else {
+        self.nodeTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    }
+    self.nodeDetailLabel.text = [NSString stringWithFormat:@"%@ · %@",
+        FFPlistTypeName(value), FFPlistValueSummary(value)];
+}
+
 @end
 
 @interface FFPlistEditorViewController () <UISearchResultsUpdating, UIGestureRecognizerDelegate>
@@ -173,6 +341,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58;
+    [self.tableView registerClass:FFPlistTreeCell.class forCellReuseIdentifier:@"PlistTreeNode"];
 
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.obscuresBackgroundDuringPresentation = NO;
@@ -180,6 +349,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     self.searchController.searchBar.placeholder = @"搜索 Key 或 Value";
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
+    self.navigationItem.prompt = nil;
     self.definesPresentationContext = YES;
 
     self.saveButton = [[UIBarButtonItem alloc]
@@ -193,14 +363,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
         target:self action:@selector(backTapped)];
     self.navigationController.interactivePopGestureRecognizer.delegate = self;
 
-    UILabel *footer = [UILabel new];
-    footer.text = @"点按字典或数组可原地展开；长按条目可添加、复制、改类型或删除。";
-    footer.textColor = UIColor.secondaryLabelColor;
-    footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    footer.textAlignment = NSTextAlignmentCenter;
-    footer.numberOfLines = 0;
-    footer.frame = CGRectMake(0, 0, 1, 52);
-    self.tableView.tableFooterView = footer;
+    self.tableView.tableFooterView = [UIView new];
 
     [NSNotificationCenter.defaultCenter addObserver:self
         selector:@selector(documentDidChange:)
@@ -431,10 +594,7 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
     self.saveButton.enabled = self.document.isDirty;
     self.addButton.enabled = FFPlistIsContainer(self.document.rootObject);
     self.addButton.menu = [self buildAddMenuForContainerPath:@[] title:@"添加到 Root"];
-
-    NSString *format = FFPlistFormatName(self.document.format);
-    NSString *dirty = self.document.isDirty ? @" · 已修改" : @"";
-    self.navigationItem.prompt = [NSString stringWithFormat:@"%@%@ · 树形视图", format, dirty];
+    self.navigationItem.prompt = nil;
 
     [self.tableView reloadData];
     [self updateEmptyState];
@@ -516,35 +676,15 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    static NSString *identifier = @"PlistTreeNode";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
-    if (!cell)
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-            reuseIdentifier:identifier];
-
+    FFPlistTreeCell *cell = [tableView dequeueReusableCellWithIdentifier:@"PlistTreeNode"
+        forIndexPath:indexPath];
     FFPlistTreeRow *row = self.treeRows[(NSUInteger)indexPath.row];
     BOOL container = FFPlistIsContainer(row.value);
     BOOL expanded = [self isRowExpandedAtIndex:(NSUInteger)indexPath.row];
 
-    cell.indentationWidth = 20.0;
-    cell.indentationLevel = (NSInteger)MIN(row.depth, 12);
-    cell.textLabel.text = [self displayNameForRow:row];
-    cell.textLabel.font = row.root
-        ? [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]
-        : (container ? [UIFont preferredFontForTextStyle:UIFontTextStyleBody]
-                     : [UIFont preferredFontForTextStyle:UIFontTextStyleBody]);
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@",
-        FFPlistTypeName(row.value), FFPlistValueSummary(row.value)];
-    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-    cell.detailTextLabel.numberOfLines = 2;
-
-    if (container) {
-        cell.imageView.image = [UIImage systemImageNamed:(expanded ? @"chevron.down" : @"chevron.right")];
-        cell.imageView.tintColor = UIColor.secondaryLabelColor;
-    } else {
-        cell.imageView.image = [UIImage systemImageNamed:FFPlistSymbolName(row.value)];
-        cell.imageView.tintColor = UIColor.systemBlueColor;
-    }
+    [cell configureWithName:[self displayNameForRow:row]
+        value:row.value depth:row.depth root:row.root container:container expanded:expanded];
+    cell.separatorInset = UIEdgeInsetsMake(0, 58.0 + (CGFloat)MIN(row.depth, 12) * 18.0, 0, 0);
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.accessoryView = nil;
     return cell;
@@ -920,12 +1060,12 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 
     NSMutableArray *actions = [NSMutableArray array];
     NSArray *specs = @[
-        @[@(FFPlistNewValueString), @"字符串", @"textformat"],
-        @[@(FFPlistNewValueBoolean), @"布尔", @"switch.2"],
-        @[@(FFPlistNewValueInteger), @"整数", @"number"],
-        @[@(FFPlistNewValueReal), @"实数", @"number"],
+        @[@(FFPlistNewValueString), @"字符串", @"text.quote"],
+        @[@(FFPlistNewValueBoolean), @"布尔", @"checkmark.circle"],
+        @[@(FFPlistNewValueInteger), @"整数", @"number.square"],
+        @[@(FFPlistNewValueReal), @"实数", @"function"],
         @[@(FFPlistNewValueDate), @"日期", @"calendar"],
-        @[@(FFPlistNewValueData), @"数据", @"doc.on.doc"],
+        @[@(FFPlistNewValueData), @"数据", @"tray.full"],
         @[@(FFPlistNewValueDictionary), @"字典", @"curlybraces.square"],
         @[@(FFPlistNewValueArray), @"数组", @"list.number"],
     ];
