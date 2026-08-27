@@ -507,10 +507,12 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
             }
 
             [children addObject:[weakSelf changeTypeMenuForComponent:component]];
-            [children addObject:[UIAction actionWithTitle:@"删除"
+            UIAction *deleteMenuAction = [UIAction actionWithTitle:@"删除"
                 image:[UIImage systemImageNamed:@"trash"] identifier:nil
-                attributes:UIMenuElementAttributesDestructive
-                handler:^(__unused UIAction *action) { [weakSelf confirmDeleteComponent:component completion:nil]; }]];
+                handler:^(__unused UIAction *action) {
+                    [weakSelf confirmDeleteComponent:component completion:nil];
+                }];
+            [children addObject:deleteMenuAction];
             return [UIMenu menuWithTitle:@"" children:children];
         }];
 }
