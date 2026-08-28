@@ -206,9 +206,9 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
 
 @implementation FFPlistTreeCell
 
-- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier
 {
-    self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseIdentifier];
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
     if (!self) return nil;
 
     self.guideView = [FFPlistTreeGuideView new];
