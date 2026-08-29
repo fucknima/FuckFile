@@ -305,8 +305,6 @@
             countStyle:NSByteCountFormatterCountStyleFile];
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · 缓存 %@ · 临时 %@",
             item.subtitle, cache, tmp];
-        // A four-tile app glyph reads as an app/container, unlike the old
-        // outline "app" symbol which looked like an unchecked selection box.
         cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2.fill"];
         cell.imageView.tintColor = UIColor.systemIndigoColor;
     } else {
