@@ -11,6 +11,7 @@
 #import "MCMManager+ExtensionData.h"
 
 #import <UIKit/UIKit.h>
+#import <errno.h>
 #import <sys/stat.h>
 
 static const NSTimeInterval kFFStorageCleanerShareResidualMinimumAge = 24.0 * 60.0 * 60.0;
@@ -330,10 +331,21 @@ static BOOL FFContainerTargets(NSString *root, NSString **cachePath, NSString **
 {
     if (!root.length || ![root hasPrefix:@"/"]) return NO;
     NSString *standardRoot = FFCleanPath(root);
-    NSString *cache = FFCleanPath([standardRoot stringByAppendingPathComponent:@"Library/Caches"]);
+    NSString *library = FFCleanPath([standardRoot stringByAppendingPathComponent:@"Library"]);
+    NSString *cache = FFCleanPath([library stringByAppendingPathComponent:@"Caches"]);
     NSString *tmp = FFCleanPath([standardRoot stringByAppendingPathComponent:@"tmp"]);
     NSString *prefix = [standardRoot stringByAppendingString:@"/"];
-    if (![cache hasPrefix:prefix] || ![tmp hasPrefix:prefix]) return NO;
+    if (![library hasPrefix:prefix] || ![cache hasPrefix:prefix] || ![tmp hasPrefix:prefix]) return NO;
+
+    // Reject a container root, Library, Caches, or tmp that is itself a symlink.
+    // Missing cache/tmp directories are fine and simply measure as zero.
+    BOOL rootExists = NO, libraryExists = NO, cacheExists = NO, tmpExists = NO;
+    if (!FFPathIsRealDirectory(standardRoot, &rootExists) || !rootExists) return NO;
+    if (!FFPathIsRealDirectory(library, &libraryExists)) return NO;
+    if (!FFPathIsRealDirectory(cache, &cacheExists)) return NO;
+    if (!FFPathIsRealDirectory(tmp, &tmpExists)) return NO;
+    (void)libraryExists; (void)cacheExists; (void)tmpExists;
+
     if (cachePath) *cachePath = cache;
     if (tmpPath) *tmpPath = tmp;
     return YES;
@@ -370,7 +382,7 @@ static BOOL FFContainerTargets(NSString *root, NSString **cachePath, NSString **
     item.temporaryBytes = tmp.bytes;
     item.bytes = total;
     item.itemCount = files;
-    item.recommended = NO; // user must opt in for another app's data
+    item.recommended = NO;
     return item;
 }
 
@@ -447,8 +459,6 @@ static BOOL FFContainerTargets(NSString *root, NSString **cachePath, NSString **
 {
     (void)item;
     unsigned long long freed = FFDeleteDirectoryChildren(FFThumbnailRoot(), errors);
-    // Also invalidate memory and IPA metadata caches. Its disk removal is
-    // redundant but harmless and stays serialized behind any in-flight thumbnail.
     [FFThumbnailService.sharedService clearCaches];
     return freed;
 }
@@ -459,7 +469,7 @@ static BOOL FFContainerTargets(NSString *root, NSString **cachePath, NSString **
     NSArray<NSString *> *roots = FFShareInboxRoots();
     unsigned long long freed = 0;
     for (NSString *path in item.candidatePaths ?: @[]) {
-        if (!FFIsSafeShareResidual(path, roots)) continue; // revalidate at deletion time
+        if (!FFIsSafeShareResidual(path, roots)) continue;
         unsigned long long bytes = FFMeasurePath(path);
         NSError *removeError = nil;
         if (FFRemoveValidatedPath(path, &removeError)) freed += bytes;
@@ -478,8 +488,6 @@ static BOOL FFContainerTargets(NSString *root, NSString **cachePath, NSString **
     }
 
     NSError *leaseError = nil;
-    // Fresh lookup matters: an app can be updated/reinstalled between scan and
-    // cleanup, changing its container UUID. Never delete through a stale scan path.
     NSString *root = [FFAppDataLeaseManager.sharedManager reacquireIdentifier:identifier error:&leaseError];
     if (!root.length) {
         [errors addObject:leaseError ?: FFCleanerError(31, @"无法重新获取 App Data 容器")];
