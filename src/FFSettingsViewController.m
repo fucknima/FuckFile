@@ -2,10 +2,10 @@
 #import "FFLogViewController.h"
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
+#import "FFStorageCleanerViewController.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
 #import "FFOnlineAppNameResolver.h"
-#import "FFThumbnailService.h"
 #import "FFLogger.h"
 
 static NSString *const kFFSettingsShowHiddenFiles = @"FFSettingsShowHiddenFiles";
@@ -128,7 +128,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     switch (section) {
         case 0: return 3;
         case 1: return 2;
-        case 2: return 2;
+        case 2: return 1;
         case 3: return 2;
         case 4: return 2;
         case 5: return 1;
@@ -172,7 +172,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (indexPath.section == 1)
         return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemIndigoColor;
     if (indexPath.section == 2)
-        return indexPath.row == 0 ? UIColor.systemOrangeColor : UIColor.systemRedColor;
+        return UIColor.systemOrangeColor;
     if (indexPath.section == 3)
         return indexPath.row == 0 ? UIColor.systemPurpleColor : UIColor.systemBlueColor;
     if (indexPath.section == 4)
@@ -234,19 +234,11 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             break;
         }
         case 2: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"缩略图缓存";
-                unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
-                cell.detailTextLabel.text = [NSByteCountFormatter stringFromByteCount:(long long)size
-                    countStyle:NSByteCountFormatterCountStyleFile];
-                cell.imageView.image = [UIImage systemImageNamed:@"photo.on.rectangle"];
-                cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            } else {
-                cell.textLabel.text = @"清理缓存";
-                cell.detailTextLabel.text = @"删除缩略图缓存";
-                cell.imageView.image = [UIImage systemImageNamed:@"trash"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-            }
+            cell.textLabel.text = @"存储清理";
+            cell.detailTextLabel.text = @"FuckFile 缓存、失效分享残留与第三方 App Caches/tmp";
+            cell.detailTextLabel.numberOfLines = 2;
+            cell.imageView.image = [UIImage systemImageNamed:@"trash.circle"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             break;
         }
         case 3: {
@@ -275,9 +267,6 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
                 cell.imageView.image = [UIImage systemImageNamed:@"text.magnifyingglass"];
                 UISwitch *toggle = [UISwitch new];
                 toggle.on = self.onlineAppNamesEnabled;
-                // This is a subordinate capability. Preserve its preference while
-                // Advanced System Access is off, but do not let it imply that it
-                // can run independently of the master access switch.
                 toggle.enabled = self.systemAccessEnabled;
                 [toggle addTarget:self action:@selector(onlineAppNamesChanged:) forControlEvents:UIControlEventValueChanged];
                 cell.accessoryView = toggle;
@@ -335,17 +324,9 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         [self.navigationController pushViewController:page animated:YES];
         return;
     }
-    if (indexPath.section == 2 && indexPath.row == 1) {
-        unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
-        [FFThumbnailService.sharedService clearCaches];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"缓存已清理"
-            message:[NSString stringWithFormat:@"释放约 %@。",
-                [NSByteCountFormatter stringFromByteCount:(long long)size
-                    countStyle:NSByteCountFormatterCountStyleFile]]
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        [self.tableView reloadData];
+    if (indexPath.section == 2) {
+        FFStorageCleanerViewController *page = [FFStorageCleanerViewController new];
+        [self.navigationController pushViewController:page animated:YES];
         return;
     }
     if (indexPath.section == 4) {
