@@ -37,6 +37,8 @@ FuckFile_FILES = \
 	src/FFFileIconProvider.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
+	src/FFStorageCleaner.m \
+	src/FFStorageCleanerViewController.m \
 	src/FFCopyEngine.m \
 	src/FFPathPolicy.m \
 	src/FFFileOperationService.m \
