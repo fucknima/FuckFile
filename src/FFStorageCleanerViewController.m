@@ -6,6 +6,7 @@
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedIdentifiers;
 @property(nonatomic, strong) UIBarButtonItem *cleanButton;
 @property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, weak) UIButton *selectAllButton;
 @property(nonatomic) BOOL scanning;
 @property(nonatomic) BOOL cleaning;
 @property(nonatomic) BOOL didApplyInitialSelection;
@@ -64,6 +65,7 @@
     }
     self.scanning = YES;
     self.cleanButton.enabled = NO;
+    [self updateSelectAllButton];
     self.statusLabel.text = @"正在扫描可安全清理的项目…";
 
     __weak typeof(self) weakSelf = self;
@@ -83,6 +85,7 @@
         [self applySelectionForSnapshot:snapshot];
         [self updateSummary];
         [self.tableView reloadData];
+        [self updateSelectAllButton];
     }];
 }
 
@@ -131,6 +134,7 @@
         countStyle:NSByteCountFormatterCountStyleFile];
     self.statusLabel.text = [NSString stringWithFormat:@"发现约 %@ 可清理\n%@",
         allText, self.snapshot.appDataStatusText ?: @""];
+    [self updateSelectAllButton];
 }
 
 #pragma mark - Sections
@@ -153,6 +157,42 @@
     return [self.snapshot.items filteredArrayUsingPredicate:predicate] ?: @[];
 }
 
+- (BOOL)allAppItemsSelected
+{
+    NSArray<FFStorageCleanupItem *> *items = [self appItems];
+    if (!items.count) return NO;
+    for (FFStorageCleanupItem *item in items) {
+        if (![self.selectedIdentifiers containsObject:item.identifier]) return NO;
+    }
+    return YES;
+}
+
+- (void)updateSelectAllButton
+{
+    UIButton *button = self.selectAllButton;
+    if (!button) return;
+    NSArray<FFStorageCleanupItem *> *items = [self appItems];
+    BOOL enabled = items.count > 0 && !self.scanning && !self.cleaning;
+    button.enabled = enabled;
+    [button setTitle:[self allAppItemsSelected] ? @"取消全选" : @"全选" forState:UIControlStateNormal];
+}
+
+- (void)selectAllAppsTapped
+{
+    if (self.scanning || self.cleaning) return;
+    NSArray<FFStorageCleanupItem *> *items = [self appItems];
+    if (!items.count) return;
+
+    BOOL clear = [self allAppItemsSelected];
+    for (FFStorageCleanupItem *item in items) {
+        if (clear) [self.selectedIdentifiers removeObject:item.identifier];
+        else [self.selectedIdentifiers addObject:item.identifier];
+    }
+    [self updateSummary];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+        withRowAnimation:UITableViewRowAnimationNone];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section
@@ -163,7 +203,45 @@
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? @"FuckFile" : @"App 数据（手动选择）";
+    return section == 0 ? @"FuckFile" : nil;
+}
+
+- (UIView *)tableView:(__unused UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    if (section != 1) return nil;
+
+    UIView *container = [UIView new];
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = @"App 数据（手动选择）";
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    label.textColor = UIColor.secondaryLabelColor;
+    label.adjustsFontForContentSizeCategory = YES;
+    [container addSubview:label];
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    button.titleLabel.adjustsFontForContentSizeCategory = YES;
+    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    [button addTarget:self action:@selector(selectAllAppsTapped) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:button];
+    self.selectAllButton = button;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.leadingAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor constant:3],
+        [button.trailingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.trailingAnchor],
+        [button.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
+        [button.leadingAnchor constraintGreaterThanOrEqualToAnchor:label.trailingAnchor constant:12],
+    ]];
+    [self updateSelectAllButton];
+    return container;
+}
+
+- (CGFloat)tableView:(__unused UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    return section == 1 ? 42.0 : UITableViewAutomaticDimension;
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section
@@ -227,7 +305,9 @@
             countStyle:NSByteCountFormatterCountStyleFile];
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · 缓存 %@ · 临时 %@",
             item.subtitle, cache, tmp];
-        cell.imageView.image = [UIImage systemImageNamed:@"app"];
+        // A four-tile app glyph reads as an app/container, unlike the old
+        // outline "app" symbol which looked like an unchecked selection box.
+        cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2.fill"];
         cell.imageView.tintColor = UIColor.systemIndigoColor;
     } else {
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@",
@@ -292,6 +372,7 @@
     self.cleaning = YES;
     self.cleanButton.enabled = NO;
     self.refreshControl.enabled = NO;
+    [self updateSelectAllButton];
     self.statusLabel.text = @"正在清理…";
 
     __weak typeof(self) weakSelf = self;
