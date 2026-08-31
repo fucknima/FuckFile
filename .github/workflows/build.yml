@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - build/grid-stability-final
   workflow_dispatch:
 
 permissions:
