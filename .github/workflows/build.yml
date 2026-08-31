@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - build/plist-editor-ui
   workflow_dispatch:
 
 permissions:
