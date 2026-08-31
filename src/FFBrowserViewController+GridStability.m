@@ -228,7 +228,7 @@ static UICollectionViewLayout *FFStableGridLayout(void)
         initWithFrame:CGRectZero collectionViewLayout:FFStableGridLayout()];
     collection.translatesAutoresizingMaskIntoConstraints = NO;
     collection.backgroundColor = UIColor.systemBackgroundColor;
-    collection.dataSource = self;
+    collection.dataSource = (id<UICollectionViewDataSource>)self;
     collection.delegate = (id<UICollectionViewDelegate>)self;
     collection.hidden = YES;
     collection.alwaysBounceVertical = YES;
