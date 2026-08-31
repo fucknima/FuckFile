@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
+      - build/documents-root-final
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Only main pushes build automatically. Feature/other branches are built manually
-# with Run workflow. Cancelled/failed runs never advance the successful-build counter.
+# Only main pushes build automatically. Temporary build branches may be added
+# explicitly for pre-merge verification and removed from the final feature tree.
 concurrency:
   group: fuckfile-numbered-build
   cancel-in-progress: true
@@ -67,6 +68,14 @@ jobs:
             src/FFSearchSession.m src/FFLogger.m src/FFStorageEnvironment.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
+
+      - name: Audit storage-path references
+        shell: bash
+        run: |
+          echo '=== storage/path audit ==='
+          grep -RInE 'Device Storage|FuckFile Log\.txt|ACCESS MAP\.txt|Favorites\.plist|LSIdentifierCache\.plist|LSGroupCache\.plist' src || true
+          echo '=== Documents constructors ==='
+          grep -RIn 'NSDocumentDirectory' src || true
 
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
