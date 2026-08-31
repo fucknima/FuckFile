@@ -64,7 +64,7 @@ jobs:
         run: |
           clang -fobjc-arc -framework Foundation -lz -I src \
             tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
-            src/FFSearchSession.m src/FFLogger.m \
+            src/FFSearchSession.m src/FFLogger.m src/FFStorageEnvironment.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
 
