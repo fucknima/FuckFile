@@ -56,13 +56,15 @@
     [self ff_storage_viewWillAppear:animated];
 
     NSString *root = FFStorageRootPath().stringByStandardizingPath;
-    if ([self.currentPath.stringByStandardizingPath isEqualToString:root])
-        self.title = @"Documents";
+    BOOL isRoot = [self.currentPath.stringByStandardizingPath isEqualToString:root];
+    if (!isRoot) return;
+    self.title = @"Documents";
 
-    // The Files tab root controller stays alive while the user changes the
-    // default display mode in Settings. Re-read the preference on every
-    // appearance instead of only in viewDidLoad, otherwise that long-lived root
-    // remains stuck in its old list/grid mode.
+    // The Files-tab root controller is created once and survives switching to
+    // Settings, so it must re-read the default display preference when it comes
+    // back. Restrict this synchronization to the root only: subfolders keep
+    // their explicit “更多 → 显示方式” choice, preserving the existing local
+    // list/grid semantics.
     BOOL preferredGrid = [NSUserDefaults.standardUserDefaults
         boolForKey:@"FFSettingsGridMode"];
     if (self.gridMode != preferredGrid) {
@@ -83,7 +85,7 @@
         return loaded;
 
     // Documents is now the actual homepage. Generated metadata from older or
-    // current builds must never masquerade as user files even when "show hidden"
+    // current builds must never masquerade as user files even when “show hidden”
     // is enabled. AppData/MobileGestalt are deliberately NOT filtered here.
     NSMutableArray<FFEntry *> *visible = [NSMutableArray arrayWithCapacity:loaded.count];
     for (FFEntry *entry in loaded) {
