@@ -338,26 +338,28 @@ static UICollectionViewLayout *FFStableGridLayout(void)
     if (!hasThumbnail && !item.isDirectory && !item.isSymlink && [self supportsThumbnail:item]) {
         __weak typeof(self) weakSelf = self;
         NSString *expectedPath = [item.path copy];
-        [[FFThumbnailService sharedService] thumbnailForPath:item.path size:CGSizeMake(64.0, 64.0)
-            completion:^(UIImage * _Nullable thumbnail) {
-                if (!thumbnail) return;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    typeof(weakSelf) strongSelf = weakSelf;
-                    if (!strongSelf) return;
-                    UICollectionView *currentCollection = strongSelf.collectionView;
-                    if (!currentCollection || currentCollection.hidden) return;
-                    NSArray<FFEntry *> *currentEntries = FFCurrentGridEntries(strongSelf);
-                    NSUInteger index = [currentEntries indexOfObjectIdenticalTo:item];
-                    if (index == NSNotFound) return;
-                    item.thumbnail = thumbnail;
-                    NSIndexPath *visiblePath = [NSIndexPath indexPathForItem:(NSInteger)index inSection:0];
-                    FFStableGridCell *visible = (FFStableGridCell *)[currentCollection
-                        cellForItemAtIndexPath:visiblePath];
-                    if (![visible isKindOfClass:FFStableGridCell.class]) return;
-                    if (![visible.representedPath isEqualToString:expectedPath]) return;
-                    [visible applyThumbnail:thumbnail];
-                });
-            }];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            [[FFThumbnailService sharedService] thumbnailForPath:expectedPath size:CGSizeMake(64.0, 64.0)
+                completion:^(UIImage * _Nullable thumbnail) {
+                    if (!thumbnail) return;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        typeof(weakSelf) strongSelf = weakSelf;
+                        if (!strongSelf) return;
+                        UICollectionView *currentCollection = strongSelf.collectionView;
+                        if (!currentCollection || currentCollection.hidden) return;
+                        NSArray<FFEntry *> *currentEntries = FFCurrentGridEntries(strongSelf);
+                        NSUInteger index = [currentEntries indexOfObjectIdenticalTo:item];
+                        if (index == NSNotFound) return;
+                        item.thumbnail = thumbnail;
+                        NSIndexPath *visiblePath = [NSIndexPath indexPathForItem:(NSInteger)index inSection:0];
+                        FFStableGridCell *visible = (FFStableGridCell *)[currentCollection
+                            cellForItemAtIndexPath:visiblePath];
+                        if (![visible isKindOfClass:FFStableGridCell.class]) return;
+                        if (![visible.representedPath isEqualToString:expectedPath]) return;
+                        [visible applyThumbnail:thumbnail];
+                    });
+                }];
+        });
     }
     return cell;
 }
