@@ -57,8 +57,9 @@ static const NSUInteger kFFSearchMaxDepth = 16;
     self.generation++;
     NSUInteger gen = self.generation;
     self.visitedRealPaths = [NSMutableSet set];
+    NSString *canonicalRoot = FFCanonicalStoragePath(root ?: @"");
     dispatch_async(self.workQueue, ^{
-        BOOL finished = [self searchFor:needle underPath:root depth:0 generation:gen batch:batch];
+        BOOL finished = [self searchFor:needle underPath:canonicalRoot depth:0 generation:gen batch:batch];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion && self.generation == gen) completion(finished);
         });
@@ -116,6 +117,11 @@ static const NSUInteger kFFSearchMaxDepth = 16;
         NSString *name = [NSFileManager.defaultManager
             stringWithFileSystemRepresentation:entry->d_name length:strlen(entry->d_name)];
         if (!name || (!showHidden && [name hasPrefix:@"."])) continue;
+        // Documents is the real homepage now. Generated metadata files are
+        // intentionally hidden from both browsing and recursive global search,
+        // even when the user enables ordinary dot-file visibility.
+        if (FFIsInternalStorageEntry(path, name)) continue;
+
         NSString *child = [path stringByAppendingPathComponent:name];
         if (!advancedReady && FFPathRequiresSystemAccess(child)) continue;
 

@@ -9,6 +9,7 @@
 #import "FFLogger.h"
 #import "FFLSDiscovery.h"
 #import "FFFileOperationService.h"
+#import "FFStorageEnvironment.h"
 
 #import <fcntl.h>
 #import <limits.h>
@@ -32,12 +33,12 @@ NSNotificationName const FFMCMAppLinksUpdatedNotification =
 - (NSString *)bundleIdentifier;
 @end
 
-
 NSString *MCMVirtualRoot(void)
 {
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [documents stringByAppendingPathComponent:@"Device Storage"];
+    // The browser and MCM layer must share the exact same logical root. Since
+    // the extra Device Storage level was removed, generated AppData and
+    // MobileGestalt entries now live directly under the app's Documents folder.
+    return FFStorageRootPath();
 }
 
 @implementation MCMManager {
@@ -404,7 +405,7 @@ static NSArray<NSString *> *MCMResearchTargetIdentifiers(void)
 
 static NSDictionary *MCMCustomIdentifiers(void)
 {
-    NSString *documentsPath = [MCMVirtualRoot().stringByDeletingLastPathComponent
+    NSString *documentsPath = [FFStorageRootPath()
         stringByAppendingPathComponent:@"MCMIdentifiers.plist"];
     NSString *bundlePath = [NSBundle.mainBundle pathForResource:@"MCMIdentifiers"
                                                          ofType:@"plist"];
@@ -463,42 +464,34 @@ static NSDictionary *MCMCustomIdentifiers(void)
 
 #pragma mark - App Data scan progress
 
-// Cleans up virtual-root directories from earlier releases that are no
-// longer in scope (App Groups, Service Data, …) so the browser only
-// ever sees the App Data folder.
+// Cleans only generated legacy links. Documents is now user-owned content, so
+// cleanup must never recursively delete a real directory merely because its
+// name happens to look like an old MHA entry.
 - (void)removeLegacyDirectoriesUnder:(NSString *)root
 {
-    // Remove every [MHA-*] folder from earlier releases and any stray
-    // app symlinks left flat in the root by the intermediate build that
-    // linked without the App Data folder.
     NSFileManager *manager = NSFileManager.defaultManager;
     NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:root error:nil];
     for (NSString *name in names ?: @[]) {
         NSString *path = [root stringByAppendingPathComponent:name];
-        BOOL isDirectory = NO;
-        if ([manager fileExistsAtPath:path isDirectory:&isDirectory]) {
-            if (isDirectory && [name hasPrefix:@"[MHA-"]) {
-                [manager removeItemAtPath:path error:nil];
-                continue;
-            }
-            // Flat symlinks from the pre-folder build point into the
-            // real container tree; drop them so the root only shows the
-            // App Data folder and the log file.
-            if (!isDirectory) {
-                struct stat status = {0};
-                if (lstat(path.fileSystemRepresentation, &status) == 0 && S_ISLNK(status.st_mode)) {
-                    char target[PATH_MAX] = {0};
-                    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-                    if (length > 0) {
-                        target[length] = '\0';
-                        NSString *targetPath = [NSString stringWithUTF8String:target];
-                        if ([targetPath hasPrefix:@"/private/var/"] ||
-                            [targetPath hasPrefix:@"/var/"])
-                            [manager removeItemAtPath:path error:nil];
-                    }
-                }
-            }
-        }
+        struct stat status = {0};
+        if (lstat(path.fileSystemRepresentation, &status) != 0 || !S_ISLNK(status.st_mode))
+            continue;
+
+        char target[PATH_MAX] = {0};
+        ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
+        if (length <= 0) continue;
+        target[length] = '\0';
+        NSString *targetPath = MCMNormalizedPath([NSString stringWithUTF8String:target]);
+        BOOL containerTarget = [targetPath hasPrefix:@"/private/var/"];
+        BOOL knownName = [name isEqualToString:@"MobileGestalt"] ||
+            [name hasPrefix:@"[MHA-"];
+        BOOL bundleLike = [name containsString:@"."] && ![name hasPrefix:@"."];
+        BOOL appContainerTarget = [targetPath containsString:@"/Containers/Data/Application/"] ||
+            [targetPath containsString:@"/containers/Data/Application/"] ||
+            [targetPath containsString:@"/Containers/Shared/AppGroup/"] ||
+            [targetPath containsString:@"/containers/Shared/AppGroup/"];
+        if (containerTarget && (knownName || (bundleLike && appContainerTarget)))
+            [manager removeItemAtPath:path error:nil];
     }
 }
 
@@ -555,9 +548,8 @@ static NSDictionary *MCMCustomIdentifiers(void)
     [fm createDirectoryAtPath:root withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions: @0700} error:nil];
 
-    // Scope: App Data only. Links live in an "AppData" folder next to
-    // the log file inside our own container root. All other container
-    // classes are intentionally not probed anymore.
+    // Scope: App Data only. Links live directly under Documents/AppData.
+    // Runtime diagnostics are relocated to app tmp by DiagnosticsPlacement.
     NSString *apps = [root stringByAppendingPathComponent:@"AppData"];
     // 迁移旧目录名（"App Data" -> "AppData"），仅当目标不存在。
     NSString *legacyApps = [root stringByAppendingPathComponent:@"App Data"];

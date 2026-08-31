@@ -1,4 +1,5 @@
 #import "FFLogger.h"
+#import "FFStorageEnvironment.h"
 
 static NSString *gLogPath;
 static dispatch_queue_t gLogQueue;
@@ -78,27 +79,34 @@ static NSString *FFRedactPath(NSString *input)
     return result;
 }
 
-static void FFMigrateLegacyLogIfNeeded(NSString *documents, NSString *newPath)
+static void FFMigrateLegacyLogIfNeeded(NSString *newPath)
 {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *oldPath = [[documents stringByAppendingPathComponent:@"Device Storage"]
-        stringByAppendingPathComponent:@"FuckFile Log.txt"];
-    NSString *oldRotated = [[[oldPath stringByDeletingPathExtension]
-        stringByAppendingString:@".old"] stringByAppendingPathExtension:@"txt"];
+    NSString *documents = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: [NSHomeDirectory()
+            stringByAppendingPathComponent:@"Documents"];
+    NSString *legacyRoot = [documents stringByAppendingPathComponent:@"Device Storage"];
+    NSArray<NSString *> *oldPaths = @[
+        [documents stringByAppendingPathComponent:@"FuckFile Log.txt"],
+        [legacyRoot stringByAppendingPathComponent:@"FuckFile Log.txt"],
+    ];
 
-    if ([fm fileExistsAtPath:oldPath]) {
+    [fm createDirectoryAtPath:newPath.stringByDeletingLastPathComponent
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    for (NSString *oldPath in oldPaths) {
+        if (![fm fileExistsAtPath:oldPath]) continue;
         if (![fm fileExistsAtPath:newPath]) {
             NSError *moveError = nil;
-            if (![fm moveItemAtPath:oldPath toPath:newPath error:&moveError])
-                [fm removeItemAtPath:oldPath error:nil];
-        } else {
-            [fm removeItemAtPath:oldPath error:nil];
+            if ([fm moveItemAtPath:oldPath toPath:newPath error:&moveError]) continue;
         }
+        // Logs are generated diagnostic state. Never leave stale copies in
+        // Documents merely because tmp already contains the current file.
+        [fm removeItemAtPath:oldPath error:nil];
     }
-    // Old builds could leave a rotated file in Device Storage. It is diagnostic
-    // state, not user content, so remove it during migration rather than exposing
-    // a second generated file in the browser.
-    [fm removeItemAtPath:oldRotated error:nil];
+
+    for (NSString *root in @[documents, legacyRoot]) {
+        [fm removeItemAtPath:[root stringByAppendingPathComponent:@"FuckFile Log.old.txt"] error:nil];
+    }
 }
 
 NSString *FFLogPath(void)
@@ -106,10 +114,9 @@ NSString *FFLogPath(void)
     FFEnsureState();
     static dispatch_once_t pathOnce;
     dispatch_once(&pathOnce, ^{
-        NSString *documents = NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
-        gLogPath = [documents stringByAppendingPathComponent:@"FuckFile Log.txt"];
-        FFMigrateLegacyLogIfNeeded(documents, gLogPath);
+        gLogPath = [FFDiagnosticsDirectoryPath()
+            stringByAppendingPathComponent:@"FuckFile Log.txt"];
+        FFMigrateLegacyLogIfNeeded(gLogPath);
     });
     return gLogPath;
 }
@@ -174,7 +181,7 @@ static void FFAppendLine(NSString *line)
 
         NSString *directory = path.stringByDeletingLastPathComponent;
         [NSFileManager.defaultManager createDirectoryAtPath:directory
-            withIntermediateDirectories:YES attributes:nil error:nil];
+            withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
 
         if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
             [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];

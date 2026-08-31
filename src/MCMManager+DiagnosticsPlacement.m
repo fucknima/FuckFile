@@ -1,4 +1,5 @@
 #import "MCMManager.h"
+#import "FFStorageEnvironment.h"
 #import "FFLogger.h"
 #import <objc/runtime.h>
 #import <sys/stat.h>
@@ -22,8 +23,8 @@
 
 - (void)ff_diagnostics_writeAccessMap:(NSString *)root
 {
-    // Preserve the existing map-generation logic exactly, then relocate only
-    // the generated diagnostic file. This avoids touching MCM discovery/linking.
+    // Preserve MCM's existing map-generation logic, then immediately move the
+    // generated file out of the user-visible Documents tree into app tmp.
     [self ff_diagnostics_writeAccessMap:root];
     if (!root.length) return;
 
@@ -31,32 +32,31 @@
     struct stat st = {0};
     if (lstat(source.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) return;
 
-    NSString *documents = root.stringByDeletingLastPathComponent;
-    NSString *destination = [documents stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+    NSString *diagnostics = FFDiagnosticsDirectoryPath();
+    NSString *destination = [diagnostics stringByAppendingPathComponent:@"ACCESS MAP.txt"];
+    NSString *temporary = [diagnostics stringByAppendingPathComponent:@".ACCESS MAP.txt.tmp"];
     NSFileManager *fm = NSFileManager.defaultManager;
-
-    // The map is regenerated from current state, so replacing the previous
-    // parent copy is intentional. Use a temporary sibling + replace/move to keep
-    // the visible diagnostic file from ever being partially written.
-    NSString *temporary = [documents stringByAppendingPathComponent:@".ACCESS MAP.txt.tmp"];
+    [fm createDirectoryAtPath:diagnostics withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions:@0700} error:nil];
     [fm removeItemAtPath:temporary error:nil];
+
     NSError *moveError = nil;
     if (![fm moveItemAtPath:source toPath:temporary error:&moveError]) {
-        FFLogTag(@"Diagnostics", @"ACCESS MAP relocate staging failed error=%@",
+        FFLogTag(@"Diagnostics", @"ACCESS MAP tmp staging failed error=%@",
             moveError.localizedDescription ?: @"(nil)");
         return;
     }
 
     [fm removeItemAtPath:destination error:nil];
     if (![fm moveItemAtPath:temporary toPath:destination error:&moveError]) {
-        // Best effort rollback: do not lose diagnostics if the second rename
-        // unexpectedly fails.
+        // Best-effort rollback keeps diagnostics available without leaving a
+        // partial destination. A later storage migration will relocate it.
         [fm moveItemAtPath:temporary toPath:source error:nil];
-        FFLogTag(@"Diagnostics", @"ACCESS MAP relocate commit failed error=%@",
+        FFLogTag(@"Diagnostics", @"ACCESS MAP tmp commit failed error=%@",
             moveError.localizedDescription ?: @"(nil)");
         return;
     }
-    FFLogTag(@"Diagnostics", @"ACCESS MAP relocated outside Device Storage");
+    FFLogTag(@"Diagnostics", @"ACCESS MAP moved to app tmp");
 }
 
 @end
