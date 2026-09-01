@@ -1,5 +1,6 @@
 #import "FFBrowserViewController.h"
 #import "FFSearchService.h"
+#import "FFStorageEnvironment.h"
 
 #import <objc/runtime.h>
 
@@ -165,6 +166,182 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
         if (current.unsignedIntegerValue == generation)
             [strongSelf refreshVisibleContent];
     }];
+}
+
+@end
+
+#pragma mark - Browser UI consistency
+
+// Keep the browser's runtime display mode, Settings -> 默认视图, the More-menu
+// checkmark, and the bottom tab/selection toolbar as one coherent state.
+// This intentionally lives in an already-built browser patch unit so no new
+// source entry is required in the Theos Makefile.
+@interface FFBrowserViewController (UIConsistencyHostPrivate)
+@property(nonatomic) BOOL gridMode;
+@property(nonatomic, strong) UIBarButtonItem *moreItem;
+- (UIMenu *)moreMenu;
+- (UIMenu *)displayModeMenu;
+- (void)applyLayoutModeAnimated:(BOOL)animated;
+@end
+
+@interface FFBrowserViewController (UIConsistency)
+- (void)ff_ui_viewDidAppear:(BOOL)animated;
+- (void)ff_ui_viewDidDisappear:(BOOL)animated;
+- (void)ff_ui_setEditing:(BOOL)editing animated:(BOOL)animated;
+- (UIMenu *)ff_ui_moreMenu;
+- (UIMenu *)ff_ui_displayModeMenu;
+@end
+
+static void FFSwapBrowserUIConsistencyMethod(Class cls, SEL originalSelector,
+                                              SEL replacementSelector)
+{
+    Method original = class_getInstanceMethod(cls, originalSelector);
+    Method replacement = class_getInstanceMethod(cls, replacementSelector);
+    if (original && replacement)
+        method_exchangeImplementations(original, replacement);
+}
+
+@implementation FFBrowserViewController (UIConsistency)
+
++ (void)load
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = FFBrowserViewController.class;
+        FFSwapBrowserUIConsistencyMethod(cls, @selector(viewDidAppear:),
+            @selector(ff_ui_viewDidAppear:));
+        FFSwapBrowserUIConsistencyMethod(cls, @selector(viewDidDisappear:),
+            @selector(ff_ui_viewDidDisappear:));
+        FFSwapBrowserUIConsistencyMethod(cls, @selector(setEditing:animated:),
+            @selector(ff_ui_setEditing:animated:));
+        FFSwapBrowserUIConsistencyMethod(cls, @selector(moreMenu),
+            @selector(ff_ui_moreMenu));
+        FFSwapBrowserUIConsistencyMethod(cls, @selector(displayModeMenu),
+            @selector(ff_ui_displayModeMenu));
+    });
+}
+
+- (void)ff_ui_setTabBarHidden:(BOOL)hidden
+{
+    UITabBarController *tabs = self.tabBarController;
+    UITabBar *tabBar = tabs.tabBar;
+    if (!tabBar || tabBar.hidden == hidden) return;
+
+    // The navigation-controller toolbar used for batch actions occupies the
+    // same bottom region as UITabBar. Never let both exist at once: hide the
+    // tab bar before showing the batch toolbar, and restore it after the batch
+    // toolbar has gone away.
+    tabBar.hidden = hidden;
+    [tabs.view setNeedsLayout];
+    [self.navigationController.view setNeedsLayout];
+    [UIView performWithoutAnimation:^{
+        [tabs.view layoutIfNeeded];
+        [self.navigationController.view layoutIfNeeded];
+    }];
+}
+
+- (void)ff_ui_viewDidAppear:(BOOL)animated
+{
+    [self ff_ui_viewDidAppear:animated];
+
+    // Settings and the in-folder menu now describe the same preference. Any
+    // browser that becomes active re-reads it, not only the storage root.
+    BOOL preferredGrid = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"FFSettingsGridMode"];
+    if (self.gridMode != preferredGrid) {
+        self.gridMode = preferredGrid;
+        [self applyLayoutModeAnimated:NO];
+    }
+
+    // StorageRoot historically forced an English "Documents" title. Keep both
+    // the navigation title and the persistent tab item in Chinese.
+    NSString *root = FFStorageRootPath().stringByStandardizingPath;
+    if ([self.currentPath.stringByStandardizingPath isEqualToString:root]) {
+        self.title = @"文件";
+        self.navigationItem.title = @"文件";
+        self.navigationController.tabBarItem.title = @"文件";
+    }
+
+    [self ff_ui_setTabBarHidden:self.editing];
+    if (self.moreItem) self.moreItem.menu = [self moreMenu];
+}
+
+- (void)ff_ui_viewDidDisappear:(BOOL)animated
+{
+    [self ff_ui_viewDidDisappear:animated];
+    // Defensive restore for non-standard/programmatic navigation away from an
+    // editing browser. If this controller becomes visible again, viewDidAppear
+    // reapplies the editing state.
+    if (self.editing) [self ff_ui_setTabBarHidden:NO];
+}
+
+- (void)ff_ui_setEditing:(BOOL)editing animated:(BOOL)animated
+{
+    if (editing) [self ff_ui_setTabBarHidden:YES];
+    [self ff_ui_setEditing:editing animated:animated];
+    if (!editing) [self ff_ui_setTabBarHidden:NO];
+
+    [self.view setNeedsLayout];
+    [self.navigationController.view setNeedsLayout];
+}
+
+- (UIMenu *)ff_ui_moreMenu
+{
+    UIMenu *original = [self ff_ui_moreMenu];
+    if (!original) return nil;
+
+    NSMutableArray<UIMenuElement *> *children = [original.children mutableCopy];
+    for (NSUInteger index = 0; index < children.count; index++) {
+        UIMenuElement *element = children[index];
+        if (![element isKindOfClass:UIMenu.class]) continue;
+        UIMenu *menu = (UIMenu *)element;
+        if (![menu.title isEqualToString:@"视图"]) continue;
+
+        // The screenshot-visible "视图 >" row previously had no leading
+        // symbol. Use the current display mode as the visual cue.
+        UIImage *image = [UIImage systemImageNamed:self.gridMode
+            ? @"square.grid.2x2" : @"list.bullet"];
+        children[index] = [UIMenu menuWithTitle:menu.title
+            image:image identifier:menu.identifier options:menu.options
+            children:menu.children];
+        break;
+    }
+
+    return [UIMenu menuWithTitle:original.title image:original.image
+        identifier:original.identifier options:original.options children:children];
+}
+
+- (UIMenu *)ff_ui_displayModeMenu
+{
+    __weak typeof(self) weakSelf = self;
+
+    void (^setMode)(BOOL) = ^(BOOL grid) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        // Menu choice is no longer a one-page override: it is the same setting
+        // shown under Settings -> 默认视图, so both directions stay synchronized.
+        [NSUserDefaults.standardUserDefaults setBool:grid
+            forKey:@"FFSettingsGridMode"];
+        strongSelf.gridMode = grid;
+        [strongSelf applyLayoutModeAnimated:YES];
+        if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
+    };
+
+    UIAction *list = [UIAction actionWithTitle:@"列表"
+        image:[UIImage systemImageNamed:@"list.bullet"] identifier:nil
+        handler:^(__unused UIAction *action) { setMode(NO); }];
+    UIAction *grid = [UIAction actionWithTitle:@"网格"
+        image:[UIImage systemImageNamed:@"square.grid.2x2"] identifier:nil
+        handler:^(__unused UIAction *action) { setMode(YES); }];
+
+    list.state = self.gridMode ? UIMenuElementStateOff : UIMenuElementStateOn;
+    grid.state = self.gridMode ? UIMenuElementStateOn : UIMenuElementStateOff;
+
+    UIImage *currentImage = [UIImage systemImageNamed:self.gridMode
+        ? @"square.grid.2x2" : @"list.bullet"];
+    return [UIMenu menuWithTitle:@"显示方式" image:currentImage identifier:nil
+        options:0 children:@[list, grid]];
 }
 
 @end
