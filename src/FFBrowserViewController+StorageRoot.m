@@ -36,6 +36,22 @@ static BOOL FFStoragePathIsInsideRoot(NSString *path, NSString *root)
         [candidate hasPrefix:[base stringByAppendingString:@"/"]];
 }
 
+static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *root = FFStorageRootPath();
+        NSString *legacyRoot = [root stringByAppendingPathComponent:@"Device Storage"];
+        for (NSString *name in @[@"LSIdentifierCache.plist", @"LSGroupCache.plist"]) {
+            [fm removeItemAtPath:[root stringByAppendingPathComponent:name] error:nil];
+            [fm removeItemAtPath:[legacyRoot stringByAppendingPathComponent:name] error:nil];
+        }
+        if ([fm contentsOfDirectoryAtPath:legacyRoot error:nil].count == 0)
+            [fm removeItemAtPath:legacyRoot error:nil];
+    });
+}
+
 @implementation FFBrowserViewController (StorageRoot)
 
 + (void)load
@@ -66,12 +82,12 @@ static BOOL FFStoragePathIsInsideRoot(NSString *path, NSString *root)
     // Old favorites / task history / deep links can still contain the removed
     // Documents/Device Storage prefix. Canonicalize at the browser boundary so
     // every caller lands on the flattened Documents tree.
+    NSString *root = FFStorageRootPath().stringByStandardizingPath;
+    FFCleanupLegacyGeneratedCachesAtStorageRoot();
     NSString *canonical = FFCanonicalStoragePath(path ?: @"");
     FFBrowserViewController *browser = [self ff_storage_initWithPath:canonical];
-    if (browser && [canonical.stringByStandardizingPath
-        isEqualToString:FFStorageRootPath().stringByStandardizingPath]) {
+    if (browser && [canonical.stringByStandardizingPath isEqualToString:root])
         browser.title = @"Documents";
-    }
     return browser;
 }
 
