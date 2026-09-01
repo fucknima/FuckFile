@@ -19,16 +19,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
           ref: codex/comprehensive-review-fixes
-          fetch-depth: 5
+          fetch-depth: 10
 
       - name: Execute refactor payload
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
+          import re
           import subprocess
+          from pathlib import Path
+
           payload = None
-          for rev in ('HEAD^', 'HEAD~2', 'HEAD~3', 'HEAD~4'):
+          for depth in range(1, 10):
+              rev = f'HEAD~{depth}'
               try:
                   payload = subprocess.check_output([
                       'git', 'show', f'{rev}:.github/workflows/apply-review-refactor.yml'
@@ -38,13 +42,49 @@ jobs:
                   pass
           if payload is None:
               raise SystemExit('refactor payload not found in recent ancestors')
+
           start = payload.index("          python3 <<'PY'\n") + len("          python3 <<'PY'\n")
           end = payload.index("\n          PY\n", start)
           body = payload[start:end]
           code = '\n'.join(line[10:] if line.startswith('          ') else line
                            for line in body.splitlines())
+
+          # This payload entry contains a triple-quoted snippet whose YAML
+          # indentation changes the literal. Remove just that call and apply it
+          # structurally to reloadEntries after the rest of the payload runs.
+          label = "'reload search preservation')"
+          pos = code.index(label)
+          call_start = code.rfind('\ns = replace_once(s,', 0, pos)
+          if call_start < 0:
+              raise SystemExit('reload preservation call start not found')
+          call_end = code.index('\n', pos) + 1
+          code = code[:call_start + 1] + code[call_end:]
+
           compile(code, '<review-refactor>', 'exec')
           exec(code, {'__name__': '__main__'})
+
+          p = Path('src/FFBrowserViewController.m')
+          s = p.read_text()
+          marker = '- (void)reloadEntries\n'
+          mstart = s.index(marker)
+          mend = s.index('\n}\n', mstart) + 3
+          block = s[mstart:mend]
+          pattern = re.compile(
+              r'(?m)^(\s*)\[self applyFilter\];\n\1\[self refreshVisibleContent\];\n'
+              r'\1\[self\.refreshControl endRefreshing\];')
+          replacement = (
+              '            if (self.searchText.length)\n'
+              '                [self updateSearchResultsForSearchController:self.searchController];\n'
+              '            else {\n'
+              '                [self applyFilter];\n'
+              '                [self refreshVisibleContent];\n'
+              '            }\n'
+              '            [self.refreshControl endRefreshing];')
+          block, count = pattern.subn(replacement, block, count=1)
+          if count != 1:
+              raise SystemExit(f'reload structural patch expected 1 match, found {count}')
+          s = s[:mstart] + block + s[mend:]
+          p.write_text(s)
           PY
 
           git rm -f \
