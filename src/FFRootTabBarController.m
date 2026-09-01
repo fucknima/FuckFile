@@ -17,7 +17,7 @@
     self.delegate = self;
 
     FFBrowserViewController *storage = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
-    storage.title = @"Documents";
+    storage.title = @"文件";
 
     FFBookmarksViewController *favorites = [[FFBookmarksViewController alloc]
         initWithMode:FFBookmarksModeFavorites];
