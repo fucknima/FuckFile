@@ -9,7 +9,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, strong) NSDate *addedDate;
 @end
 
-// Favorites: persisted in Documents/Device Storage/Favorites.plist.
+// Favorites are app metadata, persisted privately under
+// Library/Application Support/FuckFile/Favorites.plist. Stored paths are
+// canonicalized so legacy Documents/Device Storage entries continue to work.
 @interface FFFavoritesService : NSObject
 
 + (instancetype)sharedService;
@@ -22,7 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 // Recent access log: persisted in NSUserDefaults (newest first, deduped,
-// capped at 50). Browser navigation records entries here.
+// capped at 50). Browser navigation records entries here and canonicalizes
+// legacy storage-root paths on read/write.
 @interface FFRecentService : NSObject
 
 + (instancetype)sharedService;
