@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/comprehensive-review-fixes
   pull_request:
     branches:
       - main
@@ -12,8 +13,6 @@ on:
 permissions:
   contents: write
 
-# Keep independent refs from cancelling each other. Main still serializes its
-# numbered releases; each PR/ref gets its own build lane.
 concurrency:
   group: fuckfile-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -42,8 +41,6 @@ jobs:
             IPA_NAME="FuckFile-build-${BUILD_NUMBER}.ipa"
             NUMBERED_BUILD=true
           else
-            # CFBundleVersion must stay numeric. CI identities deliberately live
-            # outside the ordinary small build-counter range and are never saved.
             BUILD_NUMBER=$((900000 + GITHUB_RUN_NUMBER))
             IPA_NAME="FuckFile-ci-${GITHUB_RUN_NUMBER}.ipa"
             NUMBERED_BUILD=false
