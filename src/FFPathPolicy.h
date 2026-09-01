@@ -17,18 +17,14 @@ NS_ASSUME_NONNULL_BEGIN
 // The MHA sandbox extension provides the actual read/write permission.
 @interface FFPathPolicy : NSObject
 
-// The absolute path the virtual root (Device Storage) sits under.
+// Absolute path of the app's Documents directory, which is also FuckFile's
+// user-visible storage root.
 + (NSString *)documentsRoot;
 
-// YES when the path is (or is below) one of our App Data links: a
-// symlink whose target points into /var/.../Containers/...
-// Resolves the parent path and final name of `path` for a mutation:
-// returns the real parent directory (with our App Data link segments
-// replaced by their container targets) and, in *finalName, the entry
-// name to operate on. Validates every level with lstat: intermediate
-// foreign symlinks are rejected, and the resolved parent must exist as
-// a real directory. Returns nil and sets *errorMessage on failure.
-// This is the single entry point used by FFFileOperationService.
+// Resolves the parent path and final name of `path` for a mutation. The parent
+// itself is opened with O_NOFOLLOW immediately before the mutation; AppData
+// intermediate links are followed by the kernel only when the active MHA lease
+// covers their target. Returns nil and sets *errorMessage on failure.
 + (NSString * _Nullable)resolveParentForMutation:(NSString *)path
                                        finalName:(NSString * _Nullable * _Nullable)finalName
                                    errorMessage:(NSString * _Nullable * _Nullable)errorMessage;
