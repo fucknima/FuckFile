@@ -32,7 +32,7 @@ navigationController:(UINavigationController *)nav;
     navigationController:(UINavigationController *)nav;
 
 // Shared feedback helpers (also used by registry-driven viewers).
-+ (void)alertOnNav:(UINavigationController *)nav title:(NSString *)title
++ (void)alertOnNav:(UINavigationController *)nav title:(nullable NSString *)title
            message:(NSString *)message;
 + (void)toastOnNav:(UINavigationController *)nav message:(NSString *)message;
 
