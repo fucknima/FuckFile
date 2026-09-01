@@ -25,6 +25,7 @@
 - (void)refreshVisibleContent;
 - (void)updateBreadcrumbVisibility;
 - (void)extractEntry:(FFEntry *)item;
+- (void)flash:(NSString *)message;
 @end
 
 static BOOL FFStoragePathIsInsideRoot(NSString *path, NSString *root)
@@ -217,6 +218,7 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     [[FFFileTaskManager sharedManager] enqueueTask:task];
     FFLogTag(@"Browser", @"extract task queued archive=%@ destination=%@",
         item.path, sibling);
+    [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
 }
 
 @end
