@@ -5,9 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSNotificationName const FFAppDataRegistryDidChangeNotification;
 
 // Persistent logical inventory for AppData. The registry stores only stable
-// identifiers and optional display names. It deliberately does not persist
-// container UUIDs, sandbox tokens or MCM leases because those belong to the
-// current process/session and can change after reinstall or relaunch.
+// identifiers and locally obtained display names. It deliberately does not
+// persist online-name overlays, container UUIDs, sandbox tokens or MCM leases.
 @interface FFAppDataRegistry : NSObject
 
 + (instancetype)sharedRegistry;
@@ -17,7 +16,8 @@ FOUNDATION_EXPORT NSNotificationName const FFAppDataRegistryDidChangeNotificatio
 - (nullable NSString *)displayNameForIdentifier:(NSString *)identifier;
 - (BOOL)containsIdentifier:(NSString *)identifier;
 
-// Returns YES when the registry changed.
+// Returns YES when the registry changed. A transient local fallback equal to
+// the Bundle ID never downgrades an already known readable local name.
 - (BOOL)registerIdentifier:(NSString *)identifier
                displayName:(nullable NSString *)displayName;
 

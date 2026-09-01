@@ -2,9 +2,10 @@
 #import "FFLogViewController.h"
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
+#import "FFStorageCleanerViewController.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
-#import "FFThumbnailService.h"
+#import "FFOnlineAppNameResolver.h"
 #import "FFLogger.h"
 
 static NSString *const kFFSettingsShowHiddenFiles = @"FFSettingsShowHiddenFiles";
@@ -16,6 +17,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 @property(nonatomic) BOOL gridMode;
 @property(nonatomic) BOOL foldersFirst;
 @property(nonatomic) BOOL systemAccessEnabled;
+@property(nonatomic) BOOL onlineAppNamesEnabled;
 @end
 
 @implementation FFSettingsViewController
@@ -33,21 +35,28 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     [self reloadPreferences];
-    __weak typeof(self) weakSelf = self;
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFSystemAccessPreferenceDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            [weakSelf reloadPreferences];
-            [weakSelf.tableView reloadData];
-        }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFAppDataScanStateDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            [weakSelf.tableView reloadData];
-        }];
+
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFSystemAccessPreferenceDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFAppDataScanStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFOnlineAppNameResolutionPreferenceDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(settingsDependencyChanged:)
+        name:FFOnlineAppNameResolutionStateDidChangeNotification object:nil];
 }
 
 - (void)dealloc
 {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)settingsDependencyChanged:(NSNotification *)note
+{
+    (void)note;
+    [self reloadPreferences];
+    [self.tableView reloadData];
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -65,6 +74,49 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     id foldersFirst = [defaults objectForKey:kFFSettingsFoldersFirst];
     self.foldersFirst = foldersFirst == nil ? YES : [foldersFirst boolValue];
     self.systemAccessEnabled = FFSystemAccessManager.sharedManager.enabled;
+    self.onlineAppNamesEnabled = FFOnlineAppNameResolutionEnabled();
+}
+
+- (NSString *)onlineAppNameStatusText
+{
+    FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+    FFOnlineAppNameResolver *resolver = FFOnlineAppNameResolver.sharedResolver;
+
+    if (!self.systemAccessEnabled) return @"需先开启高级系统访问";
+    if (!self.onlineAppNamesEnabled) return @"已关闭";
+    if (!access.ready) {
+        if (access.state == FFSystemAccessStateLoading) return @"等待高级系统访问就绪";
+        if (access.state == FFSystemAccessStateFailed) return @"高级系统访问不可用";
+        return @"等待高级系统访问就绪";
+    }
+
+    switch (resolver.state) {
+        case FFOnlineAppNameResolutionStateWaitingForScan:
+            return @"等待 App Data 扫描完成";
+        case FFOnlineAppNameResolutionStateResolving:
+            return [NSString stringWithFormat:@"正在补全 %lu/%lu · 已识别 %lu/%lu",
+                (unsigned long)resolver.passCompleted,
+                (unsigned long)resolver.passTotal,
+                (unsigned long)resolver.namedAppCount,
+                (unsigned long)resolver.userAppTotal];
+        case FFOnlineAppNameResolutionStateWaitingForRetry:
+            return @"网络暂不可用 · 将自动重试";
+        case FFOnlineAppNameResolutionStateDisabled:
+            return @"已关闭";
+        case FFOnlineAppNameResolutionStateWaitingForSystemAccess:
+            return @"等待高级系统访问就绪";
+        case FFOnlineAppNameResolutionStateIdle:
+        default:
+            if (resolver.userAppTotal > 0) {
+                if (resolver.namedAppCount >= resolver.userAppTotal)
+                    return [NSString stringWithFormat:@"已识别全部 %lu 个用户 App",
+                        (unsigned long)resolver.userAppTotal];
+                return [NSString stringWithFormat:@"已识别 %lu/%lu 个用户 App",
+                    (unsigned long)resolver.namedAppCount,
+                    (unsigned long)resolver.userAppTotal];
+            }
+            return @"用 Bundle ID 查询 Apple App Store 公开目录";
+    }
 }
 
 #pragma mark - Table view
@@ -76,8 +128,8 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     switch (section) {
         case 0: return 3;
         case 1: return 2;
-        case 2: return 2;
-        case 3: return 1;
+        case 2: return 1;
+        case 3: return 2;
         case 4: return 2;
         case 5: return 1;
         default: return 0;
@@ -101,11 +153,16 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 {
     if (section != 3) return nil;
     FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
-    if (access.state == FFSystemAccessStateFailed && access.failureReason.length)
-        return [NSString stringWithFormat:@"高级系统访问启用失败：%@\n本地文件管理仍可正常使用。", access.failureReason];
-    if (self.systemAccessEnabled)
-        return @"启用时先做快速能力探测，成功后立即可用；App Data 全量发现会在后台继续，不阻塞界面。关闭后本次进程已加载的能力不会强行卸载，下次启动恢复普通模式。";
-    return @"默认关闭。关闭时不初始化高级系统访问组件，本地文件、搜索、收藏、最近访问等普通功能保持可用。";
+    NSString *onlineNote = @"在线补全依赖高级系统访问：只有高级访问已开启并完成 App Data 扫描后才会联网。仅查询非 Apple 的未命名 App，并把 Bundle ID 发送给 Apple App Store 公开目录；关闭后停止新查询，已缓存名称保留。";
+    NSString *accessNote = nil;
+    if (access.state == FFSystemAccessStateFailed && access.failureReason.length) {
+        accessNote = [NSString stringWithFormat:@"高级系统访问启用失败：%@\n本地文件管理仍可正常使用。", access.failureReason];
+    } else if (self.systemAccessEnabled) {
+        accessNote = @"高级系统访问启用时先做快速能力探测，成功后立即可用；App Data 全量发现会在后台继续，不阻塞界面。关闭后本次进程已加载的能力不会强行卸载，下次启动恢复普通模式。";
+    } else {
+        accessNote = @"高级系统访问默认关闭。关闭时不初始化相关组件，本地文件、搜索、收藏、最近访问等普通功能保持可用。";
+    }
+    return [NSString stringWithFormat:@"%@\n\n%@", accessNote, onlineNote];
 }
 
 - (UIColor *)iconTintForIndexPath:(NSIndexPath *)indexPath
@@ -115,8 +172,9 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (indexPath.section == 1)
         return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemIndigoColor;
     if (indexPath.section == 2)
-        return indexPath.row == 0 ? UIColor.systemOrangeColor : UIColor.systemRedColor;
-    if (indexPath.section == 3) return UIColor.systemPurpleColor;
+        return UIColor.systemOrangeColor;
+    if (indexPath.section == 3)
+        return indexPath.row == 0 ? UIColor.systemPurpleColor : UIColor.systemBlueColor;
     if (indexPath.section == 4)
         return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemGrayColor;
     return UIColor.systemGrayColor;
@@ -176,40 +234,45 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             break;
         }
         case 2: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"缩略图缓存";
-                unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
-                cell.detailTextLabel.text = [NSByteCountFormatter stringFromByteCount:(long long)size
-                    countStyle:NSByteCountFormatterCountStyleFile];
-                cell.imageView.image = [UIImage systemImageNamed:@"photo.on.rectangle"];
-                cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            } else {
-                cell.textLabel.text = @"清理缓存";
-                cell.detailTextLabel.text = @"删除缩略图缓存";
-                cell.imageView.image = [UIImage systemImageNamed:@"trash"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-            }
+            cell.textLabel.text = @"存储清理";
+            cell.detailTextLabel.text = @"FuckFile 缓存、失效分享残留与第三方 App Caches/tmp";
+            cell.detailTextLabel.numberOfLines = 2;
+            cell.imageView.image = [UIImage systemImageNamed:@"trash.circle"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             break;
         }
         case 3: {
-            FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
-            cell.textLabel.text = @"启用高级系统访问";
-            switch (access.state) {
-                case FFSystemAccessStateLoading: cell.detailTextLabel.text = @"正在快速探测…"; break;
-                case FFSystemAccessStateReady:
-                    cell.detailTextLabel.text = FFAppDataScanCoordinator.sharedCoordinator.scanning
-                        ? @"已就绪 · App Data 后台扫描中" : @"本次会话已就绪";
-                    break;
-                case FFSystemAccessStateFailed: cell.detailTextLabel.text = @"启用失败，本地文件仍可用"; break;
-                case FFSystemAccessStateIdle: cell.detailTextLabel.text = @"等待加载"; break;
-                default: cell.detailTextLabel.text = @"普通文件管理模式"; break;
+            if (indexPath.row == 0) {
+                FFSystemAccessManager *access = FFSystemAccessManager.sharedManager;
+                cell.textLabel.text = @"启用高级系统访问";
+                switch (access.state) {
+                    case FFSystemAccessStateLoading: cell.detailTextLabel.text = @"正在快速探测…"; break;
+                    case FFSystemAccessStateReady:
+                        cell.detailTextLabel.text = FFAppDataScanCoordinator.sharedCoordinator.scanning
+                            ? @"已就绪 · App Data 后台扫描中" : @"本次会话已就绪";
+                        break;
+                    case FFSystemAccessStateFailed: cell.detailTextLabel.text = @"启用失败，本地文件仍可用"; break;
+                    case FFSystemAccessStateIdle: cell.detailTextLabel.text = @"等待加载"; break;
+                    default: cell.detailTextLabel.text = @"普通文件管理模式"; break;
+                }
+                cell.imageView.image = [UIImage systemImageNamed:access.ready ? @"lock.open.fill" : @"lock.open"];
+                UISwitch *toggle = [UISwitch new];
+                toggle.on = self.systemAccessEnabled;
+                toggle.enabled = access.state != FFSystemAccessStateLoading;
+                [toggle addTarget:self action:@selector(systemAccessChanged:) forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = toggle;
+            } else {
+                cell.textLabel.text = @"在线补全 App 名称";
+                cell.detailTextLabel.text = [self onlineAppNameStatusText];
+                cell.imageView.image = [UIImage systemImageNamed:@"text.magnifyingglass"];
+                UISwitch *toggle = [UISwitch new];
+                toggle.on = self.onlineAppNamesEnabled;
+                toggle.enabled = self.systemAccessEnabled;
+                [toggle addTarget:self action:@selector(onlineAppNamesChanged:) forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = toggle;
+                cell.textLabel.enabled = self.systemAccessEnabled;
+                cell.detailTextLabel.enabled = self.systemAccessEnabled;
             }
-            cell.imageView.image = [UIImage systemImageNamed:access.ready ? @"lock.open.fill" : @"lock.open"];
-            UISwitch *toggle = [UISwitch new];
-            toggle.on = self.systemAccessEnabled;
-            toggle.enabled = access.state != FFSystemAccessStateLoading;
-            [toggle addTarget:self action:@selector(systemAccessChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             break;
         }
@@ -261,17 +324,9 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         [self.navigationController pushViewController:page animated:YES];
         return;
     }
-    if (indexPath.section == 2 && indexPath.row == 1) {
-        unsigned long long size = FFThumbnailService.sharedService.diskCacheSize;
-        [FFThumbnailService.sharedService clearCaches];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"缓存已清理"
-            message:[NSString stringWithFormat:@"释放约 %@。",
-                [NSByteCountFormatter stringFromByteCount:(long long)size
-                    countStyle:NSByteCountFormatterCountStyleFile]]
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        [self.tableView reloadData];
+    if (indexPath.section == 2) {
+        FFStorageCleanerViewController *page = [FFStorageCleanerViewController new];
+        [self.navigationController pushViewController:page animated:YES];
         return;
     }
     if (indexPath.section == 4) {
@@ -333,6 +388,14 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.foldersFirst = toggle.on;
     [NSUserDefaults.standardUserDefaults setBool:self.foldersFirst forKey:kFFSettingsFoldersFirst];
     [NSNotificationCenter.defaultCenter postNotificationName:@"FFSettingsChangedNotification" object:nil];
+}
+
+- (void)onlineAppNamesChanged:(UISwitch *)toggle
+{
+    self.onlineAppNamesEnabled = toggle.on;
+    FFSetOnlineAppNameResolutionEnabled(toggle.on);
+    FFLogTag(@"AppNameOnline", @"preference enabled=%d", toggle.on);
+    [self.tableView reloadData];
 }
 
 - (void)systemAccessChanged:(UISwitch *)toggle

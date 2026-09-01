@@ -23,6 +23,7 @@ FuckFile_FILES = \
 	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
 	src/FFAppDataScanToast.m \
 	src/FFAppDataRegistry.m \
+	src/FFOnlineAppNameResolver.m \
 	src/FFAppDataLeaseManager.m \
 	src/FFAppDataVirtualPath.m \
 	src/FFAppDataVirtualBrowser.m \
@@ -30,12 +31,16 @@ FuckFile_FILES = \
 	src/FFLogger.m \
 	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
+	src/FFBrowserViewController+GridStability.m \
+	src/FFBrowserViewController+StorageRoot.m \
 	src/FFBrowserViewController+LocalSearchFix.m \
 	src/FFBrowserViewController+IPAThumbnail.m \
 	src/FFBrowserViewController+FileIcons.m \
 	src/FFFileIconProvider.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
+	src/FFStorageCleaner.m \
+	src/FFStorageCleanerViewController.m \
 	src/FFCopyEngine.m \
 	src/FFPathPolicy.m \
 	src/FFFileOperationService.m \
@@ -49,6 +54,8 @@ FuckFile_FILES = \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
 	src/FFTextEditorViewController.m \
+	src/FFPlistDocument.m \
+	src/FFPlistValueEditorViewController.m \
 	src/FFPlistEditorViewController.m \
 	src/FFPdfPreviewViewController.m \
 	src/FFPdfReaderViewController.m \

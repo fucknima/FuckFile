@@ -1,4 +1,5 @@
 #import "FFBookmarksService.h"
+#import "FFStorageEnvironment.h"
 
 static NSString *const kFFRecentKey = @"FFRecentPaths";
 static const NSUInteger kFFRecentLimit = 50;
@@ -20,14 +21,21 @@ static const NSUInteger kFFRecentLimit = 50;
 
 static NSString *FFFavoritesPath(void)
 {
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [[documents stringByAppendingPathComponent:@"Device Storage"]
-        stringByAppendingPathComponent:@"Favorites.plist"];
+    NSString *support = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (!support.length)
+        support = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
+    NSString *directory = [support stringByAppendingPathComponent:@"FuckFile"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    return [directory stringByAppendingPathComponent:@"Favorites.plist"];
 }
 
 - (NSArray<FFBookmark *> *)bookmarks
 {
+    // Calling the storage root once also performs the one-time legacy migration
+    // from Documents/Device Storage/Favorites.plist into Application Support.
+    (void)FFStorageRootPath();
     NSArray *entries = [NSArray arrayWithContentsOfFile:FFFavoritesPath()];
     if (![entries isKindOfClass:NSArray.class]) return @[];
     NSMutableArray<FFBookmark *> *result = [NSMutableArray arrayWithCapacity:entries.count];
@@ -36,7 +44,7 @@ static NSString *FFFavoritesPath(void)
         if (![dict[@"Path"] isKindOfClass:NSString.class]) continue;
         FFBookmark *bookmark = [FFBookmark new];
         bookmark.name = [dict[@"Name"] isKindOfClass:NSString.class] ? dict[@"Name"] : @"";
-        bookmark.path = dict[@"Path"];
+        bookmark.path = FFCanonicalStoragePath(dict[@"Path"]);
         bookmark.isDirectory = [dict[@"IsDirectory"] boolValue];
         bookmark.addedDate = [dict[@"Added"] isKindOfClass:NSDate.class] ? dict[@"Added"] : NSDate.date;
         [result addObject:bookmark];
@@ -50,7 +58,7 @@ static NSString *FFFavoritesPath(void)
     for (FFBookmark *bookmark in bookmarks)
         [entries addObject:@{
             @"Name": bookmark.name ?: @"",
-            @"Path": bookmark.path ?: @"",
+            @"Path": FFCanonicalStoragePath(bookmark.path ?: @""),
             @"IsDirectory": @(bookmark.isDirectory),
             @"Added": bookmark.addedDate ?: NSDate.date,
         }];
@@ -59,15 +67,17 @@ static NSString *FFFavoritesPath(void)
 
 - (BOOL)isFavoritePath:(NSString *)path
 {
+    NSString *canonical = FFCanonicalStoragePath(path ?: @"");
     for (FFBookmark *bookmark in [self bookmarks])
-        if ([bookmark.path isEqualToString:path]) return YES;
+        if ([bookmark.path isEqualToString:canonical]) return YES;
     return NO;
 }
 
 - (void)togglePath:(NSString *)path name:(NSString *)name isDirectory:(BOOL)isDirectory
 {
+    path = FFCanonicalStoragePath(path ?: @"");
     NSMutableArray<FFBookmark *> *bookmarks = [[self bookmarks] mutableCopy];
-    for (FFBookmark *bookmark in bookmarks)
+    for (FFBookmark *bookmark in [bookmarks copy])
         if ([bookmark.path isEqualToString:path]) {
             [bookmarks removeObject:bookmark];
             [self saveBookmarks:bookmarks];
@@ -84,8 +94,9 @@ static NSString *FFFavoritesPath(void)
 
 - (void)removePath:(NSString *)path
 {
+    path = FFCanonicalStoragePath(path ?: @"");
     NSMutableArray<FFBookmark *> *bookmarks = [[self bookmarks] mutableCopy];
-    for (FFBookmark *bookmark in bookmarks)
+    for (FFBookmark *bookmark in [bookmarks copy])
         if ([bookmark.path isEqualToString:path]) {
             [bookmarks removeObject:bookmark];
             [self saveBookmarks:bookmarks];
@@ -117,7 +128,7 @@ static NSString *FFFavoritesPath(void)
         if (![dict[@"Path"] isKindOfClass:NSString.class]) continue;
         FFBookmark *bookmark = [FFBookmark new];
         bookmark.name = [dict[@"Name"] isKindOfClass:NSString.class] ? dict[@"Name"] : @"";
-        bookmark.path = dict[@"Path"];
+        bookmark.path = FFCanonicalStoragePath(dict[@"Path"]);
         bookmark.isDirectory = [dict[@"IsDirectory"] boolValue];
         bookmark.addedDate = [dict[@"LastOpened"] isKindOfClass:NSDate.class]
             ? dict[@"LastOpened"] : NSDate.date;
@@ -128,14 +139,18 @@ static NSString *FFFavoritesPath(void)
 
 - (void)recordPath:(NSString *)path name:(NSString *)name isDirectory:(BOOL)isDirectory
 {
+    path = FFCanonicalStoragePath(path ?: @"");
     NSMutableArray *entries = [[NSUserDefaults.standardUserDefaults
         arrayForKey:kFFRecentKey] mutableCopy];
     if (!entries) entries = [NSMutableArray array];
-    for (NSDictionary *dict in entries)
-        if ([dict[@"Path"] isEqualToString:path]) {
+    for (NSDictionary *dict in [entries copy]) {
+        NSString *stored = [dict[@"Path"] isKindOfClass:NSString.class]
+            ? FFCanonicalStoragePath(dict[@"Path"]) : @"";
+        if ([stored isEqualToString:path]) {
             [entries removeObject:dict];
             break;
         }
+    }
     [entries insertObject:@{
         @"Name": name ?: @"",
         @"Path": path ?: @"",
@@ -148,13 +163,18 @@ static NSString *FFFavoritesPath(void)
 
 - (void)removePath:(NSString *)path
 {
+    path = FFCanonicalStoragePath(path ?: @"");
     NSMutableArray *entries = [[NSUserDefaults.standardUserDefaults
         arrayForKey:kFFRecentKey] mutableCopy];
-    for (NSDictionary *dict in entries)
-        if ([dict[@"Path"] isEqualToString:path]) {
+    if (!entries) return;
+    for (NSDictionary *dict in [entries copy]) {
+        NSString *stored = [dict[@"Path"] isKindOfClass:NSString.class]
+            ? FFCanonicalStoragePath(dict[@"Path"]) : @"";
+        if ([stored isEqualToString:path]) {
             [entries removeObject:dict];
             break;
         }
+    }
     [NSUserDefaults.standardUserDefaults setObject:entries forKey:kFFRecentKey];
 }
 

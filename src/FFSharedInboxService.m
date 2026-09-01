@@ -2,6 +2,7 @@
 #import "FFShareBridge.h"
 #import "FFImportService.h"
 #import "FFLogger.h"
+#import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
 #import "MCMManager+ExtensionData.h"
 
@@ -85,10 +86,7 @@ static const NSTimeInterval kFFShareStreamRecoveryDelay = 180.0;
     NSArray<NSString *> *, NSArray<NSError *> *))completion
 {
     dispatch_async([self queue], ^{
-        NSString *documents = NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        NSString *destinationDirectory = [[documents stringByAppendingPathComponent:
-            @"Device Storage"] stringByAppendingPathComponent:@"Imported"];
+        NSString *destinationDirectory = FFImportedDirectoryPath();
         NSError *mkdirError = nil;
         [NSFileManager.defaultManager createDirectoryAtPath:destinationDirectory
             withIntermediateDirectories:YES attributes:nil error:&mkdirError];

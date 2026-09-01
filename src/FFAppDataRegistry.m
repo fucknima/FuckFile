@@ -104,9 +104,16 @@ static NSString *const kFFAppDataRegistryKey = @"FFAppDataVirtualRegistryV1";
     BOOL changed = NO;
     @synchronized (self) {
         NSString *previous = _entries[identifier];
+        BOOL previousResolved = previous.length > 0 && ![previous isEqualToString:identifier];
+        BOOL incomingFallback = cleanName.length == 0 || [cleanName isEqualToString:identifier];
+
         if (!previous) {
             _entries[identifier] = cleanName.length ? cleanName : @"";
             changed = YES;
+        } else if (previousResolved && incomingFallback) {
+            // Local metadata availability can be transient. Never throw away a
+            // readable local name merely because a later scan fell back to the
+            // Bundle ID. Online names are not stored here at all.
         } else if (cleanName.length && ![previous isEqualToString:cleanName]) {
             _entries[identifier] = cleanName;
             changed = YES;

@@ -3,6 +3,7 @@
 #import "FFAppDataVirtualPath.h"
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
+#import "FFOnlineAppNameResolver.h"
 #import "FFAppNames.h"
 #import "FFLogger.h"
 
@@ -72,8 +73,7 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
 
         Method originalOpen = class_getInstanceMethod(cls,
             @selector(openItemAtPath:title:navigationController:completion:));
-        Method virtualOpen = class_getInstanceMethod(cls,
-            @selector(ff_appData_openItemAtPath:title:navigationController:completion:));
+        Method virtualOpen = class_getInstanceMethod(cls, @selector(ff_appData_openItemAtPath:title:navigationController:completion:));
         if (originalOpen && virtualOpen) method_exchangeImplementations(originalOpen, virtualOpen);
 
         Method originalViewDidLoad = class_getInstanceMethod(cls, @selector(viewDidLoad));
@@ -105,6 +105,21 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
     self.navigationItem.titleView = filter;
     objc_setAssociatedObject(self, kFFAppDataFilterControlKey, filter,
         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // The AppData page is a pure consumer of online-name state. It never starts
+    // network work itself; the resolver owns that lifecycle and only asks the
+    // visible root to redraw when its independent display overlay changes.
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(ff_appData_onlineNamesChanged:)
+        name:FFOnlineAppNameResolutionNamesDidChangeNotification object:nil];
+}
+
+- (void)ff_appData_onlineNamesChanged:(NSNotification *)note
+{
+    (void)note;
+    if (!FFAppDataIsVirtualRootPath(self.currentPath.stringByStandardizingPath)) return;
+    if (!self.viewIfLoaded.window) return;
+    [self reloadEntries];
 }
 
 - (void)ff_appData_filterChanged:(UISegmentedControl *)sender
@@ -132,6 +147,7 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
         NSMutableArray<FFEntry *> *items = [NSMutableArray array];
         NSUInteger userCount = 0;
         NSUInteger systemCount = 0;
+        FFOnlineAppNameResolver *nameResolver = FFOnlineAppNameResolver.sharedResolver;
 
         for (NSString *identifier in registry.identifiers) {
             FFAppDataApplicationKind kind = FFApplicationKindForIdentifier(identifier);
@@ -143,17 +159,28 @@ static FFAppDataApplicationKind FFApplicationKindForIdentifier(NSString *identif
             if (filterMode == FFAppDataFilterModeSystem && kind != FFAppDataApplicationKindSystem)
                 continue;
 
+            NSString *localName = [registry displayNameForIdentifier:identifier] ?: FFAppDisplayName(identifier);
+            NSString *displayName = [nameResolver displayNameForIdentifier:identifier localName:localName];
+            BOOL hasReadableName = displayName.length && ![displayName isEqualToString:identifier];
+            NSString *kindText = kind == FFAppDataApplicationKindSystem
+                ? @"系统 App 数据" : @"用户 App 数据";
+
             FFEntry *item = [FFEntry new];
+            // Keep the stable Bundle ID as the logical name/path identity even
+            // when a human-readable name is shown. This preserves search/path/
+            // materialization behavior and makes the technical identifier lossless.
             item.name = identifier;
-            item.displayName = [registry displayNameForIdentifier:identifier] ?: FFAppDisplayName(identifier);
+            item.displayName = displayName.length ? displayName : identifier;
             item.path = [FFAppDataVirtualPath() stringByAppendingPathComponent:identifier];
             item.isDirectory = YES;
             item.isSymlink = NO;
             item.isAppContainer = YES;
             item.containerIdentifier = identifier;
-            item.detail = (kind == FFAppDataApplicationKindSystem)
-                ? @"系统 App 数据 · 按需连接"
-                : @"用户 App 数据 · 按需连接";
+            // When a readable name exists, always expose the true Bundle ID on
+            // line two. If unresolved, avoid repeating the same ID on both lines.
+            item.detail = hasReadableName
+                ? [NSString stringWithFormat:@"%@ · %@", identifier, kindText]
+                : kindText;
             item.fullDetail = item.detail;
 
             // Do not acquire a lease just to sort. If this app is already

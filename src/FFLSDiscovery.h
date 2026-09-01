@@ -2,6 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Private cache location for LaunchServices discovery. This is app-generated
+// state and deliberately lives under Library/Caches rather than Documents.
+NSString *FFLSDiscoveryCachePath(BOOL groupsOnly);
+
 // Cheap metadata-only fingerprint of the device-local LaunchServices csstore.
 // It does not read the store contents: filename, size, modification time and
 // inode are combined so foreground/cold-launch checks can tell whether app
@@ -30,7 +34,7 @@ NSArray<NSString *> *FFLSStructuredInstalledApplicationIdentifiers(void);
 // store still contains their identifiers. The byte-range candidates must be
 // confirmed with a direct ContainerManager lookup by the caller.
 //
-// Results are cached in <Documents>/LSIdentifierCache.plist keyed by the
+// Results are cached under Library/Caches/FuckFile/LaunchServices keyed by the
 // metadata fingerprint above; a rescan happens only when the store changed.
 NSArray<NSString *> *FFLSDiscoverInstalledIdentifiers(NSString *lsdContainerRoot,
                                                       NSUInteger maxCandidates);

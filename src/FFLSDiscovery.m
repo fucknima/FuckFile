@@ -23,11 +23,50 @@ static BOOL FFLSSafeIdentifier(NSString *identifier)
         ![identifier containsString:@".."] && [identifier containsString:@"."];
 }
 
-static NSString *FFLSCachePathForMode(BOOL groupsOnly)
+static NSString *FFLSPrivateCacheDirectory(void)
 {
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [documents stringByAppendingPathComponent:
+    NSString *caches = NSSearchPathForDirectoriesInDomains(
+        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (!caches.length)
+        caches = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];
+    NSString *directory = [caches stringByAppendingPathComponent:@"FuckFile/LaunchServices"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    return directory;
+}
+
+static void FFMigrateLegacyLSCaches(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *documents = NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        if (!documents.length) return;
+        NSString *legacyRoot = [documents stringByAppendingPathComponent:@"Device Storage"];
+        NSString *directory = FFLSPrivateCacheDirectory();
+        for (NSString *name in @[@"LSIdentifierCache.plist", @"LSGroupCache.plist"]) {
+            NSString *destination = [directory stringByAppendingPathComponent:name];
+            for (NSString *sourceRoot in @[documents, legacyRoot]) {
+                NSString *source = [sourceRoot stringByAppendingPathComponent:name];
+                if (![fm fileExistsAtPath:source]) continue;
+                if (![fm fileExistsAtPath:destination]) {
+                    NSError *moveError = nil;
+                    if ([fm moveItemAtPath:source toPath:destination error:&moveError]) continue;
+                }
+                // This is derived cache state. If migration cannot preserve it,
+                // deleting the legacy Documents copy is safe; the store scan
+                // regenerates the cache on demand.
+                [fm removeItemAtPath:source error:nil];
+            }
+        }
+    });
+}
+
+NSString *FFLSDiscoveryCachePath(BOOL groupsOnly)
+{
+    FFMigrateLegacyLSCaches();
+    return [FFLSPrivateCacheDirectory() stringByAppendingPathComponent:
         groupsOnly ? @"LSGroupCache.plist" : @"LSIdentifierCache.plist"];
 }
 
@@ -382,7 +421,7 @@ static NSArray<NSString *> *FFLSCachedIdentifiersForFingerprint(NSString *finger
 {
     if (!fingerprint.length) return nil;
     NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:
-        FFLSCachePathForMode(groupsOnly)];
+        FFLSDiscoveryCachePath(groupsOnly)];
     if (![cache[@"StoreFingerprint"] isKindOfClass:NSString.class] ||
         ![cache[@"StoreFingerprint"] isEqualToString:fingerprint])
         return nil;
@@ -404,7 +443,7 @@ static void FFLSWriteCache(NSString *fingerprint, unsigned long long storeSize,
         @"StoreSize": @(storeSize),
         @"Identifiers": identifiers,
     };
-    [cache writeToFile:FFLSCachePathForMode(groupsOnly) atomically:YES];
+    [cache writeToFile:FFLSDiscoveryCachePath(groupsOnly) atomically:YES];
 }
 
 static NSArray<NSString *> *FFLSDiscoverWithPrefix(NSString *lsdContainerRoot,

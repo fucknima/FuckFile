@@ -6,7 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 // 只负责显示与点击回调，跳转由 Browser 的导航模型完成。
 @interface FFPathBreadcrumbView : UIView
 
-// names 为显示用组件（如 Device Storage › AppData › 微信），
+// names 为显示用组件（如 Documents › AppData › 微信），
 // selectedIndex 为当前目录；点击任意组件回调 index。
 - (void)setComponentNames:(NSArray<NSString *> *)names
              selectedIndex:(NSUInteger)index

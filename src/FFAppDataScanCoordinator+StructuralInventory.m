@@ -27,9 +27,10 @@
 
 static NSString *FFStructuralLSCachePath(void)
 {
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [documents stringByAppendingPathComponent:@"LSIdentifierCache.plist"];
+    // Structural and raw discovery share the same private cache. Keeping both
+    // writers on one path prevents a later raw scan from recreating metadata in
+    // Documents after the homepage was flattened.
+    return FFLSDiscoveryCachePath(NO);
 }
 
 static void FFPrewarmStructuralLaunchServicesCache(void)
