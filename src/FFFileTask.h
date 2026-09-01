@@ -27,7 +27,7 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 @property(atomic, copy) NSString *taskID;
 @property(atomic) FFFileTaskKind kind;
 @property(atomic, copy) NSString *displayName;
-@property(atomic, copy) NSString *detailName;
+@property(atomic, copy, nullable) NSString *detailName;
 @property(atomic) FFFileTaskState state;
 @property(atomic) double progress;
 @property(atomic) double averageBytesPerSecond;
