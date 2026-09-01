@@ -4,15 +4,18 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Only main pushes build automatically. Feature/other branches are built manually
-# with Run workflow. Cancelled/failed runs never advance the successful-build counter.
+# Keep independent refs from cancelling each other. Main still serializes its
+# numbered releases; each PR/ref gets its own build lane.
 concurrency:
-  group: fuckfile-numbered-build
+  group: fuckfile-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,27 +27,38 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Resolve next successful build number
+      - name: Resolve build identity
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin build-counter --depth=1
-          CURRENT="$(git show FETCH_HEAD:BUILD_NUMBER | tr -d '[:space:]')"
-          if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
-            echo "Invalid BUILD_NUMBER on build-counter: $CURRENT" >&2
-            exit 1
-          fi
-          NEXT=$((CURRENT + 1))
-          echo "BUILD_NUMBER=$NEXT" >> "$GITHUB_ENV"
-          echo "IPA_NAME=FuckFile-build-${NEXT}.ipa" >> "$GITHUB_ENV"
-
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" Info.plist
-          if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ShareExtension/Info.plist >/dev/null 2>&1; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" ShareExtension/Info.plist
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            git fetch origin build-counter --depth=1
+            CURRENT="$(git show FETCH_HEAD:BUILD_NUMBER | tr -d '[:space:]')"
+            if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+              echo "Invalid BUILD_NUMBER on build-counter: $CURRENT" >&2
+              exit 1
+            fi
+            BUILD_NUMBER=$((CURRENT + 1))
+            IPA_NAME="FuckFile-build-${BUILD_NUMBER}.ipa"
+            NUMBERED_BUILD=true
           else
-            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $NEXT" ShareExtension/Info.plist
+            # CFBundleVersion must stay numeric. CI identities deliberately live
+            # outside the ordinary small build-counter range and are never saved.
+            BUILD_NUMBER=$((900000 + GITHUB_RUN_NUMBER))
+            IPA_NAME="FuckFile-ci-${GITHUB_RUN_NUMBER}.ipa"
+            NUMBERED_BUILD=false
           fi
-          echo "Candidate successful build: $NEXT"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
+          echo "NUMBERED_BUILD=$NUMBERED_BUILD" >> "$GITHUB_ENV"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Info.plist
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ShareExtension/Info.plist >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ShareExtension/Info.plist
+          else
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" ShareExtension/Info.plist
+          fi
+          echo "Build identity: $BUILD_NUMBER numbered=$NUMBERED_BUILD"
 
       - name: Install Theos
         run: |
@@ -60,13 +74,29 @@ jobs:
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
-      - name: Self-check core logic (probe/codec)
+      - name: Self-check core logic (probe/codec/search session)
         run: |
           clang -fobjc-arc -framework Foundation -lz -I src \
             tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
             src/FFSearchSession.m src/FFLogger.m src/FFStorageEnvironment.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
+
+      - name: Review regression guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e src/FFSearchViewController.m
+          test ! -e src/FFSearchViewController.h
+          test ! -e src/FFHomeViewController.m
+          ! grep -q 'FFSearchViewController' Makefile
+          ! grep -q 'FFHomeViewController' Makefile
+          ! grep -q -- '-Wno-format' Makefile
+          ! grep -q -- '-Wno-incompatible-pointer-types' Makefile
+          ! grep -q -- '-Wno-implicit-function-declaration' Makefile
+          grep -q 'lstat(child.fileSystemRepresentation' src/FFSearchService.m
+          grep -q 'FFResolvedPathIsInsideRoot' src/FFSearchService.m
+          grep -q 'if (!showResult)' src/FFAppDelegate.m
 
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
@@ -85,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Branch: ${GITHUB_REF_NAME}"
-          echo "Candidate build: ${BUILD_NUMBER}"
+          echo "Build: ${BUILD_NUMBER}"
 
           APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
           EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
@@ -178,6 +208,7 @@ jobs:
           if-no-files-found: error
 
       - name: Commit successful build number
+        if: env.NUMBERED_BUILD == 'true'
         shell: bash
         run: |
           set -euo pipefail
