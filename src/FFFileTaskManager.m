@@ -9,15 +9,166 @@
 
 #import <errno.h>
 #import <sys/stat.h>
+#import <unistd.h>
 
 NSNotificationName const FFFileTaskManagerDidChangeNotification =
     @"FFFileTaskManagerDidChangeNotification";
 
+static const NSUInteger kFFTaskHistoryLimit = 50;
+static const NSTimeInterval kFFTaskPersistDelay = 1.0;
+static const NSTimeInterval kFFTaskPersistTrailingDelay = 0.15;
+static const NSTimeInterval kFFTaskProgressNotifyInterval = 0.15;
+
+static NSString *FFTaskHistoryPath(void)
+{
+    NSString *root = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (!root.length)
+        root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
+    NSString *directory = [root stringByAppendingPathComponent:@"FuckFile"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    return [directory stringByAppendingPathComponent:@"TaskHistory.plist"];
+}
+
+static NSArray<NSString *> *FFCanonicalTaskSources(id rawSources)
+{
+    if (![rawSources isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    for (id value in (NSArray *)rawSources) {
+        if (![value isKindOfClass:NSString.class] || ![(NSString *)value length]) continue;
+        [result addObject:FFCanonicalStoragePath((NSString *)value)];
+    }
+    return result;
+}
+
+static NSDictionary *FFTaskDictionary(FFFileTask *task)
+{
+    NSMutableDictionary *row = [NSMutableDictionary dictionary];
+    row[@"taskID"] = task.taskID ?: NSUUID.UUID.UUIDString;
+    row[@"kind"] = @(task.kind);
+    row[@"displayName"] = task.displayName ?: @"文件任务";
+    if (task.detailName.length) row[@"detailName"] = task.detailName;
+    row[@"state"] = @(task.state);
+    row[@"progress"] = @(task.progress);
+    row[@"averageBytesPerSecond"] = @(task.averageBytesPerSecond);
+    row[@"estimatedRemainingSeconds"] = @(task.estimatedRemainingSeconds);
+    row[@"completedBytes"] = @(task.completedBytes);
+    row[@"totalBytes"] = @(task.totalBytes);
+    row[@"succeededCount"] = @(task.succeededCount);
+    row[@"failedCount"] = @(task.failedCount);
+    row[@"skippedCount"] = @(task.skippedCount);
+    row[@"sources"] = FFCanonicalTaskSources(task.sources);
+    row[@"destination"] = FFCanonicalStoragePath(task.destination ?: @"");
+    row[@"moveSourceRemoval"] = @(task.moveSourceRemoval);
+    if (task.error.localizedDescription.length)
+        row[@"errorDescription"] = task.error.localizedDescription;
+    if (task.error.domain.length) row[@"errorDomain"] = task.error.domain;
+    row[@"errorCode"] = @(task.error.code);
+    // SECURITY: archivePassword is intentionally never persisted.
+    return row;
+}
+
+static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
+{
+    if (![row isKindOfClass:NSDictionary.class]) return nil;
+    NSArray<NSString *> *sources = FFCanonicalTaskSources(row[@"sources"]);
+    NSString *destination = [row[@"destination"] isKindOfClass:NSString.class]
+        ? FFCanonicalStoragePath(row[@"destination"]) : @"";
+    NSString *displayName = [row[@"displayName"] isKindOfClass:NSString.class]
+        ? row[@"displayName"] : @"文件任务";
+    NSNumber *kindValue = [row[@"kind"] isKindOfClass:NSNumber.class] ? row[@"kind"] : nil;
+    if (!kindValue || kindValue.integerValue < FFFileTaskKindCopy ||
+        kindValue.integerValue > FFFileTaskKindCompress)
+        return nil;
+
+    FFFileTask *task = [FFFileTask new];
+    NSString *taskID = [row[@"taskID"] isKindOfClass:NSString.class] ? row[@"taskID"] : nil;
+    if (taskID.length) task.taskID = taskID;
+    task.kind = kindValue.integerValue;
+    task.displayName = displayName;
+    task.detailName = [row[@"detailName"] isKindOfClass:NSString.class] ? row[@"detailName"] : nil;
+    task.sources = sources;
+    task.destination = destination;
+    task.moveSourceRemoval = [row[@"moveSourceRemoval"] boolValue];
+    task.progress = [row[@"progress"] doubleValue];
+    task.averageBytesPerSecond = [row[@"averageBytesPerSecond"] doubleValue];
+    task.estimatedRemainingSeconds = [row[@"estimatedRemainingSeconds"] doubleValue];
+    task.completedBytes = [row[@"completedBytes"] unsignedLongLongValue];
+    task.totalBytes = [row[@"totalBytes"] unsignedLongLongValue];
+    task.succeededCount = [row[@"succeededCount"] unsignedIntegerValue];
+    task.failedCount = [row[@"failedCount"] unsignedIntegerValue];
+    task.skippedCount = [row[@"skippedCount"] unsignedIntegerValue];
+    task.archivePassword = nil;
+    task.cancelled = NO;
+
+    FFFileTaskState savedState = [row[@"state"] integerValue];
+    if (savedState == FFFileTaskStateQueued || savedState == FFFileTaskStateRunning) {
+        task.state = FFFileTaskStateFailed;
+        task.averageBytesPerSecond = 0;
+        task.estimatedRemainingSeconds = 0;
+        task.error = [NSError errorWithDomain:@"FFFileTaskPersistence" code:1
+            userInfo:@{NSLocalizedDescriptionKey:
+                @"App 上次退出时任务尚未完成，任务已中断，可重试。加密 ZIP 需要重新输入密码后再发起。"}];
+    } else if (savedState >= FFFileTaskStateCompleted && savedState <= FFFileTaskStateCancelled) {
+        task.state = savedState;
+        NSString *description = [row[@"errorDescription"] isKindOfClass:NSString.class]
+            ? row[@"errorDescription"] : nil;
+        if (description.length) {
+            NSString *domain = [row[@"errorDomain"] isKindOfClass:NSString.class]
+                ? row[@"errorDomain"] : @"FFFileTaskHistory";
+            task.error = [NSError errorWithDomain:domain code:[row[@"errorCode"] integerValue]
+                userInfo:@{NSLocalizedDescriptionKey:description}];
+        }
+    } else {
+        task.state = FFFileTaskStateFailed;
+        task.error = [NSError errorWithDomain:@"FFFileTaskPersistence" code:2
+            userInfo:@{NSLocalizedDescriptionKey:@"任务历史状态无效，可重新发起任务。"}];
+    }
+    return task;
+}
+
+static BOOL FFExtractErrorIsWriteAccessFailure(NSError *error)
+{
+    if (!error) return NO;
+    if ([error.domain isEqualToString:NSPOSIXErrorDomain] &&
+        (error.code == EPERM || error.code == EACCES || error.code == EROFS))
+        return YES;
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] &&
+        (error.code == NSFileWriteNoPermissionError ||
+         error.code == NSFileWriteVolumeReadOnlyError))
+        return YES;
+    NSError *underlying = [error.userInfo[NSUnderlyingErrorKey]
+        isKindOfClass:NSError.class] ? error.userInfo[NSUnderlyingErrorKey] : nil;
+    return underlying ? FFExtractErrorIsWriteAccessFailure(underlying) : NO;
+}
+
+static NSString *FFFallbackExtractDestination(FFFileTask *task)
+{
+    NSString *archive = task.sources.firstObject.lastPathComponent.stringByDeletingPathExtension;
+    if (!archive.length) archive = @"archive";
+    NSString *root = [FFStorageRootPath() stringByAppendingPathComponent:@"Extracted"];
+    NSError *directoryError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:root
+        withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+        FFLogTag(@"Tasks", @"extract fallback root unavailable path=%@ error=%@",
+            root, directoryError.localizedDescription ?: @"(nil)");
+        return nil;
+    }
+    NSString *suffix = [NSUUID.UUID.UUIDString substringToIndex:8];
+    return [root stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"%@-%@", archive, suffix]];
+}
+
 @interface FFFileTaskManager ()
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *taskList;
 @property(nonatomic, strong) dispatch_queue_t workQueue;
+@property(nonatomic, strong) dispatch_queue_t persistenceQueue;
 @property(nonatomic, strong) NSLock *lock;
 @property(nonatomic) NSTimeInterval lastProgressNotify;
+@property(nonatomic) BOOL uiNotifyPending;
+@property(nonatomic) BOOL persistenceScheduled;
+@property(nonatomic) NSUInteger persistenceGeneration;
 @end
 
 @implementation FFFileTaskManager
@@ -35,10 +186,35 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     self = [super init];
     if (self) {
         _taskList = [NSMutableArray array];
-        _workQueue = dispatch_queue_create("ff.tasks", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_attr_t utility = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        _workQueue = dispatch_queue_create("ff.tasks", utility);
+        _persistenceQueue = dispatch_queue_create("ff.tasks.persistence", utility);
         _lock = [NSLock new];
+        [self restoreTaskHistory];
     }
     return self;
+}
+
+- (void)restoreTaskHistory
+{
+    NSData *data = [NSData dataWithContentsOfFile:FFTaskHistoryPath()];
+    if (!data.length) return;
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+        options:NSPropertyListImmutable format:nil error:nil];
+    if (![plist isKindOfClass:NSArray.class]) return;
+    NSMutableArray<FFFileTask *> *restored = [NSMutableArray array];
+    for (NSDictionary *row in (NSArray *)plist) {
+        FFFileTask *task = FFTaskFromDictionary(row);
+        if (task) [restored addObject:task];
+        if (restored.count >= kFFTaskHistoryLimit) break;
+    }
+    if (restored.count) {
+        [self.lock lock];
+        [self.taskList addObjectsFromArray:restored];
+        [self.lock unlock];
+        [self persistTasksNow];
+    }
 }
 
 - (NSArray<FFFileTask *> *)tasks
@@ -52,7 +228,7 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
 - (void)enqueueTask:(FFFileTask *)task
 {
     [self.lock lock];
-    if (self.taskList.count >= 50) {
+    if (self.taskList.count >= kFFTaskHistoryLimit) {
         NSMutableArray *trimmed = [NSMutableArray array];
         for (FFFileTask *existing in self.taskList)
             if (existing.state == FFFileTaskStateQueued || existing.state == FFFileTaskStateRunning)
@@ -114,7 +290,19 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     [self notifyChange];
 }
 
-- (void)notifyChange
+#pragma mark - Notifications and persistence
+
+- (BOOL)hasRunningArchiveTask
+{
+    for (FFFileTask *task in self.tasks) {
+        if (task.state != FFFileTaskStateRunning) continue;
+        if (task.kind == FFFileTaskKindCompress || task.kind == FFFileTaskKindExtract)
+            return YES;
+    }
+    return NO;
+}
+
+- (void)postChangeNotification
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter
@@ -122,13 +310,95 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     });
 }
 
+- (void)notifyChange
+{
+    [self markPersistenceDirty];
+    if (![self hasRunningArchiveTask]) {
+        [self postChangeNotification];
+        return;
+    }
+    @synchronized (self) {
+        if (self.uiNotifyPending) return;
+        self.uiNotifyPending = YES;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(kFFTaskProgressNotifyInterval * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            @synchronized (strongSelf) { strongSelf.uiNotifyPending = NO; }
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FFFileTaskManagerDidChangeNotification object:strongSelf];
+        });
+}
+
 - (void)notifyChangeThrottled
 {
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (now - self.lastProgressNotify < 0.15) return;
+    if (now - self.lastProgressNotify < kFFTaskProgressNotifyInterval) return;
     self.lastProgressNotify = now;
     [self notifyChange];
 }
+
+- (void)markPersistenceDirty
+{
+    BOOL schedule = NO;
+    @synchronized (self) {
+        self.persistenceGeneration++;
+        if (!self.persistenceScheduled) {
+            self.persistenceScheduled = YES;
+            schedule = YES;
+        }
+    }
+    if (schedule) [self schedulePersistenceAfter:kFFTaskPersistDelay];
+}
+
+- (void)schedulePersistenceAfter:(NSTimeInterval)delay
+{
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+        self.persistenceQueue, ^{
+            [weakSelf persistDirtyGeneration];
+        });
+}
+
+- (void)persistDirtyGeneration
+{
+    NSUInteger generation = 0;
+    @synchronized (self) { generation = self.persistenceGeneration; }
+    [self persistTasksNow];
+
+    BOOL repeat = NO;
+    @synchronized (self) {
+        if (self.persistenceGeneration == generation) {
+            self.persistenceScheduled = NO;
+        } else {
+            repeat = YES;
+        }
+    }
+    if (repeat) [self schedulePersistenceAfter:kFFTaskPersistTrailingDelay];
+}
+
+- (void)persistTasksNow
+{
+    NSArray<FFFileTask *> *tasks = self.tasks;
+    NSMutableArray *rows = [NSMutableArray arrayWithCapacity:MIN(kFFTaskHistoryLimit, tasks.count)];
+    NSUInteger limit = MIN(kFFTaskHistoryLimit, tasks.count);
+    for (NSUInteger i = 0; i < limit; i++) [rows addObject:FFTaskDictionary(tasks[i])];
+    NSError *plistError = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:rows
+        format:NSPropertyListBinaryFormat_v1_0 options:0 error:&plistError];
+    if (!data) {
+        FFLogTag(@"Tasks", @"persist encode FAIL error=%@", plistError);
+        return;
+    }
+    NSError *writeError = nil;
+    if (![data writeToFile:FFTaskHistoryPath() options:NSDataWritingAtomic error:&writeError])
+        FFLogTag(@"Tasks", @"persist write FAIL error=%@", writeError);
+}
+
+#pragma mark - Execution gates
 
 - (BOOL)taskRequiresSystemAccess:(FFFileTask *)task
 {
@@ -169,9 +439,6 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         return;
     }
 
-    // AppData paths are logical and survive relaunch; the MCM lease does not.
-    // Rehydrate before any lstat/open/zip operation so queued/retried tasks never
-    // depend on a stale session symlink.
     if (![self prepareVirtualPathsForTask:task]) {
         task.state = FFFileTaskStateFailed;
         [self notifyChange];
@@ -212,6 +479,102 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     [self notifyChange];
 }
 
+#pragma mark - Copy / move
+
+- (NSError *)replacementError:(NSString *)message code:(NSInteger)code underlying:(NSError *)underlying
+{
+    NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:(message ?: @"替换目标失败")
+        forKey:NSLocalizedDescriptionKey];
+    if (underlying) info[NSUnderlyingErrorKey] = underlying;
+    return [NSError errorWithDomain:@"FFFileTaskReplacement" code:code userInfo:info];
+}
+
+- (BOOL)replaceExistingDestination:(NSString *)destination
+                    withItemAtPath:(NSString *)source
+                             error:(NSError **)error
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *backupPath = [NSString stringWithFormat:@"%@.old%@", destination,
+        [NSUUID.UUID.UUIDString substringToIndex:8]];
+
+    NSError *backupError = nil;
+    if ([fm fileExistsAtPath:destination] &&
+        ![fm moveItemAtPath:destination toPath:backupPath error:&backupError]) {
+        if (error) *error = [self replacementError:
+            [NSString stringWithFormat:@"无法暂存原目标：%@", destination.lastPathComponent]
+            code:20 underlying:backupError];
+        return NO;
+    }
+
+    NSError *commitError = nil;
+    if (![fm moveItemAtPath:source toPath:destination error:&commitError]) {
+        NSError *rollbackError = nil;
+        BOOL restored = ![fm fileExistsAtPath:backupPath] ||
+            [fm moveItemAtPath:backupPath toPath:destination error:&rollbackError];
+        if (!restored) {
+            NSString *message = [NSString stringWithFormat:
+                @"替换失败且回滚失败。原目标仍保存在：%@。提交错误：%@；回滚错误：%@",
+                backupPath, commitError.localizedDescription ?: @"未知",
+                rollbackError.localizedDescription ?: @"未知"];
+            if (error) *error = [self replacementError:message code:22 underlying:rollbackError];
+        } else if (error) {
+            *error = [self replacementError:
+                [NSString stringWithFormat:@"替换目标失败：%@", commitError.localizedDescription ?: @"未知错误"]
+                code:21 underlying:commitError];
+        }
+        return NO;
+    }
+
+    NSError *cleanupError = nil;
+    if ([fm fileExistsAtPath:backupPath] && ![fm removeItemAtPath:backupPath error:&cleanupError])
+        FFLogTag(@"Tasks", @"replacement backup cleanup WARN path=%@ error=%@", backupPath, cleanupError);
+    return YES;
+}
+
+- (BOOL)commitTemporaryItem:(NSString *)tempDestination
+              toDestination:(NSString *)destination
+                       error:(NSError **)error
+{
+    if (rename(tempDestination.fileSystemRepresentation,
+               destination.fileSystemRepresentation) == 0)
+        return YES;
+
+    int saved = errno;
+    if (saved == ENOTEMPTY || saved == EEXIST || saved == EISDIR || saved == ENOTDIR)
+        return [self replaceExistingDestination:destination withItemAtPath:tempDestination error:error];
+
+    if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
+        NSLocalizedDescriptionKey: [NSString stringWithFormat:
+            @"提交目标失败：%@ (%s)", destination, strerror(saved)]}];
+    return NO;
+}
+
+- (BOOL)tryFastMoveSource:(NSString *)source
+            toDestination:(NSString *)destination
+                  replacing:(BOOL)replacing
+                crossDevice:(BOOL *)crossDevice
+                      error:(NSError **)error
+{
+    if (crossDevice) *crossDevice = NO;
+    if (rename(source.fileSystemRepresentation, destination.fileSystemRepresentation) == 0)
+        return YES;
+
+    int saved = errno;
+    if (saved == EXDEV) {
+        if (crossDevice) *crossDevice = YES;
+        return NO;
+    }
+
+    if (replacing &&
+        (saved == ENOTEMPTY || saved == EEXIST || saved == EISDIR || saved == ENOTDIR))
+        return [self replaceExistingDestination:destination withItemAtPath:source error:error];
+
+    if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
+        NSLocalizedDescriptionKey: [NSString stringWithFormat:
+            @"移动失败：%@ → %@ (%s)", source, destination, strerror(saved)]}];
+    return NO;
+}
+
 - (BOOL)executeCopyLikeTask:(FFFileTask *)task
 {
     FFConflictAction applyAll = FFConflictActionAsk;
@@ -231,6 +594,7 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
         NSString *destination = [task.destination stringByAppendingPathComponent:name];
         struct stat existing = {0};
         BOOL conflict = lstat(destination.fileSystemRepresentation, &existing) == 0;
+        BOOL replacing = NO;
         if (conflict) {
             FFConflictAction action = applyAll != FFConflictActionAsk
                 ? applyAll
@@ -244,17 +608,45 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             }
             if (action == FFConflictActionReplaceAll) applyAll = action;
             if (action == FFConflictActionReplace || action == FFConflictActionReplaceAll) {
-                if (!S_ISDIR(existing.st_mode) || S_ISLNK(existing.st_mode)) {
-                }
+                replacing = YES;
             } else {
                 destination = [self uniqueDestinationForName:name inDirectory:task.destination];
                 if (!destination) {
                     task.failedCount++;
+                    task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:460
+                        userInfo:@{NSLocalizedDescriptionKey:@"无法生成不冲突的目标名称"}];
                     continue;
                 }
             }
         }
+
         unsigned long long fileTotal = [FFCopyEngine sizeOfItemAtPath:source];
+
+        // Same-filesystem moves are metadata operations. Try rename first and
+        // only pay the copy+delete cost when POSIX explicitly reports EXDEV.
+        if (task.kind == FFFileTaskKindMove) {
+            BOOL crossDevice = NO;
+            NSError *moveError = nil;
+            if ([self tryFastMoveSource:source toDestination:destination replacing:replacing
+                           crossDevice:&crossDevice error:&moveError]) {
+                completed += fileTotal;
+                task.completedBytes = completed;
+                task.progress = total > 0 ? (double)completed / (double)total : 1.0;
+                task.succeededCount++;
+                [self notifyChange];
+                continue;
+            }
+            if (!crossDevice) {
+                task.failedCount++;
+                task.error = moveError;
+                FFLogTag(@"Tasks", @"fast move FAIL source=%@ destination=%@ error=%@",
+                    source, destination, moveError);
+                continue;
+            }
+            FFLogTag(@"Tasks", @"move EXDEV fallback copy+delete source=%@ destination=%@",
+                source, destination);
+        }
+
         NSError *error = nil;
         NSString *tempName = [NSString stringWithFormat:@".%@.%d.tmp",
             destination.lastPathComponent,
@@ -263,6 +655,7 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             stringByAppendingPathComponent:tempName];
         BOOL copied = [FFCopyEngine copyItemAtPath:source toPath:tempDestination
             progress:^(unsigned long long fileCopied, unsigned long long fileAll) {
+                (void)fileAll;
                 weakTask.completedBytes = completed + fileCopied;
                 weakTask.progress = weakTask.totalBytes > 0
                     ? (double)weakTask.completedBytes / (double)weakTask.totalBytes : 0;
@@ -282,26 +675,17 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
             task.error = error;
             continue;
         }
-        if (rename(tempDestination.fileSystemRepresentation,
-                   destination.fileSystemRepresentation) != 0) {
-            int saved = errno;
-            BOOL handled = NO;
-            if ((saved == ENOTEMPTY || saved == EEXIST || saved == EISDIR) &&
-                [self replaceDirectoryBackup:tempDestination destination:destination]) {
-                handled = YES;
-            }
-            if (!handled) {
-                [NSFileManager.defaultManager removeItemAtPath:tempDestination error:nil];
-                task.failedCount++;
-                task.error = [NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:
-                        @"替换目标失败：%@ (%s)", destination, strerror(saved)]}];
-                continue;
-            }
+
+        if (![self commitTemporaryItem:tempDestination toDestination:destination error:&error]) {
+            [NSFileManager.defaultManager removeItemAtPath:tempDestination error:nil];
+            task.failedCount++;
+            task.error = error;
+            continue;
         }
+
         completed += fileTotal;
         task.completedBytes = completed;
-        task.progress = task.totalBytes > 0 ? (double)completed / (double)total : 1.0;
+        task.progress = total > 0 ? (double)completed / (double)total : 1.0;
         if (task.kind == FFFileTaskKindMove) {
             NSError *removeError = nil;
             if (![NSFileManager.defaultManager removeItemAtPath:source error:&removeError]) {
@@ -337,41 +721,51 @@ NSNotificationName const FFFileTaskManagerDidChangeNotification =
     return nil;
 }
 
-- (BOOL)replaceDirectoryBackup:(NSString *)tempDestination destination:(NSString *)destination
-{
-    NSString *backupPath = [NSString stringWithFormat:@"%@.old%@", destination,
-        [NSUUID.UUID.UUIDString substringToIndex:8]];
-    NSFileManager *fm = NSFileManager.defaultManager;
-    if ([fm fileExistsAtPath:destination]) {
-        if (![fm moveItemAtPath:destination toPath:backupPath error:nil]) return NO;
-    }
-    if (![fm moveItemAtPath:tempDestination toPath:destination error:nil]) {
-        if ([fm fileExistsAtPath:backupPath])
-            [fm moveItemAtPath:backupPath toPath:destination error:nil];
-        return NO;
-    }
-    if ([fm fileExistsAtPath:backupPath])
-        [fm removeItemAtPath:backupPath error:nil];
-    return YES;
-}
+#pragma mark - Archive tasks
 
 - (BOOL)executeExtractTask:(FFFileTask *)task
 {
     __weak FFFileTask *weakTask = task;
+    BOOL (^runExtract)(NSString *, NSArray<NSString *> **, NSError **) =
+        ^BOOL(NSString *destination, NSArray<NSString *> **entriesOut, NSError **errorOut) {
+            return FFZipExtractWithProgressPassword(task.sources.firstObject, destination,
+                task.archivePassword, entriesOut,
+                ^(double progress, NSString *entryName) {
+                    weakTask.progress = progress;
+                    weakTask.detailName = entryName;
+                    [self notifyChange];
+                },
+                ^BOOL { return weakTask.cancelled; }, errorOut);
+        };
+
+    NSString *initialDestination = FFCanonicalStoragePath(task.destination ?: @"");
+    task.destination = initialDestination;
     NSError *error = nil;
     NSArray<NSString *> *entries = nil;
-    BOOL ok = FFZipExtractWithProgress(task.sources.firstObject, task.destination,
-        &entries,
-        ^(double progress, NSString *entryName) {
-            weakTask.progress = progress;
-            weakTask.detailName = entryName;
+    BOOL ok = runExtract(initialDestination, &entries, &error);
+
+    if (!ok && !task.cancelled && FFPathRequiresSystemAccess(initialDestination) &&
+        FFExtractErrorIsWriteAccessFailure(error)) {
+        NSString *fallback = FFFallbackExtractDestination(task);
+        if (fallback.length) {
+            FFLogTag(@"Tasks", @"extract destination denied; retry archive=%@ from=%@ to=%@ error=%@",
+                task.sources.firstObject, initialDestination, fallback,
+                error.localizedDescription ?: @"(nil)");
+            task.destination = fallback;
+            task.progress = 0;
+            task.detailName = nil;
             [self notifyChange];
-        },
-        ^BOOL { return weakTask.cancelled; },
-        &error);
+            error = nil;
+            entries = nil;
+            ok = runExtract(fallback, &entries, &error);
+        }
+    }
+
     if (ok) {
         task.succeededCount = entries.count;
+        task.failedCount = 0;
         task.progress = 1.0;
+        task.error = nil;
     } else if (!task.cancelled) {
         task.failedCount = 1;
         task.error = error;
