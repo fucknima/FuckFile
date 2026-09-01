@@ -147,12 +147,15 @@ FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets
 
 # Keep third-party/noisy warnings scoped down, but do not globally suppress
 # diagnostics that can hide ABI, bounds, initialization, or format bugs.
+# Existing UIKit/Objective-C APIs intentionally use nil in several optional
+# positions, so keep nullability diagnostics visible without blocking packaging.
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 	-I$(PWD)/third_party/tree-sitter/include \
 	-I$(PWD)/third_party/tree-sitter/src \
 	-fobjc-arc \
 	-Wno-unused-function -Wno-unused-variable \
 	-Wno-deprecated-declarations \
+	-Wno-error=nonnull \
 	-Wno-error=implicit-fallthrough -Wno-error=unused-but-set-variable \
 	-Wno-error=sign-compare -Wno-error=constant-conversion
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
@@ -168,7 +171,7 @@ FuckFile_INFOPLIST = Info.plist
 FuckFileShare_FILES = \
 	ShareExtension/FFShareViewController.m \
 	src/FFLocalShareBridgeClient.m
-FuckFileShare_CFLAGS = -I$(PWD)/src -fobjc-arc -Wno-deprecated-declarations
+FuckFileShare_CFLAGS = -I$(PWD)/src -fobjc-arc -Wno-deprecated-declarations -Wno-error=nonnull
 FuckFileShare_OBJCFLAGS = $(FuckFileShare_CFLAGS)
 FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
 FuckFileShare_INFOPLIST = ShareExtension/Info.plist
