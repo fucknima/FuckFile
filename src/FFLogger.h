@@ -2,8 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Diagnostic log lives one level above Device Storage so it is not exposed as
-// a normal user file in FuckFile's browser.
+// Diagnostic log is app-generated state and lives outside Documents under the
+// app's temporary Diagnostics directory, so it is never exposed as a user file.
 FOUNDATION_EXPORT NSString *FFLogPath(void);
 
 // File logging controls. NSLog mirroring remains available even when file
