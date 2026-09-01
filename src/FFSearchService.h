@@ -10,23 +10,30 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) unsigned long long size;
 @end
 
-// Recursive file search over the MHA virtual root (or any readable
-// tree). Depth-first, symlink-safe, hidden-file policy follows browser
-// settings, results delivered in batches on the main thread, cancellable.
+typedef NS_ENUM(NSInteger, FFSearchCompletionStatus) {
+    FFSearchCompletionStatusCompleted = 0,
+    FFSearchCompletionStatusCancelled,
+    FFSearchCompletionStatusPartial,
+    FFSearchCompletionStatusFailed,
+};
+
+// Recursive search used by a browser directory. It deliberately does not follow
+// directory symlinks, never escapes the resolved search root, follows the same
+// Unicode matching rules as immediate Browser results, and reports partial
+// traversal instead of silently treating unreadable/depth-limited trees as done.
 @interface FFSearchService : NSObject
 
-+ (instancetype)sharedService;
-
 - (void)startSearch:(NSString *)query
-            underRoot:(NSString *)root
-                batch:(void (^)(NSArray<FFFoundItem *> *batch))batch
-           completion:(void (^)(BOOL finished))completion;
+          underRoot:(NSString *)root
+              batch:(void (^)(NSArray<FFFoundItem *> *batch))batch
+         completion:(void (^)(BOOL finished))completion;
 
 - (void)cancel;
 
-- (NSArray<NSString *> *)history;
-- (void)addHistory:(NSString *)query;
-- (void)clearHistory;
+@property(atomic, readonly) FFSearchCompletionStatus completionStatus;
+@property(atomic, readonly) NSUInteger skippedDirectoryCount;
+@property(atomic, readonly) BOOL truncatedByDepth;
+@property(atomic, copy, readonly, nullable) NSString *statusMessage;
 
 @end
 
