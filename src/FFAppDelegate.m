@@ -7,14 +7,17 @@
 #import "FFLocalShareBridge.h"
 #import "FFSystemAccessManager.h"
 #import "FFStorageEnvironment.h"
+#import "FFOnlineAppNameResolver.h"
 #import "MCMManager.h"
 #import "FFLogger.h"
 
 static const NSTimeInterval kFFImportDedupTTL = 5.0;
+static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
 
 @interface FFAppDelegate ()
 @property(nonatomic, strong) NSMutableSet<NSString *> *inFlightImports;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *recentImports;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *handledShareTokens;
 @property(nonatomic) BOOL shareStreamInProgress;
 @end
 
@@ -26,6 +29,7 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     if (self) {
         _inFlightImports = [NSMutableSet set];
         _recentImports = [NSMutableDictionary dictionary];
+        _handledShareTokens = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -54,6 +58,12 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         NSBundle.mainBundle.bundleIdentifier ?: @"nil", FFLogPath());
     FFLog(@"required MCM identity=com.apple.mobile.MobileHouseArrest match=%d",
         [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
+
+    // Network-assisted App-name lookup is opt-in. Existing explicit choices are
+    // preserved; only installs that have never stored a preference default off.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:FFOnlineAppNameResolutionEnabledKey] == nil)
+        [defaults setBool:NO forKey:FFOnlineAppNameResolutionEnabledKey];
 
     FFStorageRootPath();
     if (!FFSystemAccessManager.sharedManager.enabled) FFPrepareStorageRootForNormalMode();
@@ -106,6 +116,25 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     return [self importIncomingFileURL:url];
 }
 
+- (BOOL)acceptShareToken:(NSString *)token
+{
+    if (!token.length) return NO;
+    @synchronized (self.handledShareTokens) {
+        NSDate *now = NSDate.date;
+        NSMutableArray<NSString *> *expired = [NSMutableArray array];
+        for (NSString *key in self.handledShareTokens) {
+            if ([now timeIntervalSinceDate:self.handledShareTokens[key]] >= kFFShareTokenDedupTTL)
+                [expired addObject:key];
+        }
+        [self.handledShareTokens removeObjectsForKeys:expired];
+        NSDate *seen = self.handledShareTokens[token];
+        if (seen && [now timeIntervalSinceDate:seen] < kFFShareTokenDedupTTL)
+            return NO;
+        self.handledShareTokens[token] = now;
+        return YES;
+    }
+}
+
 - (void)handleShareWakeURL:(NSURL *)url
 {
     if ([self isShareStreamURL:url]) {
@@ -115,7 +144,15 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
             if ([item.name isEqualToString:@"token"]) token = item.value;
             else if ([item.name isEqualToString:@"count"]) count = (NSUInteger)item.value.integerValue;
         }
-        if (!token.length) { self.shareStreamInProgress = NO; FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString); return; }
+        if (!token.length) {
+            self.shareStreamInProgress = NO;
+            FFLogTag(@"ShareBridge", @"reject wake without token url=%@", url.absoluteString);
+            return;
+        }
+        if (![self acceptShareToken:token]) {
+            FFLogTag(@"ShareBridge", @"ignore duplicate share-stream wake token=%@", token);
+            return;
+        }
         self.shareStreamInProgress = YES;
         FFLogTag(@"ShareBridge", @"prepare loopback token=%@ count=%lu", token, (unsigned long)count);
         __weak typeof(self) weakSelf = self;
@@ -169,8 +206,15 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
     if (self.shareStreamInProgress) { FFLogTag(@"ShareInbox", @"skip recovery while loopback stream is active"); return; }
     [FFSharedInboxService processPendingWithCompletion:^(NSUInteger imported, NSArray<NSString *> *destinations, NSArray<NSError *> *errors) {
         if (imported == 0 && errors.count == 0) return;
-        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu", (unsigned long)imported, (unsigned long)errors.count);
-        if (!showResult && imported == 0) return;
+        FFLogTag(@"ShareInbox", @"drain imported=%lu errors=%lu interactive=%d",
+            (unsigned long)imported, (unsigned long)errors.count, showResult);
+        // Launch/activation recovery is deliberately silent. Only an explicit
+        // share wake or user-visible import path presents a result sheet.
+        if (!showResult) {
+            if (errors.count)
+                FFLogTag(@"ShareInbox", @"silent drain error=%@", errors.firstObject.localizedDescription ?: @"未知错误");
+            return;
+        }
         [self presentSharedBridgeResultImported:imported destinations:destinations errors:errors];
     }];
 }
@@ -203,11 +247,11 @@ static const NSTimeInterval kFFImportDedupTTL = 5.0;
         if ([browser.currentPath.stringByStandardizingPath isEqualToString:target]) { existing = browser; break; }
     }
     if (existing) {
-        FFLogTag(@"ImportUI", @"reuse Imported browser path=%@", target); [existing reloadEntries];
+        FFLogTag(@"ImportUI", @"reuse imported browser path=%@", target); [existing reloadEntries];
         if (navigation.topViewController != existing) [navigation popToViewController:existing animated:YES]; return;
     }
-    FFLogTag(@"ImportUI", @"push Imported browser path=%@", target);
-    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:target]; browser.title = @"Imported";
+    FFLogTag(@"ImportUI", @"push imported browser path=%@", target);
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:target]; browser.title = @"已导入";
     [navigation pushViewController:browser animated:YES];
 }
 
