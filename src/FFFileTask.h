@@ -20,31 +20,35 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 
 @interface FFFileTask : NSObject
 
-@property(nonatomic, copy) NSString *taskID;
-@property(nonatomic) FFFileTaskKind kind;
-@property(nonatomic, copy) NSString *displayName;
-@property(nonatomic, copy) NSString *detailName;
-@property(nonatomic) FFFileTaskState state;
-@property(nonatomic) double progress;
-@property(nonatomic) double averageBytesPerSecond;
-@property(nonatomic) double estimatedRemainingSeconds;
-@property(nonatomic) unsigned long long completedBytes;
-@property(nonatomic) unsigned long long totalBytes;
-@property(nonatomic) NSUInteger succeededCount;
-@property(nonatomic) NSUInteger failedCount;
-@property(nonatomic) NSUInteger skippedCount;
-@property(nonatomic, copy, nullable) NSError *error;
+// Task objects are mutated by the serial worker and observed by UIKit on the
+// main thread. Atomic access prevents torn scalar/object reads while keeping the
+// public model compatible with existing controllers. Multi-field UI refreshes
+// are still synchronized by FFFileTaskManagerDidChangeNotification.
+@property(atomic, copy) NSString *taskID;
+@property(atomic) FFFileTaskKind kind;
+@property(atomic, copy) NSString *displayName;
+@property(atomic, copy) NSString *detailName;
+@property(atomic) FFFileTaskState state;
+@property(atomic) double progress;
+@property(atomic) double averageBytesPerSecond;
+@property(atomic) double estimatedRemainingSeconds;
+@property(atomic) unsigned long long completedBytes;
+@property(atomic) unsigned long long totalBytes;
+@property(atomic) NSUInteger succeededCount;
+@property(atomic) NSUInteger failedCount;
+@property(atomic) NSUInteger skippedCount;
+@property(atomic, copy, nullable) NSError *error;
 
-@property(nonatomic, copy) NSArray<NSString *> *sources;
-@property(nonatomic, copy) NSString *destination;
-@property(nonatomic) BOOL moveSourceRemoval;
+@property(atomic, copy) NSArray<NSString *> *sources;
+@property(atomic, copy) NSString *destination;
+@property(atomic) BOOL moveSourceRemoval;
 
 // Used by encrypted ZIP extraction only. This is deliberately an in-memory
 // field: FFFileTask persistence must never serialize it.
-@property(nonatomic, copy, nullable) NSString *archivePassword;
+@property(atomic, copy, nullable) NSString *archivePassword;
 
-@property(nonatomic) BOOL cancelled;
-@property(nonatomic, copy, nullable) FFConflictAction (^conflictHandler)(NSString *name);
+@property(atomic) BOOL cancelled;
+@property(atomic, copy, nullable) FFConflictAction (^conflictHandler)(NSString *name);
 
 @property(nonatomic, readonly) NSString *stateText;
 @property(nonatomic, readonly) NSString *kindText;
