@@ -19,16 +19,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
           ref: codex/comprehensive-review-fixes
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Execute refactor payload
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
-          from pathlib import Path
+          import subprocess
           import textwrap
-          payload = Path('.github/workflows/apply-review-refactor.yml').read_text()
+          payload = subprocess.check_output([
+              'git', 'show', 'HEAD^:.github/workflows/apply-review-refactor.yml'
+          ], text=True)
           start = payload.index("          python3 <<'PY'\n") + len("          python3 <<'PY'\n")
           end = payload.index("\n          PY\n", start)
           code = textwrap.dedent(payload[start:end])
@@ -44,7 +46,7 @@ jobs:
             src/FFBrowserViewController+IPAThumbnail.m \
             src/FFBrowserViewController+FileIcons.m || true
           rm -f src/FFFileTaskManager+Persistence.m src/FFFileTaskManager+Responsiveness.m
-          git rm -f .github/workflows/apply-review-refactor.yml .github/workflows/apply-review-runner.yml
+          git rm -f .github/workflows/apply-review-runner.yml
 
           ! grep -q 'FFBrowserViewController+GridStability' Makefile
           ! grep -q 'FFAppDelegate+ShareWakeDedup' Makefile
