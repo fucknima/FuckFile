@@ -3,14 +3,14 @@ name: build-unsigned-ipa
 on:
   push:
     branches:
-      - main
+      - build/documents-root-final-v2
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Only main pushes build automatically. Feature/other branches are built manually
-# with Run workflow. Cancelled/failed runs never advance the successful-build counter.
+# Temporary validation branch: build every push here so the complete Documents-root
+# migration can be verified without changing main or enabling feature-branch CI.
 concurrency:
   group: fuckfile-numbered-build
   cancel-in-progress: true
@@ -67,6 +67,25 @@ jobs:
             src/FFSearchSession.m src/FFLogger.m src/FFStorageEnvironment.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
+
+      - name: Audit Documents-root invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'return FFStorageRootPath();' src/MCMManager.m
+          grep -F 'storage.title = @"Documents";' src/FFRootTabBarController.m
+          grep -F '[names addObject:@"Documents"];' src/FFBrowserViewController+StorageRoot.m
+          grep -F 'Library/Caches/FuckFile/LaunchServices' src/FFLSDiscovery.h
+          grep -F 'FFLSDiscoveryCachePath(NO)' src/FFAppDataScanCoordinator+StructuralInventory.m
+          grep -F 'FFCanonicalStoragePath(task.destination' src/FFFileTaskManager+Persistence.m
+          grep -F 'FFFallbackExtractDestination' src/FFFileTaskManager+Persistence.m
+          grep -F 'FFDiagnosticsDirectoryPath()' src/FFLogger.m
+          grep -F 'FFDiagnosticsDirectoryPath()' src/MCMManager+DiagnosticsPlacement.m
+          grep -F 'FFImportedDirectoryPath()' src/FFSharedInboxService.m
+          grep -F 'FFIsInternalStorageEntry(path, name)' src/FFSearchService.m
+          grep -F 'FFCleanupLegacyGeneratedCachesAtStorageRoot' src/FFBrowserViewController+StorageRoot.m
+          echo '=== remaining legacy literals (migration/dead compatibility only) ==='
+          grep -RIn 'Device Storage' src || true
 
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
