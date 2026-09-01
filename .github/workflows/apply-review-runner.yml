@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
           ref: codex/comprehensive-review-fixes
-          fetch-depth: 2
+          fetch-depth: 5
 
       - name: Execute refactor payload
         shell: bash
@@ -27,13 +27,22 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           import subprocess
-          import textwrap
-          payload = subprocess.check_output([
-              'git', 'show', 'HEAD^:.github/workflows/apply-review-refactor.yml'
-          ], text=True)
+          payload = None
+          for rev in ('HEAD^', 'HEAD~2', 'HEAD~3', 'HEAD~4'):
+              try:
+                  payload = subprocess.check_output([
+                      'git', 'show', f'{rev}:.github/workflows/apply-review-refactor.yml'
+                  ], text=True, stderr=subprocess.DEVNULL)
+                  break
+              except subprocess.CalledProcessError:
+                  pass
+          if payload is None:
+              raise SystemExit('refactor payload not found in recent ancestors')
           start = payload.index("          python3 <<'PY'\n") + len("          python3 <<'PY'\n")
           end = payload.index("\n          PY\n", start)
-          code = textwrap.dedent(payload[start:end])
+          body = payload[start:end]
+          code = '\n'.join(line[10:] if line.startswith('          ') else line
+                           for line in body.splitlines())
           compile(code, '<review-refactor>', 'exec')
           exec(code, {'__name__': '__main__'})
           PY
