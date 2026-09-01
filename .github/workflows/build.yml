@@ -105,6 +105,24 @@ jobs:
         run: |
           set -euo pipefail
           export THEOS=/opt/theos
+
+          # Generated grammars come from mixed Tree-sitter generator/runtime
+          # revisions. Keep their known lexer-mode pointer warning local to
+          # third-party generated C instead of weakening first-party ObjC.
+          find third_party/tree-sitter-languages -type f \
+            \( -name 'parser.c' -o -name 'scanner.c' \) -print0 | \
+          while IFS= read -r -d '' file; do
+            tmp="${file}.ffdiag"
+            {
+              echo '/* FF_GENERATED_GRAMMAR_DIAGNOSTICS */'
+              echo '#if defined(__clang__)'
+              echo '#pragma clang diagnostic ignored "-Wincompatible-pointer-types"'
+              echo '#endif'
+              cat "$file"
+            } > "$tmp"
+            mv "$tmp" "$file"
+          done
+
           make clean
           make
 
@@ -203,6 +221,20 @@ jobs:
           name: FuckFile-build-${{ env.BUILD_NUMBER }}
           path: ${{ env.IPA_NAME }}
           if-no-files-found: error
+
+      - name: Publish branch IPA download
+        if: github.event_name == 'push' && github.ref_name == 'codex/comprehensive-review-fixes'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="review-ipa-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" "$IPA_NAME" \
+            --target "$GITHUB_SHA" \
+            --title "FuckFile CI ${GITHUB_RUN_NUMBER}" \
+            --notes "Unsigned review build ${BUILD_NUMBER}" \
+            --prerelease
 
       - name: Commit successful build number
         if: env.NUMBERED_BUILD == 'true'
