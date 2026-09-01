@@ -140,7 +140,7 @@ static BOOL FFResolvedPathIsInsideRoot(NSString *path, NSString *root)
 - (NSString *)displayNameForEntryName:(NSString *)name path:(NSString *)child parent:(NSString *)parent
 {
     if ([parent.stringByStandardizingPath isEqualToString:FFAppDataVirtualPath().stringByStandardizingPath]) {
-        NSString *registered = FFAppDataRegistry.sharedRegistry.displayNameForIdentifier(name);
+        NSString *registered = [FFAppDataRegistry.sharedRegistry displayNameForIdentifier:name];
         if (registered.length) return registered;
 
         NSString *real = FFResolvedPath(child);
