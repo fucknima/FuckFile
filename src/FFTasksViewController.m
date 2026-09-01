@@ -30,14 +30,22 @@
         initWithTitle:@"清除已完成" style:UIBarButtonItemStylePlain
         target:self action:@selector(clearCompletedTapped)];
 
-    __weak typeof(self) weakSelf = self;
-    [[NSNotificationCenter defaultCenter]
-        addObserverForName:FFFileTaskManagerDidChangeNotification object:nil
-        queue:[NSOperationQueue mainQueue]
-        usingBlock:^(__unused NSNotification *note) {
-            [weakSelf reloadTasks];
-        }];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(taskManagerChanged:)
+        name:FFFileTaskManagerDidChangeNotification object:nil];
     [self reloadTasks];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)taskManagerChanged:(NSNotification *)note
+{
+    (void)note;
+    if (NSThread.isMainThread) [self reloadTasks];
+    else dispatch_async(dispatch_get_main_queue(), ^{ [self reloadTasks]; });
 }
 
 - (void)reloadTasks
