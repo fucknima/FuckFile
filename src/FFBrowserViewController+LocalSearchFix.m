@@ -192,13 +192,24 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
 - (UIMenu *)ff_ui_displayModeMenu;
 @end
 
+// Safe for selectors inherited from UIViewController as well as methods owned
+// by FFBrowserViewController. If the original selector is inherited, install a
+// subclass override instead of exchanging UIViewController's implementation.
 static void FFSwapBrowserUIConsistencyMethod(Class cls, SEL originalSelector,
                                               SEL replacementSelector)
 {
     Method original = class_getInstanceMethod(cls, originalSelector);
     Method replacement = class_getInstanceMethod(cls, replacementSelector);
-    if (original && replacement)
+    if (!original || !replacement) return;
+
+    BOOL added = class_addMethod(cls, originalSelector,
+        method_getImplementation(replacement), method_getTypeEncoding(replacement));
+    if (added) {
+        class_replaceMethod(cls, replacementSelector,
+            method_getImplementation(original), method_getTypeEncoding(original));
+    } else {
         method_exchangeImplementations(original, replacement);
+    }
 }
 
 @implementation FFBrowserViewController (UIConsistency)
