@@ -29,7 +29,6 @@ FuckFile_FILES = \
 	src/FFAppDataVirtualBrowser.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
-	src/FFHomeViewController.m \
 	src/FFBrowserViewController.m \
 	src/FFBrowserViewController+GridStability.m \
 	src/FFBrowserViewController+StorageRoot.m \
@@ -70,7 +69,6 @@ FuckFile_FILES = \
 	src/FFFileTaskManager+Responsiveness.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
-	src/FFSearchViewController.m \
 	src/FFBookmarksService.m \
 	src/FFBookmarksViewController.m \
 	src/MCMBridge.m \
@@ -147,17 +145,17 @@ FuckFile_FILES = \
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
 FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets
 
+# Keep third-party/noisy warnings scoped down, but do not globally suppress
+# diagnostics that can hide ABI, bounds, initialization, or format bugs.
 FuckFile_CFLAGS = -I$(PWD)/src -I$(PWD)/third_party/minizip \
 	-I$(PWD)/third_party/tree-sitter/include \
 	-I$(PWD)/third_party/tree-sitter/src \
 	-fobjc-arc \
-	-Wno-unused-function -Wno-unused-variable -Wno-format \
-	-Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers \
+	-Wno-unused-function -Wno-unused-variable \
 	-Wno-deprecated-declarations \
 	-Wno-error=implicit-fallthrough -Wno-error=unused-but-set-variable \
-	-Wno-error=sign-compare -Wno-error=constant-conversion \
-	-Wno-error=array-bounds -Wno-error=uninitialized
-FuckFile_CCFLAGS = $(FuckFile_CFLAGS) -Wno-implicit-function-declaration
+	-Wno-error=sign-compare -Wno-error=constant-conversion
+FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 
 FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/FuckFile-Bridging-Header.h
