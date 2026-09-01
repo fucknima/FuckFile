@@ -8,6 +8,9 @@
 #import <PDFKit/PDFKit.h>
 #import <UIKit/UIKit.h>
 
+static const unsigned long long kFFThumbnailDiskSoftLimit = 256ULL * 1024ULL * 1024ULL;
+static const unsigned long long kFFThumbnailDiskHardLimit = 512ULL * 1024ULL * 1024ULL;
+
 @interface FFThumbnailService ()
 @property(nonatomic, strong) NSCache<NSString *, UIImage *> *memoryCache;
 @property(nonatomic, strong) dispatch_queue_t workQueue;
@@ -32,9 +35,12 @@
         _memoryCache = [NSCache new];
         _memoryCache.countLimit = 600;
         _memoryCache.totalCostLimit = 48 * 1024 * 1024;
-        _workQueue = dispatch_queue_create("ff.thumbnails", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        _workQueue = dispatch_queue_create("ff.thumbnails", attr);
         _inFlight = [NSMutableDictionary dictionary];
         _lock = [NSLock new];
+        dispatch_async(_workQueue, ^{ [self trimDiskCacheIfNeeded]; });
     }
     return self;
 }
@@ -99,13 +105,17 @@ static NSString *FFThumbnailDiskRoot(void)
         NSString *diskPath = [[[FFThumbnailDiskRoot() stringByAppendingPathComponent:FFThumbnailSHA1(key)]
             stringByAppendingPathExtension:diskExt] copy];
         UIImage *image = [UIImage imageWithContentsOfFile:diskPath];
-        if (!image) {
+        if (image) {
+            [NSFileManager.defaultManager setAttributes:@{NSFileModificationDate: NSDate.date}
+                ofItemAtPath:diskPath error:nil];
+        } else {
             image = [self generateForPath:path kind:kind size:size];
             if (image) {
                 NSData *encoded = preserveAlpha ? UIImagePNGRepresentation(image) : UIImageJPEGRepresentation(image, 0.8);
                 [NSFileManager.defaultManager createDirectoryAtPath:FFThumbnailDiskRoot()
                     withIntermediateDirectories:YES attributes:nil error:nil];
                 [encoded writeToFile:diskPath atomically:YES];
+                [self trimDiskCacheIfNeeded];
             }
         }
         if (image) [self.memoryCache setObject:image forKey:key];
@@ -185,6 +195,48 @@ static NSString *FFThumbnailDiskRoot(void)
     PDFDocument *document = [[PDFDocument alloc] initWithURL:[NSURL fileURLWithPath:path]];
     if (!document || document.pageCount == 0) return nil;
     return [[document pageAtIndex:0] thumbnailOfSize:size forBox:kPDFDisplayBoxMediaBox];
+}
+
+- (void)trimDiskCacheIfNeeded
+{
+    NSString *root = FFThumbnailDiskRoot();
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil];
+    if (!names.count) return;
+
+    NSMutableArray<NSDictionary *> *files = [NSMutableArray arrayWithCapacity:names.count];
+    unsigned long long total = 0;
+    for (NSString *name in names) {
+        NSString *path = [root stringByAppendingPathComponent:name];
+        NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+        NSNumber *size = attrs[NSFileSize];
+        if (!size) continue;
+        unsigned long long bytes = size.unsignedLongLongValue;
+        total += bytes;
+        [files addObject:@{
+            @"path": path,
+            @"size": @(bytes),
+            @"date": attrs[NSFileModificationDate] ?: attrs[NSFileCreationDate] ?: NSDate.distantPast,
+        }];
+    }
+    if (total <= kFFThumbnailDiskHardLimit) return;
+
+    [files sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"date"] compare:b[@"date"]];
+    }];
+    NSUInteger removed = 0;
+    for (NSDictionary *row in files) {
+        if (total <= kFFThumbnailDiskSoftLimit) break;
+        NSError *error = nil;
+        if ([NSFileManager.defaultManager removeItemAtPath:row[@"path"] error:&error]) {
+            unsigned long long bytes = [row[@"size"] unsignedLongLongValue];
+            total = bytes > total ? 0 : total - bytes;
+            removed++;
+        } else {
+            FFLogTag(@"Thumbnail", @"disk trim FAIL path=%@ error=%@", row[@"path"], error);
+        }
+    }
+    FFLogTag(@"Thumbnail", @"disk trim removed=%lu remaining=%llu",
+        (unsigned long)removed, total);
 }
 
 - (void)clearCaches
