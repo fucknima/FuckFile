@@ -1,6 +1,9 @@
 #import "FFFileTaskManager.h"
+#import "FFLogger.h"
+#import "FFStorageEnvironment.h"
 #import "FFZipExtract.h"
 
+#import <errno.h>
 #import <objc/runtime.h>
 
 static const void *kFFTaskPersistPendingKey = &kFFTaskPersistPendingKey;
@@ -14,11 +17,22 @@ static NSString *FFTaskHistoryPath(void)
 {
     NSString *root = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
-    if (!root.length) root = NSTemporaryDirectory();
+    if (!root.length) root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
     NSString *directory = [root stringByAppendingPathComponent:@"FuckFile"];
     [NSFileManager.defaultManager createDirectoryAtPath:directory
-        withIntermediateDirectories:YES attributes:nil error:nil];
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
     return [directory stringByAppendingPathComponent:@"TaskHistory.plist"];
+}
+
+static NSArray<NSString *> *FFCanonicalTaskSources(id rawSources)
+{
+    if (![rawSources isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    for (id value in (NSArray *)rawSources) {
+        if (![value isKindOfClass:NSString.class] || ![(NSString *)value length]) continue;
+        [result addObject:FFCanonicalStoragePath((NSString *)value)];
+    }
+    return result;
 }
 
 static NSDictionary *FFTaskDictionary(FFFileTask *task)
@@ -37,8 +51,8 @@ static NSDictionary *FFTaskDictionary(FFFileTask *task)
     row[@"succeededCount"] = @(task.succeededCount);
     row[@"failedCount"] = @(task.failedCount);
     row[@"skippedCount"] = @(task.skippedCount);
-    row[@"sources"] = task.sources ?: @[];
-    row[@"destination"] = task.destination ?: @"";
+    row[@"sources"] = FFCanonicalTaskSources(task.sources);
+    row[@"destination"] = FFCanonicalStoragePath(task.destination ?: @"");
     row[@"moveSourceRemoval"] = @(task.moveSourceRemoval);
     if (task.error.localizedDescription.length)
         row[@"errorDescription"] = task.error.localizedDescription;
@@ -51,9 +65,9 @@ static NSDictionary *FFTaskDictionary(FFFileTask *task)
 static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
 {
     if (![row isKindOfClass:NSDictionary.class]) return nil;
-    NSArray *sources = [row[@"sources"] isKindOfClass:NSArray.class] ? row[@"sources"] : @[];
+    NSArray<NSString *> *sources = FFCanonicalTaskSources(row[@"sources"]);
     NSString *destination = [row[@"destination"] isKindOfClass:NSString.class]
-        ? row[@"destination"] : @"";
+        ? FFCanonicalStoragePath(row[@"destination"]) : @"";
     NSString *displayName = [row[@"displayName"] isKindOfClass:NSString.class]
         ? row[@"displayName"] : @"文件任务";
     NSNumber *kindValue = [row[@"kind"] isKindOfClass:NSNumber.class] ? row[@"kind"] : nil;
@@ -120,6 +134,38 @@ static void FFPersistTasks(FFFileTaskManager *manager)
     [data writeToFile:FFTaskHistoryPath() options:NSDataWritingAtomic error:nil];
 }
 
+static BOOL FFExtractErrorIsWriteAccessFailure(NSError *error)
+{
+    if (!error) return NO;
+    if ([error.domain isEqualToString:NSPOSIXErrorDomain] &&
+        (error.code == EPERM || error.code == EACCES || error.code == EROFS))
+        return YES;
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] &&
+        (error.code == NSFileWriteNoPermissionError ||
+         error.code == NSFileWriteVolumeReadOnlyError))
+        return YES;
+    NSError *underlying = [error.userInfo[NSUnderlyingErrorKey]
+        isKindOfClass:NSError.class] ? error.userInfo[NSUnderlyingErrorKey] : nil;
+    return underlying ? FFExtractErrorIsWriteAccessFailure(underlying) : NO;
+}
+
+static NSString *FFFallbackExtractDestination(FFFileTask *task)
+{
+    NSString *archive = task.sources.firstObject.lastPathComponent.stringByDeletingPathExtension;
+    if (!archive.length) archive = @"archive";
+    NSString *root = [FFStorageRootPath() stringByAppendingPathComponent:@"Extracted"];
+    NSError *directoryError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:root
+        withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+        FFLogTag(@"Tasks", @"extract fallback root unavailable path=%@ error=%@",
+            root, directoryError.localizedDescription ?: @"(nil)");
+        return nil;
+    }
+    NSString *suffix = [NSUUID.UUID.UUIDString substringToIndex:8];
+    return [root stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"%@-%@", archive, suffix]];
+}
+
 @implementation FFFileTaskManager (Persistence)
 
 + (void)load
@@ -160,7 +206,7 @@ static void FFPersistTasks(FFFileTaskManager *manager)
         // taskList is private to the manager; KVC keeps persistence isolated from
         // the execution API and avoids turning history storage into UI state.
         [manager setValue:restored forKey:@"taskList"];
-        FFPersistTasks(manager); // immediately convert stale running states on disk
+        FFPersistTasks(manager); // convert stale states + legacy paths on disk now
     }
     return manager;
 }
@@ -187,23 +233,51 @@ static void FFPersistTasks(FFFileTaskManager *manager)
 
 - (BOOL)ff_password_executeExtractTask:(FFFileTask *)task
 {
-    if (!task.archivePassword.length)
-        return [self ff_password_executeExtractTask:task];
-
     __weak FFFileTask *weakTask = task;
+    BOOL (^runExtract)(NSString *, NSArray<NSString *> **, NSError **) =
+        ^BOOL(NSString *destination, NSArray<NSString *> **entriesOut, NSError **errorOut) {
+            return FFZipExtractWithProgressPassword(task.sources.firstObject, destination,
+                task.archivePassword, entriesOut,
+                ^(double progress, NSString *entryName) {
+                    weakTask.progress = progress;
+                    weakTask.detailName = entryName;
+                    [self notifyChange];
+                },
+                ^BOOL { return weakTask.cancelled; }, errorOut);
+        };
+
+    NSString *initialDestination = FFCanonicalStoragePath(task.destination ?: @"");
+    task.destination = initialDestination;
     NSError *error = nil;
     NSArray<NSString *> *entries = nil;
-    BOOL ok = FFZipExtractWithProgressPassword(task.sources.firstObject, task.destination,
-        task.archivePassword, &entries,
-        ^(double progress, NSString *entryName) {
-            weakTask.progress = progress;
-            weakTask.detailName = entryName;
+    BOOL ok = runExtract(initialDestination, &entries, &error);
+
+    // AppData and other managed system locations may be readable yet reject
+    // writes on a particular OS build. For a write-permission failure only,
+    // retry once in Documents/Extracted. Corrupt archives, wrong passwords,
+    // cancellation, ENOSPC, etc. are never masked by a fallback retry.
+    if (!ok && !task.cancelled && FFPathRequiresSystemAccess(initialDestination) &&
+        FFExtractErrorIsWriteAccessFailure(error)) {
+        NSString *fallback = FFFallbackExtractDestination(task);
+        if (fallback.length) {
+            FFLogTag(@"Tasks", @"extract destination denied; retry archive=%@ from=%@ to=%@ error=%@",
+                task.sources.firstObject, initialDestination, fallback,
+                error.localizedDescription ?: @"(nil)");
+            task.destination = fallback;
+            task.progress = 0;
+            task.detailName = nil;
             [self notifyChange];
-        },
-        ^BOOL { return weakTask.cancelled; }, &error);
+            error = nil;
+            entries = nil;
+            ok = runExtract(fallback, &entries, &error);
+        }
+    }
+
     if (ok) {
         task.succeededCount = entries.count;
+        task.failedCount = 0;
         task.progress = 1.0;
+        task.error = nil;
     } else if (!task.cancelled) {
         task.failedCount = 1;
         task.error = error;
