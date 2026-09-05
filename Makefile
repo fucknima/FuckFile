@@ -85,6 +85,7 @@ FuckFile_FILES = \
 	src/FFSQLiteService.m \
 	src/FFSQLiteBrowserViewController.m \
 	src/FFArchiveService.m \
+	src/FFLibArchiveBackend.m \
 	src/FFArchiveBrowserViewController.m \
 	src/FFArchiveBrowserViewController+Encrypted.m \
 	src/FFIPaInstallerViewController.m \
