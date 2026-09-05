@@ -35,6 +35,8 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"hex": @"hex", @"dat": @"hex",
             @"ipa": @"installer",
             @"zip": @"archive", @"tar": @"archive", @"tar.gz": @"archive",
+            @"tgz": @"archive", @"tar.bz2": @"archive", @"tbz": @"archive",
+            @"tbz2": @"archive", @"tar.xz": @"archive", @"txz": @"archive",
             @"gz": @"archive", @"7z": @"archive", @"rar": @"archive",
             @"xz": @"archive", @"bz2": @"archive",
 
