@@ -16,7 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FFArchiveService : NSObject
 
 + (BOOL)isZipFamilyExtension:(NSString *)extension;
++ (BOOL)isGenericArchivePath:(NSString *)archivePath;
++ (BOOL)isArchivePathSupported:(NSString *)archivePath;
++ (BOOL)genericArchiveBackendAvailable;
 + (BOOL)isKnownButUnsupportedExtension:(NSString *)extension;
++ (NSString *)archiveStemForPath:(NSString *)archivePath;
 
 + (nullable NSString *)cachedPasswordForArchivePath:(NSString *)archivePath;
 + (void)cachePassword:(NSString *)password forArchivePath:(NSString *)archivePath;
@@ -35,6 +39,14 @@ NS_ASSUME_NONNULL_BEGIN
                        toDirectory:(NSString *)destinationDirectory
                            password:(nullable NSString *)password
                               error:(NSError **)error;
+
++ (BOOL)extractArchiveAtPath:(NSString *)archivePath
+                 toDirectory:(NSString *)destinationDirectory
+                    password:(nullable NSString *)password
+                  entryNames:(NSArray<NSString *> * _Nullable * _Nullable)entryNames
+                    progress:(void (^ _Nullable)(double progress, NSString *entryName))progressBlock
+                shouldCancel:(BOOL (^ _Nullable)(void))shouldCancel
+                       error:(NSError * _Nullable * _Nullable)error;
 
 @end
 
