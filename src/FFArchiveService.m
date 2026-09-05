@@ -168,7 +168,7 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
 {
     if ([self isGenericArchivePath:archivePath])
         return [self genericArchiveBackendAvailable];
-    return [self isZipFamilyExtension:archivePath.pathExtension] || archivePath.length > 0;
+    return [self isZipFamilyExtension:archivePath.pathExtension];
 }
 
 + (BOOL)isKnownButUnsupportedExtension:(NSString *)extension
