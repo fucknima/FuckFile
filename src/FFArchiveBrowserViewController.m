@@ -1,6 +1,7 @@
 #import "FFArchiveBrowserViewController.h"
 
 #import "FFArchiveService.h"
+#import "FFZipExtract.h"
 #import "FFPreviewRouter.h"
 #import "FFBrowserViewController.h"   // FFEntry
 #import "FFFileTask.h"
@@ -86,24 +87,48 @@
     self.navigationController.toolbarHidden = YES;
 }
 
-// tar/gz/7z/rar/xz/bz2 等默认关联到压缩包浏览器，但当前构建没有解析后端：
-// 明确显示暂不支持，绝不拿 ZIP 解析器硬解。
 - (void)showUnsupportedIfKnownFormat
 {
-    NSString *ext = self.archivePath.pathExtension.lowercaseString;
-    // tar.gz：pathExtension 只剩 gz，需要看完整后缀。
-    NSString *name = self.archivePath.lastPathComponent.lowercaseString;
-    if ([name hasSuffix:@".tar.gz"]) ext = @"tar.gz";
-    if ([FFArchiveService isKnownButUnsupportedExtension:ext]) {
-        self.unsupportedMessage = @"当前构建暂不支持此格式（TAR/GZ/7z/RAR/XZ/BZ2 无解析后端）。\n\n"
-            "可以使用「分享」导出后由系统或其他应用处理。";
+    if ([FFArchiveService isGenericArchivePath:self.archivePath] &&
+        ![FFArchiveService genericArchiveBackendAvailable]) {
+        self.unsupportedMessage = @"当前系统未提供通用归档后端，无法读取 7Z/RAR/TAR/GZ/BZ2/XZ。\n\n"
+            "ZIP/IPA 等 ZIP 容器仍可正常使用。";
         return;
     }
-    if (![FFArchiveService isZipFamilyExtension:ext]) {
-        // 未注册的扩展名也走 zip 尝试（如 docx/app 等 zip 容器），
-        // 解析失败时 loadEntries 给出明确错误。
-        self.unsupportedMessage = nil;
-    }
+    self.unsupportedMessage = nil;
+}
+
+- (void)promptForArchivePasswordAfterError:(NSError *)error
+{
+    BOOL wrong = [error.domain isEqualToString:FFZipExtractErrorDomain] &&
+        error.code == FFZipExtractErrorWrongPassword;
+    if (wrong) [FFArchiveService clearCachedPasswordForArchivePath:self.archivePath];
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"加密压缩包"
+        message:wrong ? @"密码错误，请重新输入。密码只保存在本次 App 运行内存中。"
+                      : @"需要密码才能读取此压缩包。密码只保存在本次 App 运行内存中。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"密码";
+        field.secureTextEntry = YES;
+        field.textContentType = UITextContentTypePassword;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"继续"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *password = alert.textFields.firstObject.text ?: @"";
+            if (!password.length) return;
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [FFArchiveService cachePassword:password forArchivePath:strongSelf.archivePath];
+            strongSelf.loadError = nil;
+            [strongSelf loadEntries];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)loadEntries
@@ -121,6 +146,14 @@
                 strongSelf.loadError = error;
                 FFLogTag(@"Archive", @"list FAIL %@ (%@)",
                     strongSelf->_archivePath, error.localizedDescription);
+                BOOL passwordError = [error.domain isEqualToString:FFZipExtractErrorDomain] &&
+                    (error.code == FFZipExtractErrorPasswordRequired ||
+                     error.code == FFZipExtractErrorWrongPassword);
+                if (passwordError) {
+                    [strongSelf.tableView reloadData];
+                    [strongSelf promptForArchivePasswordAfterError:error];
+                    return;
+                }
             } else {
                 strongSelf.entries = entries ?: @[];
                 FFLogTag(@"Archive", @"list %@ entries=%lu",
@@ -150,7 +183,7 @@
             FFArchiveNode *node = [FFArchiveNode new];
             node.name = rest;
             node.fullPath = [prefix stringByAppendingString:rest];
-            node.isDirectory = NO;
+            node.isDirectory = entry.isDirectory;
             node.size = entry.size;
             nodes[node.fullPath] = node;
             continue;
@@ -520,8 +553,7 @@
 // 全部解压：复用任务中心既有 ZIP 解压链路。
 - (void)extractAll
 {
-    NSString *stem = self.archivePath.lastPathComponent.stringByDeletingPathExtension;
-    if (stem.length == 0) stem = @"archive";
+    NSString *stem = [FFArchiveService archiveStemForPath:self.archivePath];
 
     FFFileTask *task = [FFFileTask new];
     task.kind = FFFileTaskKindExtract;
