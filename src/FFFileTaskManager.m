@@ -1,6 +1,7 @@
 #import "FFFileTaskManager.h"
 #import "FFCopyEngine.h"
 #import "FFZipExtract.h"
+#import "FFArchiveService.h"
 #import "FFZipCreate.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
@@ -109,7 +110,7 @@ static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
         task.estimatedRemainingSeconds = 0;
         task.error = [NSError errorWithDomain:@"FFFileTaskPersistence" code:1
             userInfo:@{NSLocalizedDescriptionKey:
-                @"App 上次退出时任务尚未完成，任务已中断，可重试。加密 ZIP 需要重新输入密码后再发起。"}];
+                @"App 上次退出时任务尚未完成，任务已中断，可重试。加密压缩包需要重新输入密码后再发起。"}];
     } else if (savedState >= FFFileTaskStateCompleted && savedState <= FFFileTaskStateCancelled) {
         task.state = savedState;
         NSString *description = [row[@"errorDescription"] isKindOfClass:NSString.class]
@@ -145,8 +146,7 @@ static BOOL FFExtractErrorIsWriteAccessFailure(NSError *error)
 
 static NSString *FFFallbackExtractDestination(FFFileTask *task)
 {
-    NSString *archive = task.sources.firstObject.lastPathComponent.stringByDeletingPathExtension;
-    if (!archive.length) archive = @"archive";
+    NSString *archive = [FFArchiveService archiveStemForPath:task.sources.firstObject];
     NSString *root = [FFStorageRootPath() stringByAppendingPathComponent:@"Extracted"];
     NSError *directoryError = nil;
     if (![NSFileManager.defaultManager createDirectoryAtPath:root
@@ -728,14 +728,15 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
     __weak FFFileTask *weakTask = task;
     BOOL (^runExtract)(NSString *, NSArray<NSString *> **, NSError **) =
         ^BOOL(NSString *destination, NSArray<NSString *> **entriesOut, NSError **errorOut) {
-            return FFZipExtractWithProgressPassword(task.sources.firstObject, destination,
-                task.archivePassword, entriesOut,
+            return [FFArchiveService extractArchiveAtPath:task.sources.firstObject
+                toDirectory:destination password:task.archivePassword entryNames:entriesOut
+                progress:
                 ^(double progress, NSString *entryName) {
                     weakTask.progress = progress;
                     weakTask.detailName = entryName;
                     [self notifyChange];
                 },
-                ^BOOL { return weakTask.cancelled; }, errorOut);
+                shouldCancel:^BOOL { return weakTask.cancelled; } error:errorOut];
         };
 
     NSString *initialDestination = FFCanonicalStoragePath(task.destination ?: @"");
