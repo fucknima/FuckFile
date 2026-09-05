@@ -8,6 +8,7 @@
 #import "FFLogger.h"
 #import "FFAppNames.h"
 #import "FFZipExtract.h"
+#import "FFArchiveService.h"
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
@@ -2477,24 +2478,16 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (BOOL)isArchiveEntry:(FFEntry *)item
 {
-    static NSSet<NSString *> *extensions;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 真实 zip 容器家族。.deb 明确排除：无解析后端，不再当作 ZIP/归档。
-        extensions = [NSSet setWithArray:@[
-            @"zip", @"ipa", @"xcarchive", @"appex", @"app",
-            @"bundle", @"framework", @"war", @"jar", @"crx", @"xpi",
-            @"docx", @"xlsx", @"pptx", @"pages", @"numbers", @"key",
-            @"epub", @"apk",
-        ]];
-    });
-    return [extensions containsObject:item.name.pathExtension.lowercaseString];
+    // Keep .deb excluded: it has a different container format and no dedicated
+    // backend in FuckFile. ZIP-family and generic libarchive formats share the
+    // same extraction task/UI from here.
+    if ([item.name.lowercaseString hasSuffix:@".deb"]) return NO;
+    return [FFArchiveService isArchivePathSupported:item.path];
 }
 
 - (void)extractEntry:(FFEntry *)item
 {
-    NSString *stem = item.name.stringByDeletingPathExtension;
-    if (stem.length == 0) stem = @"archive";
+    NSString *stem = [FFArchiveService archiveStemForPath:item.path];
     NSString *sibling = [self.currentPath stringByAppendingPathComponent:
         [stem stringByAppendingString:@" (解压)"]];
     NSString *documents = NSSearchPathForDirectoriesInDomains(
