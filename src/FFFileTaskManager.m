@@ -735,8 +735,9 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
                     weakTask.progress = progress;
                     weakTask.detailName = entryName;
                     [self notifyChange];
-                },
-                shouldCancel:^BOOL { return weakTask.cancelled; } error:errorOut];
+                }
+                shouldCancel:^BOOL { return weakTask.cancelled; }
+                error:errorOut];
         };
 
     NSString *initialDestination = FFCanonicalStoragePath(task.destination ?: @"");
