@@ -43,7 +43,7 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 @property(atomic, copy) NSString *destination;
 @property(atomic) BOOL moveSourceRemoval;
 
-// Used by encrypted ZIP extraction only. This is deliberately an in-memory
+// Used by encrypted archive extraction. This is deliberately an in-memory
 // field: FFFileTask persistence must never serialize it.
 @property(atomic, copy, nullable) NSString *archivePassword;
 
