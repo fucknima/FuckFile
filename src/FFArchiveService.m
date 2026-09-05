@@ -1,5 +1,6 @@
 #import "FFArchiveService.h"
 #import "FFZipExtract.h"
+#import "FFLibArchiveBackend.h"
 #import "unzip.h"
 
 #import <CoreFoundation/CoreFoundation.h>
@@ -140,15 +141,53 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
     return [extensions containsObject:extension.lowercaseString];
 }
 
-+ (BOOL)isKnownButUnsupportedExtension:(NSString *)extension
++ (BOOL)isGenericArchivePath:(NSString *)archivePath
 {
-    static NSSet<NSString *> *extensions;
+    NSString *lower = archivePath.lastPathComponent.lowercaseString;
+    if (!lower.length) return NO;
+    static NSArray<NSString *> *suffixes;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        extensions = [NSSet setWithArray:
-            @[ @"tar", @"tar.gz", @"gz", @"7z", @"rar", @"xz", @"bz2" ]];
+        suffixes = @[
+            @".tar.gz", @".tar.bz2", @".tar.xz",
+            @".tgz", @".tbz", @".tbz2", @".txz",
+            @".tar", @".7z", @".rar", @".gz", @".bz2", @".xz"
+        ];
     });
-    return [extensions containsObject:extension.lowercaseString];
+    for (NSString *suffix in suffixes)
+        if ([lower hasSuffix:suffix]) return YES;
+    return NO;
+}
+
++ (BOOL)genericArchiveBackendAvailable
+{
+    return FFLibArchiveBackendAvailable();
+}
+
++ (BOOL)isArchivePathSupported:(NSString *)archivePath
+{
+    if ([self isGenericArchivePath:archivePath])
+        return [self genericArchiveBackendAvailable];
+    return [self isZipFamilyExtension:archivePath.pathExtension] || archivePath.length > 0;
+}
+
++ (BOOL)isKnownButUnsupportedExtension:(NSString *)extension
+{
+    (void)extension;
+    return NO;
+}
+
++ (NSString *)archiveStemForPath:(NSString *)archivePath
+{
+    NSString *name = archivePath.lastPathComponent;
+    NSString *lower = name.lowercaseString;
+    for (NSString *suffix in @[@".tar.gz", @".tar.bz2", @".tar.xz",
+                               @".tgz", @".tbz2", @".tbz", @".txz"]) {
+        if ([lower hasSuffix:suffix] && name.length > suffix.length)
+            return [name substringToIndex:name.length - suffix.length];
+    }
+    NSString *stem = name.stringByDeletingPathExtension;
+    return stem.length ? stem : @"archive";
 }
 
 + (NSString *)cachedPasswordForArchivePath:(NSString *)archivePath
@@ -181,6 +220,11 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
 - (NSArray<FFArchiveEntry *> *)listEntries:(NSString *)archivePath error:(NSError **)error
 {
     if (error) *error = nil;
+    if ([FFArchiveService isGenericArchivePath:archivePath]) {
+        NSString *password = [FFArchiveService cachedPasswordForArchivePath:archivePath];
+        return FFLibArchiveListEntries(archivePath, password, error);
+    }
+
     unzFile zip = unzOpen64(archivePath.fileSystemRepresentation);
     if (!zip) {
         if (error) *error = FFArchiveError(@"无法打开归档（不是有效的 ZIP 或已损坏）");
@@ -238,6 +282,19 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
                       error:(NSError **)error
 {
     if (error) *error = nil;
+    if ([FFArchiveService isGenericArchivePath:archivePath]) {
+        NSString *effectivePassword = password.length ? password :
+            [FFArchiveService cachedPasswordForArchivePath:archivePath];
+        NSString *result = FFLibArchiveExtractEntry(entryName, archivePath,
+            destinationDirectory, effectivePassword, error);
+        if (result.length && effectivePassword.length)
+            [FFArchiveService cachePassword:effectivePassword forArchivePath:archivePath];
+        if (!result.length && error && *error &&
+            [(*error).domain isEqualToString:FFZipExtractErrorDomain] &&
+            (*error).code == FFZipExtractErrorWrongPassword)
+            [FFArchiveService clearCachedPasswordForArchivePath:archivePath];
+        return result;
+    }
     if ([entryName hasSuffix:@"/"]) {
         if (error) *error = FFArchiveError(@"目录条目无法直接提取为文件");
         return nil;
@@ -379,5 +436,32 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
         [FFArchiveService cachePassword:password forArchivePath:archivePath];
     return destination;
 }
+
++ (BOOL)extractArchiveAtPath:(NSString *)archivePath
+                 toDirectory:(NSString *)destinationDirectory
+                    password:(NSString *)password
+                  entryNames:(NSArray<NSString *> **)entryNames
+                    progress:(void (^)(double, NSString *))progressBlock
+                shouldCancel:(BOOL (^)(void))shouldCancel
+                       error:(NSError **)error
+{
+    if ([self isGenericArchivePath:archivePath]) {
+        NSString *effectivePassword = password.length ? password :
+            [self cachedPasswordForArchivePath:archivePath];
+        BOOL ok = FFLibArchiveExtractAll(archivePath, destinationDirectory,
+            effectivePassword, entryNames, progressBlock, shouldCancel, error);
+        if (ok && effectivePassword.length)
+            [self cachePassword:effectivePassword forArchivePath:archivePath];
+        if (!ok && error && *error &&
+            [(*error).domain isEqualToString:FFZipExtractErrorDomain] &&
+            (*error).code == FFZipExtractErrorWrongPassword)
+            [self clearCachedPasswordForArchivePath:archivePath];
+        return ok;
+    }
+
+    return FFZipExtractWithProgressPassword(archivePath, destinationDirectory,
+        password, entryNames, progressBlock, shouldCancel, error);
+}
+
 
 @end
