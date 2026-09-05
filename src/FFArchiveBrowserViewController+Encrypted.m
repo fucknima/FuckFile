@@ -78,7 +78,7 @@
         return;
     }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"加密 ZIP"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"加密压缩包"
         message:@"输入压缩包密码。密码只保存在本次 App 运行内存中，不会写入磁盘。"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -191,8 +191,7 @@
 - (void)ff_enqueueEncryptedExtractAllWithPassword:(NSString *)password
 {
     NSString *archivePath = [self ff_archivePath];
-    NSString *stem = archivePath.lastPathComponent.stringByDeletingPathExtension;
-    if (!stem.length) stem = @"archive";
+    NSString *stem = [FFArchiveService archiveStemForPath:archivePath];
     FFFileTask *task = [FFFileTask new];
     task.kind = FFFileTaskKindExtract;
     task.displayName = [NSString stringWithFormat:@"解压 %@", stem];
