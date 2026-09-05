@@ -158,7 +158,7 @@
             @[@"text", @"文本编辑器", @"doc.plaintext", @"txt/log/md/json/xml/源码等文本；脚本仅按文本打开，不执行"],
             @[@"sqlite", @"SQLite3 编辑器", @"cylinder.split.1x2", @"sqlite/sqlite3/sqlitedb/db：表、视图、索引、分页浏览与 SQL 查询（只读）"],
             @[@"installer", @"IPA 安装器", @"arrow.down.app", @"解析 IPA 应用信息；能否安装取决于运行环境权限"],
-            @[@"archive", @"ZIP 浏览器", @"archivebox", @"ZIP/IPA 包内浏览与提取。部分支持：TAR/GZ/7z/RAR/XZ/BZ2 当前构建无法解析，仅明确提示"],
+            @[@"archive", @"压缩包浏览器", @"archivebox", @"ZIP/IPA、7Z、RAR/RAR5、TAR、TGZ/TBZ/TXZ、GZ/BZ2/XZ 包内浏览与安全提取"],
             @[@"hex", @"十六进制编辑器", @"waveform.path.ecg", @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
             @[@"media", @"媒体播放器", @"play.circle", @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）"],
             @[@"pdf", @"PDF 阅读器", @"doc.richtext", @"PDFKit 阅读器（可手动关联；默认 PDF 使用系统 Quick Look）"],
