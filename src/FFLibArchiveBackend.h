@@ -9,22 +9,22 @@ NS_ASSUME_NONNULL_BEGIN
 // stable ZIP/minizip implementation or bundling a second large decompressor.
 FOUNDATION_EXPORT BOOL FFLibArchiveBackendAvailable(void);
 
-FOUNDATION_EXPORT nullable NSArray<FFArchiveEntry *> *
+FOUNDATION_EXPORT NSArray<FFArchiveEntry *> * _Nullable
 FFLibArchiveListEntries(NSString *archivePath,
-                        nullable NSString *password,
+                        NSString * _Nullable *password,
                         NSError * _Nullable * _Nullable error);
 
-FOUNDATION_EXPORT nullable NSString *
+FOUNDATION_EXPORT NSString * _Nullable *
 FFLibArchiveExtractEntry(NSString *entryName,
                          NSString *archivePath,
                          NSString *destinationDirectory,
-                         nullable NSString *password,
+                         NSString * _Nullable *password,
                          NSError * _Nullable * _Nullable error);
 
 FOUNDATION_EXPORT BOOL
 FFLibArchiveExtractAll(NSString *archivePath,
                        NSString *destinationDirectory,
-                       nullable NSString *password,
+                       NSString * _Nullable *password,
                        NSArray<NSString *> * _Nullable * _Nullable entryNames,
                        void (^ _Nullable progressBlock)(double progress, NSString *entryName),
                        BOOL (^ _Nullable shouldCancel)(void),
