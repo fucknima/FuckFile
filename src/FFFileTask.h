@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "FFConflictPolicy.h"
+#import "FFArchiveCreate.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -46,6 +47,11 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 // Used by encrypted archive extraction. This is deliberately an in-memory
 // field: FFFileTask persistence must never serialize it.
 @property(atomic, copy, nullable) NSString *archivePassword;
+// Compression-task options. Non-secret options persist with task history;
+// archivePassword above is process-memory only.
+@property(atomic) FFArchiveCreateFormat archiveFormat;
+@property(atomic) FFZipCompressionLevel zipCompression;
+@property(atomic) FFZipEncryptionMode archiveEncryption;
 
 @property(atomic) BOOL cancelled;
 @property(atomic, copy, nullable) FFConflictAction (^conflictHandler)(NSString *name);
