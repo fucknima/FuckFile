@@ -5,6 +5,7 @@
 #import "FFViewerRegistry.h"
 #import "FFQuickLookViewController.h"
 #import "FFHexEditorViewController.h"
+#import "FFMachOInspectorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFContentProbe.h"
@@ -72,6 +73,16 @@ navigationController:(UINavigationController *)nav
     fileSize = [attrs[NSFileSize] unsignedLongLongValue];
 
     FFContentKind kind = [FFContentProbe contentKindOfFile:item.path];
+
+    if (kind == FFContentKindMachO) {
+        FFMachOInspectorViewController *inspector =
+            [[FFMachOInspectorViewController alloc] initWithFilePath:item.path];
+        if (inspector) {
+            inspector.title = item.displayName.length ? item.displayName : item.name;
+            [nav pushViewController:inspector animated:YES];
+            return;
+        }
+    }
 
     if (kind == FFContentKindPlist) {
         if (fileSize <= 8 * 1024 * 1024) {
