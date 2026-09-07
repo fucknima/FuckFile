@@ -12,6 +12,25 @@
 
 typedef struct archive FFArchiveHandle;
 typedef struct archive_entry FFArchiveNativeEntry;
+
+#if defined(FF_BUNDLED_LIBARCHIVE)
+extern FFArchiveHandle *archive_read_new(void);
+extern int archive_read_support_filter_all(FFArchiveHandle *);
+extern int archive_read_support_format_all(FFArchiveHandle *);
+extern int archive_read_support_format_raw(FFArchiveHandle *);
+extern int archive_read_add_passphrase(FFArchiveHandle *, const char *);
+extern int archive_read_open_filename(FFArchiveHandle *, const char *, size_t);
+extern int archive_read_next_header(FFArchiveHandle *, FFArchiveNativeEntry **);
+extern long archive_read_data(FFArchiveHandle *, void *, size_t);
+extern int archive_read_data_skip(FFArchiveHandle *);
+extern int archive_read_free(FFArchiveHandle *);
+extern const char *archive_error_string(FFArchiveHandle *);
+extern const char *archive_entry_pathname_utf8(FFArchiveNativeEntry *);
+extern const char *archive_entry_pathname(FFArchiveNativeEntry *);
+extern long long archive_entry_size(FFArchiveNativeEntry *);
+extern unsigned int archive_entry_filetype(FFArchiveNativeEntry *);
+extern int archive_entry_is_encrypted(FFArchiveNativeEntry *);
+#endif
 typedef long long FFArchiveInt64;
 typedef long FFArchiveSSize;
 
@@ -55,6 +74,26 @@ static FFLibArchiveAPI *FFLibArchiveAPIShared(void)
     static FFLibArchiveAPI api;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+#if defined(FF_BUNDLED_LIBARCHIVE)
+        api.handle = (void *)1;
+        api.read_new = archive_read_new;
+        api.read_support_filter_all = archive_read_support_filter_all;
+        api.read_support_format_all = archive_read_support_format_all;
+        api.read_support_format_raw = archive_read_support_format_raw;
+        api.read_add_passphrase = archive_read_add_passphrase;
+        api.read_open_filename = archive_read_open_filename;
+        api.read_next_header = archive_read_next_header;
+        api.read_data = archive_read_data;
+        api.read_data_skip = archive_read_data_skip;
+        api.read_free = archive_read_free;
+        api.error_string = archive_error_string;
+        api.entry_pathname_utf8 = archive_entry_pathname_utf8;
+        api.entry_pathname = archive_entry_pathname;
+        api.entry_size = archive_entry_size;
+        api.entry_filetype = archive_entry_filetype;
+        api.entry_is_encrypted = archive_entry_is_encrypted;
+        return;
+#endif
         const char *candidates[] = {
             "/usr/lib/libarchive.2.dylib",
             "/usr/lib/libarchive.dylib",
