@@ -8,6 +8,9 @@
     if (self) {
         _taskID = [NSUUID UUID].UUIDString;
         _state = FFFileTaskStateQueued;
+        _archiveFormat = FFArchiveCreateFormatZIP;
+        _zipCompression = FFZipCompressionLevelBalanced;
+        _archiveEncryption = FFZipEncryptionModeNone;
     }
     return self;
 }
