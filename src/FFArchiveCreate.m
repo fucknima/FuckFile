@@ -4,6 +4,8 @@
 #import <dlfcn.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <limits.h>
+#import <zlib.h>
 #import <string.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -397,8 +399,10 @@ static BOOL FFWriteWithLibArchive(NSArray<NSString *> *sourcePaths,
         return NO;
     }
 
-    if (fsync(open(temp.fileSystemRepresentation, O_RDONLY | O_CLOEXEC)) != 0) {
-        // Best-effort only; close+rename still gives atomic visibility.
+    int syncFD = open(temp.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    if (syncFD >= 0) {
+        (void)fsync(syncFD);
+        close(syncFD);
     }
 
     NSFileManager *fm = NSFileManager.defaultManager;
