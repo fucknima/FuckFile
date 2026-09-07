@@ -4,6 +4,9 @@
 #import <arpa/inet.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <limits.h>
+#import <stdlib.h>
+#import <string.h>
 #import <ifaddrs.h>
 #import <net/if.h>
 #import <netinet/in.h>
@@ -321,10 +324,14 @@ static NSString *FFRealPath(NSString *path)
     unsigned long long contentLength = 0;
     NSString *length = headers[@"content-length"];
     if (length.length) {
-        NSScanner *scanner = [NSScanner scannerWithString:length];
-        if (![scanner scanUnsignedLongLong:&contentLength] || !scanner.isAtEnd ||
-            contentLength > kFFWebDAVMaxUploadBytes)
+        const char *rawLength = length.UTF8String;
+        char *end = NULL;
+        errno = 0;
+        unsigned long long parsed = strtoull(rawLength, &end, 10);
+        if (errno != 0 || !rawLength || end == rawLength || *end != '\0' ||
+            parsed > kFFWebDAVMaxUploadBytes)
             return nil;
+        contentLength = parsed;
     }
 
     FFWebDAVRequest *request = [FFWebDAVRequest new];
