@@ -1,5 +1,6 @@
 #import "FFWebDAVServer.h"
 #import "FFLogger.h"
+#import <UIKit/UIKit.h>
 
 #import <arpa/inet.h>
 #import <errno.h>
@@ -149,11 +150,19 @@ static NSString *FFRealPath(NSString *path)
     if (self) {
         _listenerFD = -1;
         _acceptQueue = dispatch_queue_create("ff.webdav.accept", DISPATCH_QUEUE_SERIAL);
+        [NSNotificationCenter.defaultCenter addObserver:self
+            selector:@selector(stop) name:UIApplicationDidEnterBackgroundNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self
+            selector:@selector(stop) name:UIApplicationWillTerminateNotification object:nil];
     }
     return self;
 }
 
-- (void)dealloc { [self stop]; }
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [self stop];
+}
 
 - (NSError *)errorWithCode:(NSInteger)code message:(NSString *)message
 {
