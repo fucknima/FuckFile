@@ -82,13 +82,13 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
 {
     // Old favorites / task history / deep links can still contain the removed
     // Documents/Device Storage prefix. Canonicalize at the browser boundary so
-    // every caller lands on the flattened Documents tree.
+    // every caller lands on the flattened Documents tree while the UI stays localized.
     NSString *root = FFStorageRootPath().stringByStandardizingPath;
     FFCleanupLegacyGeneratedCachesAtStorageRoot();
     NSString *canonical = FFCanonicalStoragePath(path ?: @"");
     FFBrowserViewController *browser = [self ff_storage_initWithPath:canonical];
     if (browser && [canonical.stringByStandardizingPath isEqualToString:root])
-        browser.title = @"Documents";
+        browser.title = @"文件";
     return browser;
 }
 
@@ -99,7 +99,7 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     NSString *root = FFStorageRootPath().stringByStandardizingPath;
     BOOL isRoot = [self.currentPath.stringByStandardizingPath isEqualToString:root];
     if (!isRoot) return;
-    self.title = @"Documents";
+    self.title = @"文件";
 
     // The Files-tab root controller is created once and survives switching to
     // Settings, so it must re-read the default display preference when it comes
@@ -125,7 +125,7 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     if (![parent isEqualToString:FFStorageRootPath().stringByStandardizingPath])
         return loaded;
 
-    // Documents is now the actual homepage. Generated metadata from older or
+    // The app-visible 文件 root is backed by the Documents directory. Generated metadata from older or
     // current builds must never masquerade as user files even when “show hidden”
     // is enabled. AppData/MobileGestalt are deliberately NOT filtered here.
     NSMutableArray<FFEntry *> *visible = [NSMutableArray arrayWithCapacity:loaded.count];
@@ -152,7 +152,7 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
 
     if (FFStoragePathIsInsideRoot(current, root)) {
-        [names addObject:@"Documents"];
+        [names addObject:@"文件"];
         [paths addObject:root];
         NSString *relative = [current substringFromIndex:root.length];
         NSString *cursor = root;
@@ -163,7 +163,7 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
             [paths addObject:cursor];
         }
         // Navigation title already names the current folder; breadcrumbs are
-        // ancestors only. A first-level child therefore shows “Documents >”.
+        // ancestors only. A first-level child therefore shows “文件 >”.
         if (names.count > 1) {
             [names removeLastObject];
             [paths removeLastObject];
