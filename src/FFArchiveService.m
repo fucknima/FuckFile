@@ -14,6 +14,32 @@ static const unsigned long long kMaxEntrySize = 2ULL * 1024 * 1024 * 1024;
 static const NSUInteger kMaxEntries = 100000;
 static const NSUInteger kMaxArchiveNameBytes = 64 * 1024;
 
+static BOOL FFArchiveZIPNeedsLibArchive(NSString *archivePath)
+{
+    NSString *ext = archivePath.pathExtension.lowercaseString;
+    if (![FFArchiveService isZipFamilyExtension:ext]) return NO;
+
+    unzFile zip = unzOpen64(archivePath.fileSystemRepresentation);
+    if (!zip) return NO;
+    int rc = unzGoToFirstFile(zip);
+    BOOL needs = NO;
+    while (rc == UNZ_OK) {
+        unz_file_info64 info;
+        memset(&info, 0, sizeof(info));
+        if (unzGetCurrentFileInfo64(zip, &info, NULL, 0, NULL, 0, NULL, 0) != UNZ_OK)
+            break;
+        // Method 99 is the WinZip AES marker. Minizip in this project handles
+        // stored/deflate + traditional ZipCrypto only; libarchive handles AES.
+        if (info.compression_method == 99) {
+            needs = YES;
+            break;
+        }
+        rc = unzGoToNextFile(zip);
+    }
+    unzClose(zip);
+    return needs;
+}
+
 static NSError *FFArchiveError(NSString *message)
 {
     return [NSError errorWithDomain:@"FFArchive" code:-1
@@ -220,7 +246,8 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
 - (NSArray<FFArchiveEntry *> *)listEntries:(NSString *)archivePath error:(NSError **)error
 {
     if (error) *error = nil;
-    if ([FFArchiveService isGenericArchivePath:archivePath]) {
+    if ([FFArchiveService isGenericArchivePath:archivePath] ||
+        FFArchiveZIPNeedsLibArchive(archivePath)) {
         NSString *password = [FFArchiveService cachedPasswordForArchivePath:archivePath];
         return FFLibArchiveListEntries(archivePath, password, error);
     }
@@ -282,7 +309,8 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
                       error:(NSError **)error
 {
     if (error) *error = nil;
-    if ([FFArchiveService isGenericArchivePath:archivePath]) {
+    if ([FFArchiveService isGenericArchivePath:archivePath] ||
+        FFArchiveZIPNeedsLibArchive(archivePath)) {
         NSString *effectivePassword = password.length ? password :
             [FFArchiveService cachedPasswordForArchivePath:archivePath];
         NSString *result = FFLibArchiveExtractEntry(entryName, archivePath,
@@ -445,7 +473,8 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
                 shouldCancel:(BOOL (^)(void))shouldCancel
                        error:(NSError **)error
 {
-    if ([self isGenericArchivePath:archivePath]) {
+    if ([self isGenericArchivePath:archivePath] ||
+        FFArchiveZIPNeedsLibArchive(archivePath)) {
         NSString *effectivePassword = password.length ? password :
             [self cachedPasswordForArchivePath:archivePath];
         BOOL ok = FFLibArchiveExtractAll(archivePath, destinationDirectory,
