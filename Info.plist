@@ -92,6 +92,8 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>15.0</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在同一 Wi‑Fi 局域网内通过浏览器或 WebDAV 访问你主动共享的 FuckFile 文件。</string>
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>
