@@ -172,6 +172,13 @@ FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
 FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit UniformTypeIdentifiers PhotosUI
 FuckFile_LIBRARIES = z sqlite3
+ifneq ($(strip $(FF_LIBARCHIVE_A)),)
+FuckFile_CFLAGS += -DFF_BUNDLED_LIBARCHIVE=1
+FuckFile_CCFLAGS += -DFF_BUNDLED_LIBARCHIVE=1
+FuckFile_OBJCFLAGS += -DFF_BUNDLED_LIBARCHIVE=1
+FuckFile_LDFLAGS += $(FF_LIBARCHIVE_A)
+FuckFile_LIBRARIES += bz2 iconv xml2
+endif
 FuckFile_INFOPLIST = Info.plist
 
 FuckFileShare_FILES = \
