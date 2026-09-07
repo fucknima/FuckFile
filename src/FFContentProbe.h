@@ -18,6 +18,7 @@ typedef NS_ENUM(NSInteger, FFContentKind) {
     FFContentKindPlist,
     FFContentKindSQLite,
     FFContentKindZIP,
+    FFContentKindMachO,
     FFContentKindBinary,
 };
 
@@ -49,6 +50,7 @@ typedef NS_ENUM(NSInteger, FFContentKind) {
 
 + (BOOL)isSQLite:(NSData *)sample;
 + (BOOL)isZIP:(NSData *)sample;
++ (BOOL)isMachO:(NSData *)sample;
 
 @end
 
