@@ -1267,15 +1267,18 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
                     dispatch_group_leave(group);
                     return;
                 }
-                dispatch_async(serial, ^{
+                dispatch_sync(serial, ^{
+                    // PHPicker owns this temporary representation only for the
+                    // duration of the provider callback. Finish the coordinated
+                    // import before returning from the callback.
                     NSString *name = suggested.length ? suggested : url.lastPathComponent;
                     FFImportResult *importResult = [FFImportService importURL:url
                         displayName:name toDirectory:destination];
                     if (importResult.success) imported++;
                     else if (!firstFailure)
                         firstFailure = importResult.error.localizedDescription ?: name ?: @"导入照片失败";
-                    dispatch_group_leave(group);
                 });
+                dispatch_group_leave(group);
             }];
     }
 
