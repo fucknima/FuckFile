@@ -3,6 +3,7 @@
 #import "FFZipExtract.h"
 #import "FFArchiveService.h"
 #import "FFZipCreate.h"
+#import "FFArchiveCreate.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
 #import "FFSystemAccessManager.h"
@@ -62,6 +63,9 @@ static NSDictionary *FFTaskDictionary(FFFileTask *task)
     row[@"sources"] = FFCanonicalTaskSources(task.sources);
     row[@"destination"] = FFCanonicalStoragePath(task.destination ?: @"");
     row[@"moveSourceRemoval"] = @(task.moveSourceRemoval);
+    row[@"archiveFormat"] = @(task.archiveFormat);
+    row[@"zipCompression"] = @(task.zipCompression);
+    row[@"archiveEncryption"] = @(task.archiveEncryption);
     if (task.error.localizedDescription.length)
         row[@"errorDescription"] = task.error.localizedDescription;
     if (task.error.domain.length) row[@"errorDomain"] = task.error.domain;
@@ -92,6 +96,12 @@ static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
     task.sources = sources;
     task.destination = destination;
     task.moveSourceRemoval = [row[@"moveSourceRemoval"] boolValue];
+    task.archiveFormat = [row[@"archiveFormat"] isKindOfClass:NSNumber.class]
+        ? [row[@"archiveFormat"] integerValue] : FFArchiveCreateFormatZIP;
+    task.zipCompression = [row[@"zipCompression"] isKindOfClass:NSNumber.class]
+        ? [row[@"zipCompression"] integerValue] : FFZipCompressionLevelBalanced;
+    task.archiveEncryption = [row[@"archiveEncryption"] isKindOfClass:NSNumber.class]
+        ? [row[@"archiveEncryption"] integerValue] : FFZipEncryptionModeNone;
     task.progress = [row[@"progress"] doubleValue];
     task.averageBytesPerSecond = [row[@"averageBytesPerSecond"] doubleValue];
     task.estimatedRemainingSeconds = [row[@"estimatedRemainingSeconds"] doubleValue];
@@ -779,7 +789,23 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
 {
     __weak FFFileTask *weakTask = task;
     NSError *error = nil;
-    BOOL ok = FFCreateZipArchive(task.sources, task.destination,
+
+    if (task.archiveEncryption != FFZipEncryptionModeNone &&
+        !task.archivePassword.length) {
+        task.failedCount = 1;
+        task.error = [NSError errorWithDomain:@"FFArchiveCreate" code:401
+            userInfo:@{NSLocalizedDescriptionKey:
+                @"该任务需要压缩密码。密码不会写入任务历史，请重新发起加密压缩。"}];
+        return NO;
+    }
+
+    FFArchiveCreateOptions *options = [FFArchiveCreateOptions new];
+    options.format = task.archiveFormat;
+    options.zipCompression = task.zipCompression;
+    options.zipEncryption = task.archiveEncryption;
+    options.password = task.archivePassword;
+
+    BOOL ok = FFCreateArchive(task.sources, task.destination, options,
         ^(double progress, NSString *entryName) {
             weakTask.progress = progress;
             weakTask.detailName = entryName;
