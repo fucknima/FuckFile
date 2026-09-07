@@ -1,6 +1,8 @@
 #import "FFContentProbe.h"
 
 #import <ctype.h>
+#import <mach-o/fat.h>
+#import <mach-o/loader.h>
 
 // 头窗口采样：文本统计 16 KB 即可稳定，magic/JSON 需要 64 KB 容纳
 // 头窗口采样：文本统计 16 KB 即可稳定，magic/JSON 需要 64 KB 容纳。
@@ -59,6 +61,7 @@ static BOOL FFIsReadableByte(uint8_t byte)
     // ---- 精确 magic 判定（优先级最高，不参与文本竞争） ----
     if ([self isZIP:sample]) return FFContentKindZIP;
     if ([self isSQLite:sample]) return FFContentKindSQLite;
+    if ([self isMachO:sample]) return FFContentKindMachO;
 
     // 二进制 plist / XML plist（bplist00 或 XML 字典）。
     if (sample.length >= 8 && memcmp(bytes, "bplist0", 7) == 0)
@@ -252,6 +255,20 @@ static BOOL FFIsReadableByte(uint8_t byte)
     if (sample.length < 16) return NO;
     static const uint8_t magic[] = "SQLite format 3\0";
     return memcmp(sample.bytes, magic, sizeof(magic) - 1) == 0;
+}
+
++ (BOOL)isMachO:(NSData *)sample
+{
+    if (sample.length < 4) return NO;
+    uint32_t magic = 0;
+    memcpy(&magic, sample.bytes, sizeof(magic));
+    return magic == MH_MAGIC || magic == MH_MAGIC_64 ||
+           magic == MH_CIGAM || magic == MH_CIGAM_64 ||
+           magic == FAT_MAGIC || magic == FAT_CIGAM
+#ifdef FAT_MAGIC_64
+           || magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64
+#endif
+           ;
 }
 
 + (BOOL)isZIP:(NSData *)sample
