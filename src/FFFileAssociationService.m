@@ -33,6 +33,7 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"avi": @"media", @"mkv": @"media",
             @"html": @"web", @"htm": @"web", @"url": @"web", @"webloc": @"web",
             @"hex": @"hex", @"dat": @"hex",
+            @"dylib": @"macho", @"so": @"macho",
             @"ipa": @"installer",
             @"zip": @"archive", @"tar": @"archive", @"tar.gz": @"archive",
             @"tgz": @"archive", @"tar.bz2": @"archive", @"tbz": @"archive",
