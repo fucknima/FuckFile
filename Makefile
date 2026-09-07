@@ -40,6 +40,8 @@ FuckFile_FILES = \
 	src/FFSettingsViewController.m \
 	src/FFStorageCleaner.m \
 	src/FFStorageCleanerViewController.m \
+	src/FFWebDAVServer.m \
+	src/FFWebDAVSettingsViewController.m \
 	src/FFCopyEngine.m \
 	src/FFPathPolicy.m \
 	src/FFFileOperationService.m \
@@ -52,6 +54,8 @@ FuckFile_FILES = \
 	src/FFAppNames.m \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
+	src/FFArchiveCreate.m \
+	src/FFArchiveCreateOptionsViewController.m \
 	src/FFTextEditorViewController.m \
 	src/FFPlistDocument.m \
 	src/FFPlistValueEditorViewController.m \
@@ -82,6 +86,7 @@ FuckFile_FILES = \
 	src/FFQuickLookViewController.m \
 	src/FFWebViewerViewController.m \
 	src/FFHexEditorViewController.m \
+	src/FFMachOInspectorViewController.m \
 	src/FFSQLiteService.m \
 	src/FFSQLiteBrowserViewController.m \
 	src/FFArchiveService.m \
@@ -165,7 +170,7 @@ FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/FuckFile-Bridging-Header.h
 FuckFile_SWIFTFLAGS = -I$(PWD)/third_party/tree-sitter/include
 
-FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit UniformTypeIdentifiers
+FuckFile_FRAMEWORKS = UIKit Foundation CoreFoundation AVKit AVFoundation PDFKit QuickLook WebKit UniformTypeIdentifiers PhotosUI
 FuckFile_LIBRARIES = z sqlite3
 FuckFile_INFOPLIST = Info.plist
 
