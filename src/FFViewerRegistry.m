@@ -8,6 +8,7 @@
 #import "FFDocxViewerViewController.h"
 #import "FFWebViewerViewController.h"
 #import "FFHexEditorViewController.h"
+#import "FFMachOInspectorViewController.h"
 #import "FFSQLiteBrowserViewController.h"
 #import "FFArchiveBrowserViewController.h"
 #import "FFIPaInstallerViewController.h"
@@ -160,6 +161,7 @@
             @[@"installer", @"IPA 安装器", @"arrow.down.app", @"解析 IPA 应用信息；能否安装取决于运行环境权限"],
             @[@"archive", @"压缩包浏览器", @"archivebox", @"ZIP/IPA、7Z、RAR/RAR5、TAR、TGZ/TBZ/TXZ、GZ/BZ2/XZ 包内浏览与安全提取"],
             @[@"hex", @"十六进制编辑器", @"waveform.path.ecg", @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
+            @[@"macho", @"Mach-O 检查器", @"cpu", @"架构切片、Load Commands、段/节、动态库、UUID、签名、Entitlements 与加密信息"],
             @[@"media", @"媒体播放器", @"play.circle", @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）"],
             @[@"pdf", @"PDF 阅读器", @"doc.richtext", @"PDFKit 阅读器（可手动关联；默认 PDF 使用系统 Quick Look）"],
         ];
@@ -215,6 +217,7 @@
     if ([viewerID isEqualToString:@"web"]) return [[FFWebViewerViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"sqlite"]) return [[FFSQLiteBrowserViewController alloc] initWithDatabasePath:path];
     if ([viewerID isEqualToString:@"hex"]) return [[FFHexEditorViewController alloc] initWithFilePath:path];
+    if ([viewerID isEqualToString:@"macho"]) return [[FFMachOInspectorViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"archive"]) return [[FFArchiveBrowserViewController alloc] initWithArchivePath:path];
     if ([viewerID isEqualToString:@"installer"]) return [[FFIPaInstallerViewController alloc] initWithIpaPath:path];
     return nil;
