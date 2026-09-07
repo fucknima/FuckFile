@@ -9,6 +9,8 @@
 #import "FFAppNames.h"
 #import "FFZipExtract.h"
 #import "FFArchiveService.h"
+#import "FFArchiveCreateOptionsViewController.h"
+#import "FFImportService.h"
 #import "FFTextEditorViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFPdfPreviewViewController.h"
@@ -24,6 +26,8 @@
 #import "FFViewerPickerViewController.h"
 
 #import <AVKit/AVKit.h>
+#import <PhotosUI/PhotosUI.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <dirent.h>
 #import <fcntl.h>
@@ -63,7 +67,7 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 
 // Map well-known bundle identifiers to readable display names; fall back to
 // stripping the "com.apple." prefix and camel-case splitting.
-@interface FFBrowserViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate>
+@interface FFBrowserViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UIDocumentInteractionControllerDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIDocumentPickerDelegate, PHPickerViewControllerDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, strong) NSArray<FFEntry *> *entries;
 @property(nonatomic, strong) NSArray<FFEntry *> *filteredEntries;
@@ -510,7 +514,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *import = [UIAction actionWithTitle:@"导入文件…"
         image:[self symbolImage:@"square.and.arrow.down" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
-    return [UIMenu menuWithTitle:@"新建" children:@[newFolder, newFile, import]];
+    UIAction *photos = [UIAction actionWithTitle:@"导入照片…"
+        image:[self symbolImage:@"photo.on.rectangle" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self importPhotosTapped]; }];
+    UIAction *download = [UIAction actionWithTitle:@"从 URL 下载…"
+        image:[self symbolImage:@"arrow.down.circle" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self downloadURLTapped]; }];
+    return [UIMenu menuWithTitle:@"新建"
+        children:@[newFolder, newFile, import, photos, download]];
 }
 
 - (void)cancelBatchMode
@@ -611,43 +622,35 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     NSString *defaultName = items.count == 1
         ? [NSString stringWithFormat:@"%@.zip", items.firstObject.name]
         : @"归档.zip";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"压缩"
-        message:[NSString stringWithFormat:@"%lu 个项目，压缩到当前目录",
-            (unsigned long)items.count]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = defaultName;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    }];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"压缩" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) {
-            NSString *name = alert.textFields.firstObject.text ?: defaultName;
-            if (![weakSelf validNewName:name]) return;
-            if (![name.pathExtension.lowercaseString isEqualToString:@"zip"])
-                name = [name stringByAppendingPathExtension:@"zip"];
-            [weakSelf compressWithName:name items:items];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    FFArchiveCreateOptionsViewController *form =
+        [[FFArchiveCreateOptionsViewController alloc]
+            initWithSuggestedName:defaultName itemCount:items.count
+            completion:^(NSString *archiveName, FFArchiveCreateOptions *options) {
+                [weakSelf compressWithName:archiveName items:items options:options];
+            }];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:form];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 // 压缩前重名检测（防止静默覆盖已有压缩包），冲突交互与重命名一致。
-- (void)compressWithName:(NSString *)name items:(NSArray<FFEntry *> *)items
+- (void)compressWithName:(NSString *)name
+                   items:(NSArray<FFEntry *> *)items
+                 options:(FFArchiveCreateOptions *)options
 {
     NSString *destination = [self.currentPath stringByAppendingPathComponent:name];
     if (![[NSFileManager defaultManager] fileExistsAtPath:destination]) {
-        [self enqueueCompressWithName:name items:items];
+        [self enqueueCompressWithName:name items:items options:options];
         return;
     }
-    // 已存在：替换 / 保留两者（自动加序号）/ 取消。
     __weak typeof(self) weakSelf = self;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"压缩包已存在"
         message:[NSString stringWithFormat:@"「%@」已存在于当前目录，是否替换？", name]
         preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"替换" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
-            [weakSelf enqueueCompressWithName:name items:items];
+            [weakSelf enqueueCompressWithName:name items:items options:options];
         }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"保留两者"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -656,7 +659,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 [weakSelf flash:@"无法生成不冲突的名称"];
                 return;
             }
-            [weakSelf enqueueCompressWithName:available.lastPathComponent items:items];
+            [weakSelf enqueueCompressWithName:available.lastPathComponent
+                items:items options:options];
         }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
         style:UIAlertActionStyleCancel handler:nil]];
@@ -666,16 +670,23 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self presentOnTop:sheet];
 }
 
-- (void)enqueueCompressWithName:(NSString *)name items:(NSArray<FFEntry *> *)items
+- (void)enqueueCompressWithName:(NSString *)name
+                          items:(NSArray<FFEntry *> *)items
+                        options:(FFArchiveCreateOptions *)options
 {
     NSString *destination = [self.currentPath stringByAppendingPathComponent:name];
     NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
     for (FFEntry *item in items) [paths addObject:item.path];
+
     FFFileTask *task = [FFFileTask new];
     task.kind = FFFileTaskKindCompress;
     task.displayName = [NSString stringWithFormat:@"压缩 %@", name];
     task.sources = paths;
     task.destination = destination;
+    task.archiveFormat = options.format;
+    task.zipCompression = options.zipCompression;
+    task.archiveEncryption = options.zipEncryption;
+    task.archivePassword = options.password;
     [[FFFileTaskManager sharedManager] enqueueTask:task];
     [self flash:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
 }
@@ -1206,6 +1217,153 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
     }
     return nil;
+}
+
+- (void)importPhotosTapped
+{
+    PHPickerConfiguration *configuration = [[PHPickerConfiguration alloc] init];
+    configuration.filter = PHPickerFilter.imagesFilter;
+    configuration.selectionLimit = 0;
+    configuration.preferredAssetRepresentationMode =
+        PHPickerConfigurationAssetRepresentationModeCurrent;
+    PHPickerViewController *picker =
+        [[PHPickerViewController alloc] initWithConfiguration:configuration];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)picker:(PHPickerViewController *)picker
+didFinishPicking:(NSArray<PHPickerResult *> *)results
+{
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    if (!results.count) return;
+
+    NSString *destination = [self.currentPath copy];
+    dispatch_queue_t serial = dispatch_queue_create("ff.photo-import", DISPATCH_QUEUE_SERIAL);
+    dispatch_group_t group = dispatch_group_create();
+    __block NSUInteger imported = 0;
+    __block NSString *firstFailure = nil;
+
+    for (PHPickerResult *result in results) {
+        NSItemProvider *provider = result.itemProvider;
+        NSString *identifier = nil;
+        for (NSString *candidate in provider.registeredTypeIdentifiers) {
+            UTType *type = [UTType typeWithIdentifier:candidate];
+            if ([type conformsToType:UTTypeImage]) { identifier = candidate; break; }
+        }
+        if (!identifier.length) {
+            if (!firstFailure) firstFailure = @"存在无法读取的照片";
+            continue;
+        }
+
+        dispatch_group_enter(group);
+        NSString *suggested = provider.suggestedName;
+        [provider loadFileRepresentationForTypeIdentifier:identifier
+            completionHandler:^(NSURL *url, NSError *loadError) {
+                if (!url || loadError) {
+                    @synchronized (self) {
+                        if (!firstFailure) firstFailure = loadError.localizedDescription ?: @"读取照片失败";
+                    }
+                    dispatch_group_leave(group);
+                    return;
+                }
+                dispatch_async(serial, ^{
+                    NSString *name = suggested.length ? suggested : url.lastPathComponent;
+                    FFImportResult *importResult = [FFImportService importURL:url
+                        displayName:name toDirectory:destination];
+                    if (importResult.success) imported++;
+                    else if (!firstFailure)
+                        firstFailure = importResult.error.localizedDescription ?: name ?: @"导入照片失败";
+                    dispatch_group_leave(group);
+                });
+            }];
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        if (imported && weakSelf.hasLoaded) [weakSelf reloadEntries];
+        NSString *message = firstFailure
+            ? [NSString stringWithFormat:@"已导入 %lu 张；失败：%@",
+                (unsigned long)imported, firstFailure]
+            : [NSString stringWithFormat:@"已导入 %lu 张照片。", (unsigned long)imported];
+        [weakSelf flash:message];
+    });
+}
+
+- (void)downloadURLTapped
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"从 URL 下载"
+        message:@"请输入 HTTPS 文件地址。下载完成后保存到当前目录。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"https://example.com/file.zip";
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"下载"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *raw = [alert.textFields.firstObject.text
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = [NSURL URLWithString:raw];
+            if (!url || ![url.scheme.lowercaseString isEqualToString:@"https"]) {
+                [weakSelf flash:@"请输入有效的 HTTPS 地址"];
+                return;
+            }
+            [weakSelf startDownloadFromURL:url];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)startDownloadFromURL:(NSURL *)url
+{
+    NSString *destination = [self.currentPath copy];
+    UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"正在下载"
+        message:url.lastPathComponent.length ? url.lastPathComponent : url.host
+        preferredStyle:UIAlertControllerStyleAlert];
+
+    __block NSURLSessionDownloadTask *task = nil;
+    __weak typeof(self) weakSelf = self;
+    __weak UIAlertController *weakProgress = progress;
+    task = [NSURLSession.sharedSession downloadTaskWithURL:url
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
+            if (downloadError || !location) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakProgress dismissViewControllerAnimated:YES completion:^{
+                        [weakSelf flash:downloadError.localizedDescription ?: @"下载失败"];
+                    }];
+                });
+                return;
+            }
+
+            NSString *name = response.suggestedFilename;
+            if (!name.length) name = url.lastPathComponent;
+            if (!name.length) name = @"下载文件";
+            FFImportResult *result = [FFImportService importURL:location
+                displayName:name toDirectory:destination];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakProgress dismissViewControllerAnimated:YES completion:^{
+                    if (result.success) {
+                        if (weakSelf.hasLoaded) [weakSelf reloadEntries];
+                        [weakSelf flash:[NSString stringWithFormat:@"已下载：%@",
+                            result.destinationPath.lastPathComponent ?: name]];
+                    } else {
+                        [weakSelf flash:result.error.localizedDescription ?: @"保存下载文件失败"];
+                    }
+                }];
+            });
+        }];
+
+    [progress addAction:[UIAlertAction actionWithTitle:@"取消下载"
+        style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action) {
+            [task cancel];
+        }]];
+    [self presentViewController:progress animated:YES completion:^{
+        [task resume];
+    }];
 }
 
 - (void)documentPicker:(__unused UIDocumentPickerViewController *)controller
