@@ -216,6 +216,12 @@ static NSString *FFLoadCommandString(const uint8_t *base, NSUInteger commandSize
     return [[NSString alloc] initWithBytes:text length:length encoding:NSUTF8StringEncoding];
 }
 
+static void FFSetMachOError(NSError **error, NSInteger code, NSString *message)
+{
+    if (error) *error = [NSError errorWithDomain:@"FFMachO" code:code
+        userInfo:@{NSLocalizedDescriptionKey:message ?: @"Mach-O 结构无效"}];
+}
+
 static FFMachORow *FFRow(NSString *label, NSString *value)
 {
     FFMachORow *row = [FFMachORow new];
@@ -377,7 +383,7 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
 #else
         BOOL fat64 = NO;
 #endif
-        if (data.length < sizeof(struct fat_header)) goto invalid;
+        if (data.length < sizeof(struct fat_header)) { FFSetMachOError(error, 3, @"Mach-O 结构越界或已损坏"); return nil; }
         const struct fat_header *header = (const struct fat_header *)bytes;
         uint32_t count = swap ? OSSwapInt32(header->nfat_arch) : header->nfat_arch;
         if (count == 0 || count > kFFMachOMaxSlices) {
@@ -388,7 +394,7 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
 
         uint64_t tableOffset = sizeof(struct fat_header);
         uint64_t stride = fat64 ? sizeof(struct fat_arch_64) : sizeof(struct fat_arch);
-        if (!FFRangeInside(tableOffset, (uint64_t)count * stride, data.length)) goto invalid;
+        if (!FFRangeInside(tableOffset, (uint64_t)count * stride, data.length)) { FFSetMachOError(error, 3, @"Mach-O 结构越界或已损坏"); return nil; }
 
         for (uint32_t i = 0; i < count; i++) {
             cpu_type_t cpu = 0;
@@ -411,7 +417,7 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
                 offset = swap ? OSSwapInt32(arch->offset) : arch->offset;
                 size = swap ? OSSwapInt32(arch->size) : arch->size;
             }
-            if (!size || !FFRangeInside(offset, size, data.length)) goto invalid;
+            if (!size || !FFRangeInside(offset, size, data.length)) { FFSetMachOError(error, 3, @"Mach-O 结构越界或已损坏"); return nil; }
             FFMachOSlice *slice = [FFMachOSlice new];
             slice.architecture = FFMachOCPUName(cpu, subtype);
             slice.offset = offset;
@@ -434,11 +440,6 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
         [sections addObject:section];
     }
     return sections;
-
-invalid:
-    if (error) *error = [NSError errorWithDomain:@"FFMachO" code:3
-        userInfo:@{NSLocalizedDescriptionKey:@"Mach-O 结构越界或已损坏"}];
-    return nil;
 }
 
 - (FFMachOSection *)parseSlice:(FFMachOSlice *)slice
@@ -448,7 +449,9 @@ invalid:
 {
     const uint8_t *file = data.bytes;
     const uint8_t *base = file + slice.offset;
-    if (slice.size < sizeof(uint32_t)) goto bad;
+    if (slice.size < sizeof(uint32_t)) { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
 
     uint32_t magic = 0;
     memcpy(&magic, base, 4);
@@ -466,7 +469,9 @@ invalid:
     cpu_type_t cpu = 0;
     cpu_subtype_t subtype = 0;
     NSUInteger headerSize = is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header);
-    if (slice.size < headerSize) goto bad;
+    if (slice.size < headerSize) { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
 
     if (is64) {
         const struct mach_header_64 *h = (const struct mach_header_64 *)base;
@@ -479,7 +484,9 @@ invalid:
     }
     if (ncmds > kFFMachOMaxCommands || sizeofcmds > kFFMachOMaxCommandBytes ||
         !FFRangeInside(headerSize, sizeofcmds, slice.size))
-        goto bad;
+        { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
 
     NSMutableArray<FFMachORow *> *rows = [NSMutableArray array];
     NSString *architecture = FFMachOCPUName(cpu, subtype);
@@ -503,12 +510,16 @@ invalid:
 
     uint64_t cursor = headerSize;
     for (uint32_t index = 0; index < ncmds; index++) {
-        if (!FFRangeInside(cursor, sizeof(struct load_command), slice.size)) goto bad;
+        if (!FFRangeInside(cursor, sizeof(struct load_command), slice.size)) { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
         const struct load_command *lc = (const struct load_command *)(base + cursor);
         uint32_t cmd = lc->cmd, cmdsize = lc->cmdsize;
         if (cmdsize < sizeof(struct load_command) ||
             !FFRangeInside(cursor, cmdsize, headerSize + sizeofcmds))
-            goto bad;
+            { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
         const uint8_t *commandBase = base + cursor;
         [commandNames addObject:FFMachOLoadCommandName(cmd)];
 
@@ -603,7 +614,9 @@ invalid:
             const struct segment_command_64 *seg =
                 (const struct segment_command_64 *)commandBase;
             uint64_t sectionBytes = (uint64_t)seg->nsects * sizeof(struct section_64);
-            if (sizeof(*seg) + sectionBytes > cmdsize) goto bad;
+            if (sizeof(*seg) + sectionBytes > cmdsize) { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
             NSMutableArray *names = [NSMutableArray array];
             const struct section_64 *sections =
                 (const struct section_64 *)(commandBase + sizeof(*seg));
@@ -622,7 +635,9 @@ invalid:
             const struct segment_command *seg =
                 (const struct segment_command *)commandBase;
             uint64_t sectionBytes = (uint64_t)seg->nsects * sizeof(struct section);
-            if (sizeof(*seg) + sectionBytes > cmdsize) goto bad;
+            if (sizeof(*seg) + sectionBytes > cmdsize) { FFSetMachOError(error, 11,
+    [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
+        slice.architecture]); return nil; }
             NSMutableArray *names = [NSMutableArray array];
             const struct section *sections =
                 (const struct section *)(commandBase + sizeof(*seg));
@@ -681,13 +696,6 @@ invalid:
     result.title = universal ? architecture : @"Mach-O";
     result.rows = rows;
     return result;
-
-bad:
-    if (error) *error = [NSError errorWithDomain:@"FFMachO" code:11
-        userInfo:@{NSLocalizedDescriptionKey:
-            [NSString stringWithFormat:@"%@ Mach-O Load Commands 越界或已损坏",
-                slice.architecture]}];
-    return nil;
 }
 
 - (void)showFailure:(NSString *)message
