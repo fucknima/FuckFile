@@ -12,6 +12,29 @@
 
 typedef struct archive FFWriteArchive;
 typedef struct archive_entry FFWriteEntry;
+
+#if defined(FF_BUNDLED_LIBARCHIVE)
+extern FFWriteArchive *archive_write_new(void);
+extern int archive_write_set_format_zip(FFWriteArchive *);
+extern int archive_write_set_format_pax_restricted(FFWriteArchive *);
+extern int archive_write_add_filter_none(FFWriteArchive *);
+extern int archive_write_set_options(FFWriteArchive *, const char *);
+extern int archive_write_set_passphrase(FFWriteArchive *, const char *);
+extern int archive_write_open_filename(FFWriteArchive *, const char *);
+extern int archive_write_header(FFWriteArchive *, FFWriteEntry *);
+extern long archive_write_data(FFWriteArchive *, const void *, size_t);
+extern int archive_write_finish_entry(FFWriteArchive *);
+extern int archive_write_close(FFWriteArchive *);
+extern int archive_write_free(FFWriteArchive *);
+extern const char *archive_error_string(FFWriteArchive *);
+extern FFWriteEntry *archive_entry_new(void);
+extern void archive_entry_free(FFWriteEntry *);
+extern void archive_entry_set_pathname_utf8(FFWriteEntry *, const char *);
+extern void archive_entry_set_filetype(FFWriteEntry *, unsigned int);
+extern void archive_entry_set_perm(FFWriteEntry *, int);
+extern void archive_entry_set_mtime(FFWriteEntry *, long long, long);
+extern void archive_entry_set_size(FFWriteEntry *, long long);
+#endif
 typedef long FFArchiveSSize;
 
 enum { FF_ARCHIVE_OK = 0, FF_ARCHIVE_WARN = -20 };
@@ -46,6 +69,30 @@ static FFArchiveWriterAPI *FFWriter(void)
     static FFArchiveWriterAPI api;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+#if defined(FF_BUNDLED_LIBARCHIVE)
+        api.handle = (void *)1;
+        api.write_new = archive_write_new;
+        api.write_set_format_zip = archive_write_set_format_zip;
+        api.write_set_format_pax_restricted = archive_write_set_format_pax_restricted;
+        api.write_add_filter_none = archive_write_add_filter_none;
+        api.write_set_options = archive_write_set_options;
+        api.write_set_passphrase = archive_write_set_passphrase;
+        api.write_open_filename = archive_write_open_filename;
+        api.write_header = archive_write_header;
+        api.write_data = archive_write_data;
+        api.write_finish_entry = archive_write_finish_entry;
+        api.write_close = archive_write_close;
+        api.write_free = archive_write_free;
+        api.error_string = archive_error_string;
+        api.entry_new = archive_entry_new;
+        api.entry_free = archive_entry_free;
+        api.entry_set_pathname_utf8 = archive_entry_set_pathname_utf8;
+        api.entry_set_filetype = archive_entry_set_filetype;
+        api.entry_set_perm = archive_entry_set_perm;
+        api.entry_set_mtime = archive_entry_set_mtime;
+        api.entry_set_size = archive_entry_set_size;
+        return;
+#endif
         const char *candidates[] = {
             "/usr/lib/libarchive.2.dylib",
             "/usr/lib/libarchive.dylib",
