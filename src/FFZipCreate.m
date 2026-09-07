@@ -248,11 +248,13 @@ static BOOL FFZipStreamStored(FILE *output, int input, FFZipWrittenEntry *writte
 static BOOL FFZipStreamDeflated(FILE *output, int input, FFZipWrittenEntry *written,
                                 uint8_t *inputBuffer, uint8_t *outputBuffer,
                                 uint64_t *completed, uint64_t totalBytes,
+                                NSInteger compressionLevel,
                                 void (^progressBlock)(double, NSString *),
                                 BOOL (^shouldCancel)(void), NSError **error)
 {
     z_stream stream = {0};
-    int zr = deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
+    int level = (int)MAX(1, MIN(9, compressionLevel));
+    int zr = deflateInit2(&stream, level, Z_DEFLATED, -MAX_WBITS, 8,
                           Z_DEFAULT_STRATEGY);
     if (zr != Z_OK) {
         FFZipSetError(error, EIO, @"初始化压缩器失败");
@@ -316,7 +318,7 @@ static BOOL FFZipWriteLocalEntry(FILE *file, FFZipPlanEntry *plan,
                                  FFZipWrittenEntry **writtenOut,
                                  uint8_t *inputBuffer, uint8_t *outputBuffer,
                                  uint64_t *completed, uint64_t totalBytes,
-                                 BOOL forceZip64,
+                                 BOOL forceZip64, NSInteger compressionLevel,
                                  void (^progressBlock)(double, NSString *),
                                  BOOL (^shouldCancel)(void), NSError **error)
 {
@@ -334,8 +336,8 @@ static BOOL FFZipWriteLocalEntry(FILE *file, FFZipPlanEntry *plan,
     written.uncompressedSize = 0;
     written.compressedSize = 0;
     written.crc = (uint32_t)crc32(0L, Z_NULL, 0);
-    written.method = (plan.isDirectory || plan.size < 128 || FFZipNameIsStorable(plan.relativeName))
-        ? 0 : Z_DEFLATED;
+    written.method = (compressionLevel == 0 || plan.isDirectory ||
+        plan.size < 128 || FFZipNameIsStorable(plan.relativeName)) ? 0 : Z_DEFLATED;
     uint16_t dosTime = 0, dosDate = 0;
     FFZipDOSTime(plan.modifiedTime, &dosTime, &dosDate);
     written.dosTime = dosTime;
@@ -379,7 +381,7 @@ static BOOL FFZipWriteLocalEntry(FILE *file, FFZipPlanEntry *plan,
             ? FFZipStreamStored(file, input, written, inputBuffer, completed, totalBytes,
                 progressBlock, shouldCancel, error)
             : FFZipStreamDeflated(file, input, written, inputBuffer, outputBuffer, completed,
-                totalBytes, progressBlock, shouldCancel, error);
+                totalBytes, compressionLevel, progressBlock, shouldCancel, error);
         close(input);
         if (!ok) return NO;
         if (written.uncompressedSize != plan.size) {
@@ -472,11 +474,12 @@ io_error:
     return NO;
 }
 
-BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
-                        NSString *destinationPath,
-                        void (^progressBlock)(double, NSString *),
-                        BOOL (^shouldCancel)(void),
-                        NSError **error)
+BOOL FFCreateZipArchiveWithLevel(NSArray<NSString *> *sourcePaths,
+                                 NSString *destinationPath,
+                                 NSInteger compressionLevel,
+                                 void (^progressBlock)(double, NSString *),
+                                 BOOL (^shouldCancel)(void),
+                                 NSError **error)
 {
     if (error) *error = nil;
     if (sourcePaths.count == 0 || destinationPath.length == 0) {
@@ -550,7 +553,8 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
                 entry.relativeName);
         FFZipWrittenEntry *record = nil;
         ok = FFZipWriteLocalEntry(file, entry, &record, inputBuffer, outputBuffer,
-            &completed, totalBytes, forceZip64, progressBlock, shouldCancel, error);
+            &completed, totalBytes, forceZip64, compressionLevel,
+            progressBlock, shouldCancel, error);
         if (ok && record) [written addObject:record];
     }
 
@@ -610,4 +614,15 @@ BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
 
     if (progressBlock) progressBlock(1.0, @"");
     return YES;
+}
+
+
+BOOL FFCreateZipArchive(NSArray<NSString *> *sourcePaths,
+                        NSString *destinationPath,
+                        void (^progressBlock)(double, NSString *),
+                        BOOL (^shouldCancel)(void),
+                        NSError **error)
+{
+    return FFCreateZipArchiveWithLevel(sourcePaths, destinationPath,
+        Z_DEFAULT_COMPRESSION, progressBlock, shouldCancel, error);
 }
