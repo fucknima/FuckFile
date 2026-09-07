@@ -71,6 +71,39 @@ jobs:
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
 
+      - name: Prepare pinned libarchive
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/Lakr233/libarchive.xcframework/releases/download/upstream.27cbc7827172.2/libarchive.xcframework.zip"
+          SHA256="573fa72ca53f0e623e1f26e3993a22a075b5dba91733ea8aaaa370b52d93537c"
+          rm -rf .deps/libarchive .deps/libarchive.zip
+          mkdir -p .deps/libarchive
+          curl -fL --retry 3 --retry-delay 2 -o .deps/libarchive.zip "$URL"
+          printf '%s  %s\n' "$SHA256" ".deps/libarchive.zip" | shasum -a 256 -c -
+          ditto -x -k .deps/libarchive.zip .deps/libarchive
+
+          LIB=""
+          while IFS= read -r candidate; do
+            case "$candidate" in
+              *ios-arm64*|*iphoneos*)
+                if file "$candidate" | grep -q 'current ar archive'; then
+                  LIB="$candidate"
+                  break
+                fi
+                ;;
+            esac
+          done < <(find .deps/libarchive -type f | sort)
+
+          if [[ -z "$LIB" ]]; then
+            echo "Pinned libarchive iOS static slice not found" >&2
+            find .deps/libarchive -maxdepth 5 -type f -print
+            exit 1
+          fi
+          echo "libarchive static slice: $LIB"
+          file "$LIB"
+          echo "FF_LIBARCHIVE_A=$GITHUB_WORKSPACE/$LIB" >> "$GITHUB_ENV"
+
       - name: Self-check core logic (probe/codec/search session)
         run: |
           clang -fobjc-arc -framework Foundation -lz -I src \
