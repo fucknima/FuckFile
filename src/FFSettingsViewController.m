@@ -3,6 +3,8 @@
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
 #import "FFStorageCleanerViewController.h"
+#import "FFWebDAVSettingsViewController.h"
+#import "FFWebDAVServer.h"
 #import "FFSystemAccessManager.h"
 #import "FFAppDataScanCoordinator.h"
 #import "FFOnlineAppNameResolver.h"
@@ -128,7 +130,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     switch (section) {
         case 0: return 3;
         case 1: return 2;
-        case 2: return 1;
+        case 2: return 2;
         case 3: return 2;
         case 4: return 2;
         case 5: return 1;
@@ -172,7 +174,7 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     if (indexPath.section == 1)
         return indexPath.row == 0 ? UIColor.systemBlueColor : UIColor.systemIndigoColor;
     if (indexPath.section == 2)
-        return UIColor.systemOrangeColor;
+        return indexPath.row == 0 ? UIColor.systemOrangeColor : UIColor.systemTealColor;
     if (indexPath.section == 3)
         return indexPath.row == 0 ? UIColor.systemPurpleColor : UIColor.systemBlueColor;
     if (indexPath.section == 4)
@@ -234,10 +236,18 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             break;
         }
         case 2: {
-            cell.textLabel.text = @"存储清理";
-            cell.detailTextLabel.text = @"FuckFile 缓存、失效分享残留与第三方 App Caches/tmp";
-            cell.detailTextLabel.numberOfLines = 2;
-            cell.imageView.image = [UIImage systemImageNamed:@"trash.circle"];
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"存储清理";
+                cell.detailTextLabel.text = @"FuckFile 缓存、失效分享残留与第三方 App Caches/tmp";
+                cell.detailTextLabel.numberOfLines = 2;
+                cell.imageView.image = [UIImage systemImageNamed:@"trash.circle"];
+            } else {
+                FFWebDAVServer *server = FFWebDAVServer.sharedServer;
+                cell.textLabel.text = @"局域网文件共享";
+                cell.detailTextLabel.text = server.running && server.addressString.length
+                    ? server.addressString : @"浏览器 + WebDAV · 仅 Wi‑Fi";
+                cell.imageView.image = [UIImage systemImageNamed:@"network"];
+            }
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             break;
         }
@@ -325,7 +335,9 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         return;
     }
     if (indexPath.section == 2) {
-        FFStorageCleanerViewController *page = [FFStorageCleanerViewController new];
+        UIViewController *page = indexPath.row == 0
+            ? (UIViewController *)[FFStorageCleanerViewController new]
+            : (UIViewController *)[FFWebDAVSettingsViewController new];
         [self.navigationController pushViewController:page animated:YES];
         return;
     }
