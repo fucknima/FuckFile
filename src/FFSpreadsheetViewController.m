@@ -151,6 +151,9 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     if (self) {
         _filePath = [path copy];
         self.title = path.lastPathComponent;
+        // A document viewer owns the full content area. Keeping the root app
+        // tab bar visible causes it to cover spreadsheet controls/content.
+        self.hidesBottomBarWhenPushed = YES;
     }
     return self;
 }
@@ -200,6 +203,7 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.navigationDelegate = self;
     self.webView.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.webView.scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     [self.view addSubview:self.webView];
     [NSLayoutConstraint activateConstraints:@[
         [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -269,9 +273,8 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 {
     [self rememberBackgroundFileSignature];
     [self captureRuntimeState];
-    // Deliberately do not reload or mark recovery here. If WebKit keeps its
-    // content process alive, returning to the foreground is pixel-for-pixel
-    // lossless: same sheet, scroll, zoom and selection.
+    // Do not reload here. If WebKit keeps its content process alive, foreground
+    // return stays lossless: same sheet, scroll position and zoom.
     FFLogTag(@"Spreadsheet", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
 }
@@ -472,6 +475,7 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
         [[FFQuickLookViewController alloc] initWithFilePath:self.filePath];
     if (!quickLook) return;
     quickLook.title = self.title.length ? self.title : self.filePath.lastPathComponent;
+    quickLook.hidesBottomBarWhenPushed = YES;
     [self.navigationController pushViewController:quickLook animated:YES];
 }
 
