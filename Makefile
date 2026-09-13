@@ -8,9 +8,10 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = FuckFile
 APPEX_NAME = FuckFileShare
 
-# Prepare the tiny DOCX-only browser runtime while Make parses resources. The
-# script is cached, so normal incremental builds do not reinstall dependencies.
+# Prepare cached browser runtimes while Make parses resources. Normal
+# incremental builds reuse the generated assets and do not reinstall npm deps.
 DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null && echo yes)
+UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null && echo yes)
 
 FuckFile_FILES = \
 	src/main.m \
@@ -65,6 +66,7 @@ FuckFile_FILES = \
 	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
 	src/FFDocxViewerViewController.m \
+	src/FFSpreadsheetViewController.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
@@ -149,7 +151,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
-FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets
+FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/UniverAssets
 
 # Keep third-party/noisy warnings scoped down, but do not globally suppress
 # diagnostics that can hide ABI, bounds, initialization, or format bugs.
