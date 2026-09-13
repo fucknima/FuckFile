@@ -41,23 +41,23 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"gz": @"archive", @"7z": @"archive", @"rar": @"archive",
             @"xz": @"archive", @"bz2": @"archive",
 
-            // Word OOXML is the single intentional custom office reader.
+            // Dedicated offline office readers.
             @"docx": @"docx", @"docm": @"docx", @"dotx": @"docx", @"dotm": @"docx",
+            @"xls": @"spreadsheet", @"xlsx": @"spreadsheet", @"xlsm": @"spreadsheet",
+            @"xlsb": @"spreadsheet", @"xlt": @"spreadsheet", @"xltx": @"spreadsheet",
+            @"xltm": @"spreadsheet", @"csv": @"spreadsheet", @"tsv": @"spreadsheet",
+            @"ods": @"spreadsheet", @"dif": @"spreadsheet", @"dbf": @"spreadsheet",
+            @"slk": @"spreadsheet", @"sylk": @"spreadsheet",
 
-            // Work documents that iOS already previews well stay on system Quick Look.
+            // Formats without a dedicated reader retain system Quick Look as a fallback.
             @"pdf": @"quicklook",
             @"doc": @"quicklook", @"dot": @"quicklook", @"rtf": @"quicklook", @"rtfd": @"quicklook",
-            @"xls": @"quicklook", @"xlsx": @"quicklook", @"xlsm": @"quicklook",
-            @"xlsb": @"quicklook", @"xlt": @"quicklook", @"xltx": @"quicklook",
-            @"xltm": @"quicklook", @"csv": @"quicklook", @"tsv": @"quicklook",
             @"ppt": @"quicklook", @"pptx": @"quicklook", @"pptm": @"quicklook",
             @"pps": @"quicklook", @"ppsx": @"quicklook", @"ppsm": @"quicklook",
             @"pot": @"quicklook", @"potx": @"quicklook", @"potm": @"quicklook",
             @"pages": @"quicklook", @"numbers": @"quicklook", @"key": @"quicklook",
-            @"odt": @"quicklook", @"ods": @"quicklook", @"odp": @"quicklook",
-            @"fods": @"quicklook", @"wps": @"quicklook", @"et": @"quicklook",
-            @"dps": @"quicklook", @"dif": @"quicklook", @"dbf": @"quicklook",
-            @"slk": @"quicklook", @"sylk": @"quicklook",
+            @"odt": @"quicklook", @"odp": @"quicklook", @"fods": @"quicklook",
+            @"wps": @"quicklook", @"et": @"quicklook", @"dps": @"quicklook",
         };
     });
     return table;
@@ -65,12 +65,26 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
 
 static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overrides";
 static NSString * const kFFRemovedOfficeReadingStatesKey = @"FFOfficeReadingStatesV1";
+static NSString * const kFFSpreadsheetViewerMigrationKey = @"FFSpreadsheetViewerMigrationV1";
 
 static BOOL FFIsDocxFamily(NSString *extension)
 {
     static NSSet<NSString *> *set;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ set = [NSSet setWithArray:@[@"docx", @"docm", @"dotx", @"dotm"]]; });
+    return [set containsObject:extension.lowercaseString];
+}
+
+static BOOL FFIsSpreadsheetFamily(NSString *extension)
+{
+    static NSSet<NSString *> *set;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        set = [NSSet setWithArray:@[
+            @"xls", @"xlsx", @"xlsm", @"xlsb", @"xlt", @"xltx", @"xltm",
+            @"csv", @"tsv", @"ods", @"dif", @"dbf", @"slk", @"sylk",
+        ]];
+    });
     return [set containsObject:extension.lowercaseString];
 }
 
@@ -83,24 +97,40 @@ static BOOL FFIsDocxFamily(NSString *extension)
     dispatch_once(&onceToken, ^{
         service = [FFFileAssociationService new];
 
-        // Old builds exposed a generic viewerID="office". It no longer exists.
-        // Preserve the intentional Word reader only for Word OOXML; every other
-        // old Office override migrates to system Quick Look.
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         NSDictionary *stored = [defaults dictionaryForKey:kFFAssociationOverridesKey];
-        if ([stored isKindOfClass:NSDictionary.class] && stored.count) {
-            NSMutableDictionary *migrated = [stored mutableCopy];
-            __block BOOL changed = NO;
-            [stored enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
-                (void)stop;
-                if ([key isKindOfClass:NSString.class] && [value isKindOfClass:NSString.class] &&
-                    [value isEqualToString:@"office"]) {
-                    migrated[key] = FFIsDocxFamily(key) ? @"docx" : @"quicklook";
+        NSMutableDictionary *migrated = [stored isKindOfClass:NSDictionary.class]
+            ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+        __block BOOL changed = NO;
+
+        // Older builds exposed viewerID="office". Preserve the custom DOCX
+        // reader, while allowing the new spreadsheet migration below to choose
+        // the dedicated offline Univer viewer for spreadsheet formats.
+        [stored enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+            (void)stop;
+            if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSString.class])
+                return;
+            if ([value isEqualToString:@"office"]) {
+                migrated[key] = FFIsDocxFamily(key) ? @"docx" : @"quicklook";
+                changed = YES;
+            }
+        }];
+
+        // One-time adoption of the new spreadsheet viewer. Old app builds may
+        // have written Quick Look as an override during the office-viewer
+        // migration. Remove only those legacy Quick Look spreadsheet overrides;
+        // explicit choices made after this migration remain untouched.
+        if (![defaults boolForKey:kFFSpreadsheetViewerMigrationKey]) {
+            for (NSString *key in [migrated.allKeys copy]) {
+                if (FFIsSpreadsheetFamily(key) && [migrated[key] isEqualToString:@"quicklook"]) {
+                    [migrated removeObjectForKey:key];
                     changed = YES;
                 }
-            }];
-            if (changed) [defaults setObject:migrated forKey:kFFAssociationOverridesKey];
+            }
+            [defaults setBool:YES forKey:kFFSpreadsheetViewerMigrationKey];
         }
+
+        if (changed) [defaults setObject:migrated forKey:kFFAssociationOverridesKey];
         [defaults removeObjectForKey:kFFRemovedOfficeReadingStatesKey];
     });
     return service;
