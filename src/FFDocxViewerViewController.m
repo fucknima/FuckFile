@@ -104,12 +104,11 @@ static NSString * const FFDocxScheme = @"ffdocx";
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) FFDocxSchemeHandler *schemeHandler;
 @property(nonatomic, strong) FFDocxWeakHandler *weakHandler;
+@property(nonatomic, strong, nullable) NSDictionary *lastState;
 @property(nonatomic) BOOL webProcessTerminated;
 @property(nonatomic) BOOL needsForegroundRecovery;
 @property(nonatomic) BOOL recoveryInFlight;
 @property(nonatomic) BOOL documentRendered;
-@property(nonatomic) BOOL hasSavedScrollPosition;
-@property(nonatomic) CGPoint savedScrollPosition;
 @property(nonatomic) BOOL hasBackgroundSignature;
 @property(nonatomic) unsigned long long backgroundFileSize;
 @property(nonatomic, strong, nullable) NSDate *backgroundModificationDate;
@@ -279,9 +278,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
 - (void)applicationDidEnterBackground:(__unused NSNotification *)note
 {
     [self rememberBackgroundFileSignature];
-    [self captureScrollPosition];
-    // A healthy WebContent process is deliberately left untouched so returning
-    // from the background is lossless and does not visibly re-render the DOCX.
+    [self captureRuntimeState];
     FFLogTag(@"DOCX", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
 }
@@ -296,29 +293,31 @@ static NSString * const FFDocxScheme = @"ffdocx";
     if (self.needsForegroundRecovery) [self recoverWebContentIfVisible];
 }
 
-- (void)captureScrollPosition
+- (void)captureRuntimeState
 {
     if (!self.documentRendered || !self.webView) return;
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:
-        @"({x: window.scrollX || 0, y: window.scrollY || 0})"
+        @"window.FFDocx && window.FFDocx.captureState ? window.FFDocx.captureState() : null"
         completionHandler:^(id value, NSError *error) {
-            if (error || ![value isKindOfClass:NSDictionary.class]) return;
-            NSNumber *x = value[@"x"];
-            NSNumber *y = value[@"y"];
-            if (![x isKindOfClass:NSNumber.class] || ![y isKindOfClass:NSNumber.class]) return;
-            weakSelf.savedScrollPosition = CGPointMake(x.doubleValue, y.doubleValue);
-            weakSelf.hasSavedScrollPosition = YES;
+            if (!error && [value isKindOfClass:NSDictionary.class])
+                weakSelf.lastState = value;
         }];
 }
 
-- (void)restoreScrollPositionIfNeeded
+- (void)restoreRuntimeStateIfNeeded
 {
-    if (!self.hasSavedScrollPosition || !self.webView) return;
-    CGPoint point = self.savedScrollPosition;
-    self.hasSavedScrollPosition = NO;
-    NSString *script = [NSString stringWithFormat:@"window.scrollTo(%.3f, %.3f);",
-        point.x, point.y];
+    if (!self.lastState || !self.webView) return;
+    NSError *jsonError = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:self.lastState options:0 error:&jsonError];
+    if (!data) {
+        FFLogTag(@"DOCX", @"state encode failed path=%@ error=%@", self.filePath,
+            jsonError.localizedDescription ?: @"unknown");
+        return;
+    }
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *script = [NSString stringWithFormat:
+        @"window.FFDocx && window.FFDocx.restoreState ? window.FFDocx.restoreState(%@) : null;", json];
     [self.webView evaluateJavaScript:script completionHandler:nil];
 }
 
@@ -381,7 +380,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
 
 - (void)reloadManually
 {
-    [self captureScrollPosition];
+    [self captureRuntimeState];
     self.needsForegroundRecovery = YES;
     self.recoveryInFlight = NO;
     [self recoverWebContentIfVisible];
@@ -441,13 +440,18 @@ static NSString * const FFDocxScheme = @"ffdocx";
         ![message.body isKindOfClass:NSDictionary.class]) return;
 
     NSString *type = message.body[@"type"];
+    if ([type isEqualToString:@"state"]) {
+        if ([message.body[@"state"] isKindOfClass:NSDictionary.class])
+            self.lastState = message.body[@"state"];
+        return;
+    }
     if ([type isEqualToString:@"loaded"]) {
         self.recoveryInFlight = NO;
         self.webProcessTerminated = NO;
         self.needsForegroundRecovery = NO;
         self.documentRendered = YES;
         self.errorPresented = NO;
-        [self restoreScrollPositionIfNeeded];
+        [self restoreRuntimeStateIfNeeded];
         FFLogTag(@"DOCX", @"rendered path=%@", self.filePath);
     } else if ([type isEqualToString:@"error"]) {
         self.recoveryInFlight = NO;
