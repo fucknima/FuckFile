@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' ffoffice:; object-src 'none'; frame-src 'none'; worker-src 'none'">
+<link rel="stylesheet" href="host.css">
+<title>Office Viewer</title>
+</head>
+<body>
+<div id="ff-viewport" aria-label="办公文档只读查看区域">
+  <div id="ff-document-host"></div>
+</div>
+<div id="ff-status" role="status">
+  <div class="ff-spinner"></div>
+  <div id="ff-status-text">正在初始化办公文档阅读器…</div>
+</div>
+<div id="ff-mode-badge">只读</div>
+<div id="ff-viewerbar" role="toolbar" aria-label="办公文档查看工具栏">
+  <div id="ff-format-label">文档</div>
+  <div class="ff-toolbar-spacer"></div>
+  <button id="ff-zoom-out" class="ff-tool-button" type="button" aria-label="缩小">−</button>
+  <button id="ff-zoom-value" class="ff-zoom-value" type="button" aria-label="恢复百分之百缩放">100%</button>
+  <button id="ff-zoom-in" class="ff-tool-button" type="button" aria-label="放大">＋</button>
+</div>
+<script src="office-host.js"></script>
+</body>
+</html>
