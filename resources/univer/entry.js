@@ -260,9 +260,14 @@ async function openDocument(payload = {}) {
   try {
     if (!window.XLSX?.read) throw new Error('SheetJS 解析器未加载。');
 
+    // WKURLSchemeHandler responses can legally surface to fetch() with status
+    // 0 even though the custom-scheme body was delivered successfully. Treat
+    // only an explicit HTTP-style error status as failure and let arrayBuffer()
+    // be the authoritative read result.
     const response = await fetch('ffsheet:///document', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`读取文件失败（${response.status}）`);
+    if (response.status >= 400) throw new Error(`读取文件失败（${response.status}）`);
     const buffer = await response.arrayBuffer();
+    if (!buffer || buffer.byteLength === 0) throw new Error('文件为空或无法读取。');
     const book = window.XLSX.read(buffer, {
       type: 'array',
       cellFormula: true,
