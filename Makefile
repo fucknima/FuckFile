@@ -11,7 +11,10 @@ APPEX_NAME = FuckFileShare
 # Prepare cached browser runtimes while Make parses resources. Normal
 # incremental builds reuse the generated assets and do not reinstall npm deps.
 DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null && echo yes)
-UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null && echo yes)
+UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
+ifeq ($(UNIVER_RUNTIME_READY),no)
+$(error Failed to prepare offline Univer spreadsheet runtime; run scripts/prepare_univer_runtime.sh for details)
+endif
 
 FuckFile_FILES = \
 	src/main.m \
@@ -151,7 +154,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
-FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/UniverAssets
+FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/bundle
 
 # Keep third-party/noisy warnings scoped down, but do not globally suppress
 # diagnostics that can hide ABI, bounds, initialization, or format bugs.
