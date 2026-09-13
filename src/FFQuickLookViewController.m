@@ -21,6 +21,9 @@
     self = [super init];
     if (self) {
         _filePath = [path copy];
+        // Document previews own the full content area; the root app tab bar
+        // otherwise floats over Quick Look's preview surface.
+        self.hidesBottomBarWhenPushed = YES;
         // QLPreviewController renders its own title; keep it aligned.
         self.title = path.lastPathComponent;
     }
@@ -47,8 +50,6 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    // QLPreviewController normally keeps its data source. Reasserting the same
-    // object is harmless and covers preview-service teardown/reconnection.
     if (self.dataSource != self) self.dataSource = self;
     if (self.needsForegroundRefresh &&
         UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
@@ -76,8 +77,6 @@
 
 - (void)recoverPreviewIfVisible
 {
-    // If another viewer was pushed while this controller was alive, defer the
-    // refresh until this controller becomes visible again.
     if (!self.isViewLoaded || !self.view.window ||
         (self.navigationController && self.navigationController.topViewController != self))
         return;
@@ -101,16 +100,10 @@
     self.needsForegroundRefresh = NO;
     self.dataSource = self;
     if (changed) {
-        // Source changed while suspended: rebuild the item list first.
         [self reloadData];
         FFLogTag(@"QuickLook", @"foreground reload changed file path=%@", self.filePath);
     }
 
-    // Quick Look renders Office/iWork/PDF content in a separate service. That
-    // service can be reclaimed while FuckFile is suspended, leaving the host
-    // navigation controller alive but the preview surface blank. Explicitly
-    // refreshing the current item reconnects/regenerates that surface without
-    // replacing this controller or changing the selected preview item.
     [self refreshCurrentPreviewItem];
     FFLogTag(@"QuickLook", @"foreground refresh path=%@ changed=%d", self.filePath, changed);
 }
