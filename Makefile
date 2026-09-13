@@ -10,10 +10,19 @@ APPEX_NAME = FuckFileShare
 
 # Prepare cached browser runtimes while Make parses resources. Normal
 # incremental builds reuse the generated assets and do not reinstall npm deps.
-DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null && echo yes)
+# Every runtime is fail-closed: a missing JS bundle must fail the build instead
+# of producing an IPA whose viewer opens to a blank page.
+DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
 UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
+OFFICE_RUNTIME_READY := $(shell bash scripts/prepare_office_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
+ifeq ($(DOCX_RUNTIME_READY),no)
+$(error Failed to prepare offline DOCX runtime; run scripts/prepare_docx_runtime.sh for details)
+endif
 ifeq ($(UNIVER_RUNTIME_READY),no)
 $(error Failed to prepare offline Univer spreadsheet runtime; run scripts/prepare_univer_runtime.sh for details)
+endif
+ifeq ($(OFFICE_RUNTIME_READY),no)
+$(error Failed to prepare offline Office document runtime; run scripts/prepare_office_runtime.sh for details)
 endif
 
 FuckFile_FILES = \
@@ -70,6 +79,7 @@ FuckFile_FILES = \
 	src/FFPreviewRouter.m \
 	src/FFDocxViewerViewController.m \
 	src/FFSpreadsheetViewController.m \
+	src/FFOfficeDocumentViewController.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
@@ -154,7 +164,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
-FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/bundle
+FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/bundle .office-runtime/bundle
 
 # Keep third-party/noisy warnings scoped down, but do not globally suppress
 # diagnostics that can hide ABI, bounds, initialization, or format bugs.
