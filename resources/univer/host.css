@@ -1,4 +1,4 @@
-html, body, #app {
+html, body {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -12,6 +12,21 @@ body {
   overscroll-behavior: none;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#app {
+  position: absolute;
+  inset: 0 0 calc(48px + env(safe-area-inset-bottom)) 0;
+  overflow: hidden;
+  background: #fff;
+  touch-action: none;
+}
+
+#app input,
+#app textarea,
+#app [contenteditable="true"] {
+  caret-color: transparent !important;
 }
 
 #ff-status {
@@ -30,7 +45,8 @@ body {
   background: rgba(255,255,255,.96);
 }
 
-#ff-status.ff-hidden {
+#ff-status.ff-hidden,
+#ff-sheet-menu.ff-hidden {
   display: none;
 }
 
@@ -67,8 +83,132 @@ body {
   pointer-events: none;
 }
 
+#ff-viewerbar {
+  position: fixed;
+  z-index: 2147483644;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(48px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+  padding: 4px 10px calc(4px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: .5px solid rgba(60,60,67,.22);
+  background: rgba(248,248,248,.94);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  backdrop-filter: blur(18px) saturate(180%);
+  touch-action: manipulation;
+}
+
+#ff-viewerbar button,
+#ff-sheet-menu button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  font: inherit;
+  color: #111;
+  background: transparent;
+  touch-action: manipulation;
+}
+
+.ff-sheet-button {
+  max-width: 58%;
+  min-height: 38px;
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 9px !important;
+}
+
+.ff-sheet-button:not(:disabled):active,
+.ff-tool-button:active,
+.ff-zoom-value:active,
+.ff-sheet-menu-item:active {
+  background: rgba(60,60,67,.12) !important;
+}
+
+.ff-sheet-button:disabled {
+  opacity: .68;
+}
+
+.ff-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.ff-tool-button {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px !important;
+  font-size: 24px !important;
+  line-height: 38px;
+}
+
+.ff-zoom-value {
+  min-width: 54px;
+  height: 38px;
+  padding: 0 5px;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-variant-numeric: tabular-nums;
+}
+
+#ff-sheet-menu {
+  position: fixed;
+  z-index: 2147483645;
+  left: 10px;
+  bottom: calc(54px + env(safe-area-inset-bottom));
+  min-width: min(280px, calc(100vw - 20px));
+  max-width: calc(100vw - 20px);
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  padding: 6px;
+  box-sizing: border-box;
+  border: .5px solid rgba(60,60,67,.2);
+  border-radius: 13px;
+  background: rgba(248,248,248,.97);
+  box-shadow: 0 7px 28px rgba(0,0,0,.18);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+.ff-sheet-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 8px !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 14px !important;
+}
+
+.ff-sheet-menu-item.ff-active {
+  color: #007aff !important;
+  font-weight: 600 !important;
+  background: rgba(0,122,255,.08) !important;
+}
+
 @media (prefers-color-scheme: dark) {
   html, body, #app { background: #111; }
   #ff-status { color: #aaa; background: rgba(17,17,17,.97); }
   #ff-status.ff-error { color: #ff6961; }
+  #ff-viewerbar,
+  #ff-sheet-menu {
+    background: rgba(28,28,30,.94);
+    border-color: rgba(235,235,245,.16);
+  }
+  #ff-viewerbar button,
+  #ff-sheet-menu button { color: #fff; }
+  .ff-sheet-button:not(:disabled):active,
+  .ff-tool-button:active,
+  .ff-zoom-value:active,
+  .ff-sheet-menu-item:active { background: rgba(235,235,245,.12) !important; }
 }
