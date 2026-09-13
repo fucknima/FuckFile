@@ -171,12 +171,16 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     } else {
         // Defensive fallback for a direct external/system path opened from a
         // search/history result: expose at most the final two ancestors and
-        // never render the entire /private/var/... chain.
+        // never render the entire /private/var/... chain. Even in this fallback,
+        // the physical Documents directory is a storage implementation detail
+        // and must stay localized as “文件”.
         NSString *parent = current.stringByDeletingLastPathComponent;
         NSMutableArray<NSString *> *reverseNames = [NSMutableArray array];
         NSMutableArray<NSString *> *reversePaths = [NSMutableArray array];
         while (parent.length && ![parent isEqualToString:@"/"] && reverseNames.count < 2) {
-            NSString *name = parent.lastPathComponent;
+            NSString *standardParent = parent.stringByStandardizingPath;
+            NSString *name = [standardParent isEqualToString:root]
+                ? @"文件" : parent.lastPathComponent;
             if (name.length) {
                 [reverseNames addObject:name];
                 [reversePaths addObject:parent];
