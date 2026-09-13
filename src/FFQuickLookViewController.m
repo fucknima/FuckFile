@@ -21,10 +21,7 @@
     self = [super init];
     if (self) {
         _filePath = [path copy];
-        // Document previews own the full content area; the root app tab bar
-        // otherwise floats over Quick Look's preview surface.
         self.hidesBottomBarWhenPushed = YES;
-        // QLPreviewController renders its own title; keep it aligned.
         self.title = path.lastPathComponent;
     }
     return self;
@@ -94,18 +91,28 @@
     NSDate *modified = [attributes[NSFileModificationDate]
         isKindOfClass:NSDate.class] ? attributes[NSFileModificationDate] : nil;
     BOOL changed = size != self.backgroundFileSize ||
+        ((self.backgroundModificationDate == nil) != (modified == nil)) ||
         (self.backgroundModificationDate && modified &&
          ![self.backgroundModificationDate isEqualToDate:modified]);
 
     self.needsForegroundRefresh = NO;
     self.dataSource = self;
-    if (changed) {
-        [self reloadData];
-        FFLogTag(@"QuickLook", @"foreground reload changed file path=%@", self.filePath);
+
+    // Preserve-first policy: QLPreviewController exposes no public callback
+    // telling us that its renderer process died. Refreshing unconditionally on
+    // every foreground transition visibly resets the document and can discard
+    // internal reading state. Therefore an unchanged file is left completely
+    // untouched. A changed source is the only reliable signal that requires a
+    // data/preview refresh; manual Quick Look remains available as fallback if
+    // iOS ever reclaims the private preview renderer without telling us.
+    if (!changed) {
+        FFLogTag(@"QuickLook", @"foreground preserved unchanged preview path=%@", self.filePath);
+        return;
     }
 
+    [self reloadData];
     [self refreshCurrentPreviewItem];
-    FFLogTag(@"QuickLook", @"foreground refresh path=%@ changed=%d", self.filePath, changed);
+    FFLogTag(@"QuickLook", @"foreground refreshed changed file path=%@", self.filePath);
 }
 
 #pragma mark - QLPreviewControllerDataSource
