@@ -6,12 +6,15 @@ import '@univerjs/preset-sheets-core/lib/index.css';
 const MAX_NONEMPTY_CELLS = 1500000;
 const MAX_ROWS = 1048576;
 const MAX_COLUMNS = 16384;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
 
 let univerAPI = null;
 let activeWorkbook = null;
 let currentDocumentName = '电子表格';
 let lastStateJSON = '';
 let stateTimer = null;
+let pinchState = null;
 
 function bridge(message) {
   try {
@@ -204,6 +207,74 @@ async function makeReadOnly(workbook) {
   }));
 }
 
+function activeSheet() {
+  return activeWorkbook?.getActiveSheet?.() || null;
+}
+
+function clampZoom(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, numeric));
+}
+
+function setActiveZoom(value, emit = false) {
+  const sheet = activeSheet();
+  if (!sheet?.zoom) return null;
+  const zoom = clampZoom(value);
+  try {
+    sheet.zoom(zoom);
+    if (emit) emitState(true);
+    return zoom;
+  } catch (_) {
+    return null;
+  }
+}
+
+function touchDistance(touches) {
+  if (!touches || touches.length < 2) return 0;
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
+}
+
+function installPinchZoom() {
+  const target = document.getElementById('app') || document;
+  const begin = (event) => {
+    if (event.touches?.length !== 2) return;
+    const sheet = activeSheet();
+    if (!sheet) return;
+    const distance = touchDistance(event.touches);
+    if (!(distance > 0)) return;
+    const zoom = clampZoom(sheet.getZoom?.() || 1);
+    pinchState = { distance, zoom };
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+  };
+  const change = (event) => {
+    if (!pinchState || event.touches?.length !== 2) return;
+    const distance = touchDistance(event.touches);
+    if (!(distance > 0)) return;
+    setActiveZoom(pinchState.zoom * distance / pinchState.distance, false);
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+  };
+  const end = (event) => {
+    if (!pinchState) return;
+    // Keep the gesture active while both fingers remain down. As soon as one
+    // finger lifts, persist the exact Univer workbook zoom for foreground restore.
+    if (event.touches?.length >= 2) return;
+    pinchState = null;
+    emitState(true);
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+  };
+
+  target.addEventListener('touchstart', begin, { capture: true, passive: false });
+  target.addEventListener('touchmove', change, { capture: true, passive: false });
+  target.addEventListener('touchend', end, { capture: true, passive: false });
+  target.addEventListener('touchcancel', end, { capture: true, passive: false });
+}
+
 function captureState() {
   try {
     if (!activeWorkbook) return null;
@@ -242,7 +313,7 @@ function restoreState(state) {
       let sheet = sheets.find((item) => item.getSheetId?.() === state.sheetId) || sheets[0];
       if (!sheet) return;
       activeWorkbook.setActiveSheet?.(sheet);
-      if (Number.isFinite(state.zoom)) sheet.zoom?.(Math.max(.25, Math.min(4, state.zoom)));
+      if (Number.isFinite(state.zoom)) setActiveZoom(state.zoom, false);
       if (Number.isFinite(state.row) && Number.isFinite(state.column))
         sheet.scrollToCell?.(Math.max(0, state.row | 0), Math.max(0, state.column | 0), 0);
       if (typeof state.range === 'string' && state.range.length) {
@@ -298,6 +369,17 @@ async function openDocument(payload = {}) {
   }
 }
 
+// Objective-C uses WKWebView evaluateJavaScript to start opening the file.
+// Returning the Promise from the async openDocument() makes WebKit attempt to
+// bridge a Promise back into Foundation, which produces
+// "JavaScript execution returned a result of an unsupported type" even though
+// the workbook is already loading successfully. Fire-and-forget here and return
+// an explicit null, which is a supported bridge value.
+function openDocumentForNative(payload = {}) {
+  void openDocument(payload);
+  return null;
+}
+
 async function boot() {
   try {
     const result = createUniver({
@@ -314,7 +396,8 @@ async function boot() {
       })],
     });
     univerAPI = result.univerAPI;
-    window.FFSpreadsheet = { open: openDocument, captureState };
+    window.FFSpreadsheet = { open: openDocumentForNative, captureState };
+    installPinchZoom();
     stateTimer = window.setInterval(() => emitState(false), 1200);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) emitState(true);
@@ -329,6 +412,7 @@ async function boot() {
 
 window.addEventListener('beforeunload', () => {
   if (stateTimer) window.clearInterval(stateTimer);
+  pinchState = null;
 });
 
 boot();
