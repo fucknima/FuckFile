@@ -196,9 +196,11 @@ async function makeReadOnly(workbook) {
   const sheets = workbook?.getSheets?.() || [];
   await Promise.all(sheets.map(async (sheet) => {
     try {
-      const permission = sheet.getPermission?.();
+      const permission = sheet.getWorksheetPermission?.();
       if (permission?.setReadOnly) await permission.setReadOnly();
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Failed to mark sheet read-only', error);
+    }
   }));
 }
 
@@ -260,10 +262,9 @@ async function openDocument(payload = {}) {
   try {
     if (!window.XLSX?.read) throw new Error('SheetJS 解析器未加载。');
 
-    // WKURLSchemeHandler responses can legally surface to fetch() with status
-    // 0 even though the custom-scheme body was delivered successfully. Treat
-    // only an explicit HTTP-style error status as failure and let arrayBuffer()
-    // be the authoritative read result.
+    // WKURLSchemeHandler responses can surface as status 0 even when WebKit
+    // delivered the custom-scheme body successfully. Treat only an explicit
+    // HTTP-style error status as failure; arrayBuffer() is authoritative.
     const response = await fetch('ffsheet:///document', { cache: 'no-store' });
     if (response.status >= 400) throw new Error(`读取文件失败（${response.status}）`);
     const buffer = await response.arrayBuffer();
