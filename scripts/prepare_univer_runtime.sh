@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/.univer-runtime/UniverAssets"
-CACHE="$ROOT/.univer-runtime/npm"
+RUNTIME_ROOT="$ROOT/.univer-runtime"
+BUNDLE="$RUNTIME_ROOT/bundle"
+OUT="$BUNDLE/UniverAssets"
+CACHE="$RUNTIME_ROOT/npm"
 STAMP="$OUT/.runtime-version"
 SOURCE_HASH="$(cat \
   "$ROOT/resources/univer/entry.js" \
@@ -15,12 +17,13 @@ if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \
       && -s "$OUT/univer-host.js" \
       && -s "$OUT/univer-host.css" \
-      && -s "$OUT/xlsx.full.min.js" ]]; then
+      && -s "$OUT/xlsx.full.min.js" \
+      && -s "$OUT/host.css" ]]; then
   echo "== Univer runtime cached: $VERSION"
   exit 0
 fi
 
-rm -rf "$OUT" "$CACHE"
+rm -rf "$BUNDLE" "$CACHE"
 mkdir -p "$OUT" "$CACHE"
 
 cat > "$CACHE/package.json" <<'JSON'
@@ -41,7 +44,13 @@ JSON
 npm install --prefix "$CACHE" --ignore-scripts --no-audit --no-fund \
   --package-lock=false --legacy-peer-deps
 
-"$CACHE/node_modules/.bin/esbuild" "$ROOT/resources/univer/entry.js" \
+# esbuild resolves bare imports from the entry file's directory. The source
+# entry lives under resources/, while the pinned node_modules lives under
+# .univer-runtime/npm. Build from a copied entry inside that npm workspace so
+# @univerjs/* always resolves deterministically instead of depending on a
+# machine-global NODE_PATH.
+cp "$ROOT/resources/univer/entry.js" "$CACHE/entry.js"
+"$CACHE/node_modules/.bin/esbuild" "$CACHE/entry.js" \
   --bundle \
   --minify \
   --format=iife \
@@ -58,16 +67,28 @@ cp "$ROOT/resources/univer/index.html" "$OUT/index.html"
 cp "$ROOT/resources/univer/host.css" "$OUT/host.css"
 
 mkdir -p "$OUT/licenses"
-cp "$CACHE/node_modules/@univerjs/preset-sheets-core/LICENSE" \
-  "$OUT/licenses/Univer-Apache-2.0.txt" 2>/dev/null || \
+if [[ -f "$CACHE/node_modules/@univerjs/preset-sheets-core/LICENSE" ]]; then
+  cp "$CACHE/node_modules/@univerjs/preset-sheets-core/LICENSE" \
+    "$OUT/licenses/Univer-Apache-2.0.txt"
+elif [[ -f "$CACHE/node_modules/@univerjs/presets/LICENSE" ]]; then
   cp "$CACHE/node_modules/@univerjs/presets/LICENSE" \
-  "$OUT/licenses/Univer-Apache-2.0.txt"
-cp "$CACHE/node_modules/xlsx/LICENSE" \
-  "$OUT/licenses/SheetJS-Apache-2.0.txt" 2>/dev/null || true
+    "$OUT/licenses/Univer-Apache-2.0.txt"
+else
+  echo "ERROR: Univer license file is missing" >&2
+  exit 1
+fi
+if [[ -f "$CACHE/node_modules/xlsx/LICENSE" ]]; then
+  cp "$CACHE/node_modules/xlsx/LICENSE" \
+    "$OUT/licenses/SheetJS-Apache-2.0.txt"
+fi
 
 printf '%s\n' "$VERSION" > "$STAMP"
 for file in index.html univer-host.js univer-host.css xlsx.full.min.js host.css; do
-  test -s "$OUT/$file"
+  if [[ ! -s "$OUT/$file" ]]; then
+    echo "ERROR: Univer runtime output missing: $file" >&2
+    exit 1
+  fi
 done
 node --check "$OUT/univer-host.js"
+node --check "$OUT/xlsx.full.min.js"
 echo "== Univer runtime ready: $VERSION ($(du -sh "$OUT" | awk '{print $1}'))"
