@@ -6,6 +6,7 @@
 #import "FFPdfReaderViewController.h"
 #import "FFQuickLookViewController.h"
 #import "FFDocxViewerViewController.h"
+#import "FFSpreadsheetViewController.h"
 #import "FFWebViewerViewController.h"
 #import "FFHexEditorViewController.h"
 #import "FFMachOInspectorViewController.h"
@@ -152,8 +153,9 @@
     if (self) {
         NSArray *specs = @[
             @[@"image", @"图片浏览器", @"photo", @"PNG/JPG/GIF/HEIC/WEBP/BMP/TIFF/ICO/CAR"],
-            @[@"quicklook", @"快速查看", @"square.on.square.intersection.dashed", @"系统 Quick Look：Office、PDF、iWork 与无专用查看器文件的首选预览"],
-            @[@"docx", @"Word 阅读器", @"doc.text", @"DOCX/DOCM/DOTX/DOTM 专用阅读；其余办公文件使用系统 Quick Look"],
+            @[@"quicklook", @"快速查看", @"square.on.square.intersection.dashed", @"系统 Quick Look：仅作为无专用查看器格式与失败场景的兜底预览"],
+            @[@"docx", @"Word 阅读器", @"doc.text", @"DOCX/DOCM/DOTX/DOTM 专用离线阅读"],
+            @[@"spreadsheet", @"电子表格", @"tablecells", @"Univer + SheetJS 离线查看 XLS/XLSX/XLSB/XLSM/CSV/TSV/ODS 等，不上传文件"],
             @[@"web", @"Web Viewer", @"safari", @"HTML/HTM 本地页面；.url/.webloc 网页快捷方式"],
             @[@"plist", @"属性表编辑器", @"list.bullet.rectangle", @"结构化编辑 plist（XML/二进制）"],
             @[@"text", @"文本编辑器", @"doc.plaintext", @"txt/log/md/json/xml/源码等文本；脚本仅按文本打开，不执行"],
@@ -214,6 +216,7 @@
     if ([viewerID isEqualToString:@"pdf"]) return [[FFPdfReaderViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"quicklook"]) return [[FFQuickLookViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"docx"]) return [[FFDocxViewerViewController alloc] initWithFilePath:path];
+    if ([viewerID isEqualToString:@"spreadsheet"]) return [[FFSpreadsheetViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"web"]) return [[FFWebViewerViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"sqlite"]) return [[FFSQLiteBrowserViewController alloc] initWithDatabasePath:path];
     if ([viewerID isEqualToString:@"hex"]) return [[FFHexEditorViewController alloc] initWithFilePath:path];
