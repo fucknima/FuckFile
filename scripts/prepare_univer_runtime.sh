@@ -5,9 +5,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.univer-runtime/UniverAssets"
 CACHE="$ROOT/.univer-runtime/npm"
 STAMP="$OUT/.runtime-version"
-VERSION='univer=1.0.0-rc.0;sheetjs=0.18.5;esbuild=0.25.9;host=1'
-
-node --check "$ROOT/resources/univer/entry.js"
+SOURCE_HASH="$(cat \
+  "$ROOT/resources/univer/entry.js" \
+  "$ROOT/resources/univer/index.html" \
+  "$ROOT/resources/univer/host.css" | shasum -a 256 | awk '{print $1}')"
+VERSION="univer=1.0.0-rc.0;sheetjs=0.18.5;esbuild=0.25.9;src=$SOURCE_HASH"
 
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \
