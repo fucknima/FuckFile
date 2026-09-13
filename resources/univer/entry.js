@@ -8,6 +8,8 @@ const MAX_ROWS = 1048576;
 const MAX_COLUMNS = 16384;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
+const ROW_HEADER_WIDTH = 46;
+const COLUMN_HEADER_HEIGHT = 20;
 
 let univerAPI = null;
 let activeWorkbook = null;
@@ -17,6 +19,9 @@ let stateTimer = null;
 let pinchState = null;
 let panState = null;
 let momentumFrame = 0;
+let scrollFrame = 0;
+let pendingScrollX = 0;
+let pendingScrollY = 0;
 let sheetMenuVisible = false;
 
 function bridge(message) {
@@ -160,8 +165,8 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     columnData,
     status: 0,
     showGridlines: 1,
-    rowHeader: { width: 46, hidden: 0 },
-    columnHeader: { height: 20, hidden: 0 },
+    rowHeader: { width: ROW_HEADER_WIDTH, hidden: 0 },
+    columnHeader: { height: COLUMN_HEADER_HEIGHT, hidden: 0 },
     selections: [],
     rightToLeft: 0,
   };
@@ -190,7 +195,7 @@ function convertWorkbook(book, name) {
     id: `ff-workbook-${Date.now().toString(36)}`,
     sheetOrder,
     name: name || 'Spreadsheet',
-    appVersion: 'FuckFile-Univer-Viewer-2',
+    appVersion: 'FuckFile-Univer-Viewer-3',
     locale: LocaleType.ZH_CN,
     styles: {},
     sheets,
@@ -297,6 +302,127 @@ function refreshSheetHUD() {
   }
 }
 
+function appContentPoint(clientX, clientY) {
+  const app = document.getElementById('app');
+  const rect = app?.getBoundingClientRect?.();
+  if (!rect) return { x: 0, y: 0 };
+  return {
+    x: Math.max(0, clientX - rect.left - ROW_HEADER_WIDTH),
+    y: Math.max(0, clientY - rect.top - COLUMN_HEADER_HEIGHT),
+  };
+}
+
+function appViewportCenter() {
+  const app = document.getElementById('app');
+  const rect = app?.getBoundingClientRect?.();
+  if (!rect) return { x: 0, y: 0 };
+  return {
+    x: rect.left + ROW_HEADER_WIDTH + Math.max(0, rect.width - ROW_HEADER_WIDTH) / 2,
+    y: rect.top + COLUMN_HEADER_HEIGHT + Math.max(0, rect.height - COLUMN_HEADER_HEIGHT) / 2,
+  };
+}
+
+function touchCenter(touches) {
+  if (!touches?.length) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < touches.length; i++) {
+    x += touches[i].clientX;
+    y += touches[i].clientY;
+  }
+  return { x: x / touches.length, y: y / touches.length };
+}
+
+function dispatchSheetWheel(deltaX, deltaY, clientX, clientY) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const target = document.elementFromPoint(clientX, clientY) || app;
+  try {
+    target.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: 0,
+      deltaX,
+      deltaY,
+      clientX,
+      clientY,
+    }));
+  } catch (_) {}
+}
+
+function applyRelativeScroll(deltaX, deltaY, clientX = 0, clientY = 0) {
+  const dx = Number(deltaX) || 0;
+  const dy = Number(deltaY) || 0;
+  if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return true;
+
+  try {
+    const result = univerAPI?.executeCommand?.('sheet.command.set-scroll-relative', {
+      offsetX: dx,
+      offsetY: dy,
+    });
+    if (result !== undefined) {
+      if (result?.catch) result.catch(() => {});
+      return result !== false;
+    }
+  } catch (_) {}
+
+  // Very old Univer builds can miss the facade command. Wheel events still
+  // enter Univer's own pixel-scroll pipeline, so this fallback remains smooth
+  // and never falls back to row/column stepping.
+  const center = appViewportCenter();
+  dispatchSheetWheel(dx, dy, clientX || center.x, clientY || center.y);
+  return true;
+}
+
+function flushPendingScroll() {
+  if (scrollFrame) cancelAnimationFrame(scrollFrame);
+  scrollFrame = 0;
+  const dx = pendingScrollX;
+  const dy = pendingScrollY;
+  pendingScrollX = 0;
+  pendingScrollY = 0;
+  if (dx || dy) applyRelativeScroll(dx, dy);
+}
+
+function queueRelativeScroll(deltaX, deltaY) {
+  pendingScrollX += Number(deltaX) || 0;
+  pendingScrollY += Number(deltaY) || 0;
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    const dx = pendingScrollX;
+    const dy = pendingScrollY;
+    pendingScrollX = 0;
+    pendingScrollY = 0;
+    applyRelativeScroll(dx, dy);
+  });
+}
+
+function zoomAroundPoint(value, clientX, clientY, emit = false) {
+  const sheet = activeSheet();
+  if (!sheet?.zoom) return null;
+  const oldZoom = clampZoom(sheet.getZoom?.() || 1);
+  const newZoom = clampZoom(value);
+  if (Math.abs(newZoom - oldZoom) < 0.0005) return oldZoom;
+
+  const point = appContentPoint(clientX, clientY);
+  const applied = setActiveZoom(newZoom, false);
+  if (applied == null) return null;
+
+  const ratio = applied / oldZoom;
+  queueRelativeScroll(point.x * (ratio - 1), point.y * (ratio - 1));
+  if (emit) {
+    flushPendingScroll();
+    emitState(true);
+  }
+  return applied;
+}
+
+function zoomAroundViewportCenter(value, emit = false) {
+  const center = appViewportCenter();
+  return zoomAroundPoint(value, center.x, center.y, emit);
+}
+
 function installViewerToolbar() {
   const sheetButton = document.getElementById('ff-sheet-button');
   const menu = document.getElementById('ff-sheet-menu');
@@ -313,13 +439,13 @@ function installViewerToolbar() {
   });
   zoomOut?.addEventListener('click', () => {
     const current = activeSheet()?.getZoom?.() || 1;
-    setActiveZoom(current - 0.1, true);
+    zoomAroundViewportCenter(current - 0.1, true);
   });
   zoomIn?.addEventListener('click', () => {
     const current = activeSheet()?.getZoom?.() || 1;
-    setActiveZoom(current + 0.1, true);
+    zoomAroundViewportCenter(current + 0.1, true);
   });
-  zoomValue?.addEventListener('click', () => setActiveZoom(1, true));
+  zoomValue?.addEventListener('click', () => zoomAroundViewportCenter(1, true));
 
   document.addEventListener('click', (event) => {
     if (!sheetMenuVisible) return;
@@ -371,34 +497,64 @@ function stopMomentum() {
   momentumFrame = 0;
 }
 
-function dispatchSheetWheel(deltaX, deltaY, clientX, clientY) {
-  const app = document.getElementById('app');
-  if (!app) return;
-  const target = document.elementFromPoint(clientX, clientY) || app;
-  try {
-    target.dispatchEvent(new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaMode: 0,
-      deltaX,
-      deltaY,
-      clientX,
-      clientY,
-    }));
-  } catch (_) {}
+function beginPan(touch) {
+  if (!touch) return null;
+  return {
+    lastX: touch.clientX,
+    lastY: touch.clientY,
+    lastTime: performance.now(),
+    velocityX: 0,
+    velocityY: 0,
+  };
 }
 
-function scrollFallbackFromPan(state, totalX, totalY) {
+function beginPinch(touches) {
+  const distance = touchDistance(touches);
   const sheet = activeSheet();
-  if (!sheet?.scrollToCell || !state?.scroll) return;
+  if (!sheet || distance <= 0) return null;
+  const center = touchCenter(touches);
   const zoom = clampZoom(sheet.getZoom?.() || 1);
-  const rowPixels = Math.max(10, 19 * zoom);
-  const columnPixels = Math.max(24, 73 * zoom);
-  const rowDelta = Math.trunc(totalY / rowPixels);
-  const columnDelta = Math.trunc(totalX / columnPixels);
-  const row = Math.max(0, Number(state.scroll.sheetViewStartRow || 0) + rowDelta);
-  const column = Math.max(0, Number(state.scroll.sheetViewStartColumn || 0) + columnDelta);
-  try { sheet.scrollToCell(row, column, 0); } catch (_) {}
+  return {
+    distance,
+    initialZoom: zoom,
+    currentZoom: zoom,
+    centerX: center.x,
+    centerY: center.y,
+  };
+}
+
+function updatePinch(touches) {
+  if (!pinchState) pinchState = beginPinch(touches);
+  if (!pinchState) return;
+
+  const distance = touchDistance(touches);
+  if (distance <= 0) return;
+  const center = touchCenter(touches);
+  const newZoom = clampZoom(pinchState.initialZoom * distance / pinchState.distance);
+  const oldZoom = pinchState.currentZoom;
+  const oldPoint = appContentPoint(pinchState.centerX, pinchState.centerY);
+  const newPoint = appContentPoint(center.x, center.y);
+
+  if (Math.abs(newZoom - oldZoom) >= 0.0005) {
+    const applied = setActiveZoom(newZoom, false);
+    if (applied != null) {
+      const ratio = applied / oldZoom;
+      // Zoom itself is top-left anchored. Compensate the scroll so the sheet
+      // coordinate originally under the fingers stays under the moving pinch
+      // centre, just like UIScrollView/Quick Look.
+      queueRelativeScroll(
+        oldPoint.x * ratio - newPoint.x,
+        oldPoint.y * ratio - newPoint.y
+      );
+      pinchState.currentZoom = applied;
+    }
+  } else {
+    // Two-finger translation without a meaningful scale change should still
+    // move the sheet with the fingers instead of feeling stuck.
+    queueRelativeScroll(oldPoint.x - newPoint.x, oldPoint.y - newPoint.y);
+  }
+  pinchState.centerX = center.x;
+  pinchState.centerY = center.y;
 }
 
 function installViewerGestures() {
@@ -412,35 +568,18 @@ function installViewerGestures() {
 
   app.addEventListener('touchstart', (event) => {
     stopMomentum();
+    flushPendingScroll();
     forceEndEditing();
 
     if (event.touches.length >= 2) {
-      const distance = touchDistance(event.touches);
-      const sheet = activeSheet();
-      if (sheet && distance > 0) {
-        pinchState = { distance, zoom: clampZoom(sheet.getZoom?.() || 1) };
-      }
+      pinchState = beginPinch(event.touches);
       panState = null;
       consume(event);
       return;
     }
 
     if (event.touches.length === 1) {
-      const touch = event.touches[0];
-      const sheet = activeSheet();
-      panState = {
-        startX: touch.clientX,
-        startY: touch.clientY,
-        lastX: touch.clientX,
-        lastY: touch.clientY,
-        lastTime: performance.now(),
-        velocityX: 0,
-        velocityY: 0,
-        moves: 0,
-        wheelObserved: false,
-        useFallback: false,
-        scroll: sheet?.getScrollState?.() || null,
-      };
+      panState = beginPan(event.touches[0]);
       pinchState = null;
       consume(event);
     }
@@ -450,15 +589,7 @@ function installViewerGestures() {
     forceEndEditing();
 
     if (event.touches.length >= 2) {
-      if (!pinchState) {
-        const distance = touchDistance(event.touches);
-        const sheet = activeSheet();
-        if (sheet && distance > 0)
-          pinchState = { distance, zoom: clampZoom(sheet.getZoom?.() || 1) };
-      }
-      const distance = touchDistance(event.touches);
-      if (pinchState && distance > 0)
-        setActiveZoom(pinchState.zoom * distance / pinchState.distance, false);
+      updatePinch(event.touches);
       panState = null;
       consume(event);
       return;
@@ -470,62 +601,56 @@ function installViewerGestures() {
       const dx = panState.lastX - touch.clientX;
       const dy = panState.lastY - touch.clientY;
       const dt = Math.max(8, now - panState.lastTime);
-      panState.velocityX = panState.velocityX * 0.65 + (dx / dt * 16) * 0.35;
-      panState.velocityY = panState.velocityY * 0.65 + (dy / dt * 16) * 0.35;
+      panState.velocityX = panState.velocityX * 0.62 + (dx / dt * 16) * 0.38;
+      panState.velocityY = panState.velocityY * 0.62 + (dy / dt * 16) * 0.38;
       panState.lastX = touch.clientX;
       panState.lastY = touch.clientY;
       panState.lastTime = now;
-      panState.moves += 1;
 
-      const before = activeSheet()?.getScrollState?.() || null;
-      dispatchSheetWheel(dx, dy, touch.clientX, touch.clientY);
-      const after = activeSheet()?.getScrollState?.() || null;
-      if (before && after &&
-          (before.sheetViewStartRow !== after.sheetViewStartRow ||
-           before.sheetViewStartColumn !== after.sheetViewStartColumn ||
-           before.offsetX !== after.offsetX || before.offsetY !== after.offsetY)) {
-        panState.wheelObserved = true;
-      }
-      if (!panState.wheelObserved && panState.moves >= 3) panState.useFallback = true;
-      if (panState.useFallback) {
-        const totalX = panState.startX - touch.clientX;
-        const totalY = panState.startY - touch.clientY;
-        scrollFallbackFromPan(panState, totalX, totalY);
-      }
+      // Pixel deltas go straight into Univer's relative-scroll pipeline. Do
+      // not use scrollToCell here: that is exactly what caused one-row/one-col
+      // stepping in the previous viewer implementation.
+      queueRelativeScroll(dx, dy);
       consume(event);
     }
   }, { capture: true, passive: false });
 
   const finish = (event) => {
     forceEndEditing();
+
     if (pinchState && event.touches.length < 2) {
+      flushPendingScroll();
       pinchState = null;
       emitState(true);
-      panState = null;
+      if (event.touches.length === 1) {
+        // Seamlessly continue as a one-finger pan when one finger is lifted
+        // after a pinch; iOS viewers do not require a fresh touch-down.
+        panState = beginPan(event.touches[0]);
+      } else {
+        panState = null;
+      }
       consume(event);
       return;
     }
 
     if (panState && event.touches.length === 0) {
+      flushPendingScroll();
       const final = panState;
       panState = null;
       emitState(true);
 
-      if (!final.useFallback && final.wheelObserved &&
-          (Math.abs(final.velocityX) > 0.8 || Math.abs(final.velocityY) > 0.8)) {
+      if (Math.abs(final.velocityX) > 0.7 || Math.abs(final.velocityY) > 0.7) {
         let vx = final.velocityX;
         let vy = final.velocityY;
-        let x = final.lastX;
-        let y = final.lastY;
         const coast = () => {
-          vx *= 0.90;
-          vy *= 0.90;
-          if (Math.abs(vx) < 0.25 && Math.abs(vy) < 0.25) {
+          vx *= 0.92;
+          vy *= 0.92;
+          if (Math.abs(vx) < 0.18 && Math.abs(vy) < 0.18) {
             momentumFrame = 0;
             emitState(true);
             return;
           }
-          dispatchSheetWheel(vx, vy, x, y);
+          applyRelativeScroll(vx, vy);
           momentumFrame = requestAnimationFrame(coast);
         };
         momentumFrame = requestAnimationFrame(coast);
@@ -566,6 +691,26 @@ function emitState(force = false) {
   bridge({ type: 'state', state });
 }
 
+function restoreExactScroll(sheet, state) {
+  const unitId = activeWorkbook?.getId?.() || activeWorkbook?.id;
+  const subUnitId = sheetId(sheet);
+  if (!unitId || !subUnitId) return false;
+  try {
+    const result = univerAPI?.syncExecuteCommand?.('sheet.command.scroll-view', {
+      unitId,
+      sheetId: subUnitId,
+      sheetViewStartRow: Math.max(0, Number(state.row) || 0),
+      sheetViewStartColumn: Math.max(0, Number(state.column) || 0),
+      offsetX: Number(state.offsetX) || 0,
+      offsetY: Number(state.offsetY) || 0,
+      duration: 0,
+    });
+    return result !== false && result !== undefined;
+  } catch (_) {
+    return false;
+  }
+}
+
 function restoreState(state) {
   if (!state || !activeWorkbook) return;
   setTimeout(async () => {
@@ -576,8 +721,10 @@ function restoreState(state) {
       activeWorkbook.setActiveSheet?.(sheet);
       await enforceViewerMode();
       if (Number.isFinite(state.zoom)) setActiveZoom(state.zoom, false);
-      if (Number.isFinite(state.row) && Number.isFinite(state.column))
+      if (!restoreExactScroll(sheet, state) &&
+          Number.isFinite(state.row) && Number.isFinite(state.column)) {
         sheet.scrollToCell?.(Math.max(0, state.row | 0), Math.max(0, state.column | 0), 0);
+      }
       refreshSheetHUD();
       updateZoomHUD();
       emitState(true);
@@ -668,6 +815,7 @@ async function boot() {
 window.addEventListener('beforeunload', () => {
   if (stateTimer) window.clearInterval(stateTimer);
   stopMomentum();
+  flushPendingScroll();
   pinchState = null;
   panState = null;
 });
