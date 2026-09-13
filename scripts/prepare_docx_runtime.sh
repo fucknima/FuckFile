@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="$ROOT/.docx-runtime"
-BUNDLE="$RUNTIME_ROOT/bundle"
+# Theos copies the contents of each RESOURCE_DIRS entry into the .app root.
+# Makefile already lists .docx-runtime/DocxAssets, so that path is the wrapper;
+# the actual runtime lives one level deeper and is therefore packaged as
+# <bundle>/DocxAssets/* instead of being flattened into the app root.
+BUNDLE="$RUNTIME_ROOT/DocxAssets"
 OUT="$BUNDLE/DocxAssets"
 CACHE="$RUNTIME_ROOT/npm"
 STAMP="$OUT/.runtime-version"
@@ -11,7 +15,7 @@ SOURCE_HASH="$(cat \
   "$ROOT/resources/docx/docx-host.js" \
   "$ROOT/resources/docx/index.html" \
   "$ROOT/resources/docx/docx.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="docx-preview=0.4.0;jszip=3.10.1;host=3;src=$SOURCE_HASH"
+VERSION="docx-preview=0.4.0;jszip=3.10.1;host=4;src=$SOURCE_HASH"
 
 node --check "$ROOT/resources/docx/docx-host.js"
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
@@ -24,11 +28,6 @@ if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
   exit 0
 fi
 
-# Keep the generated runtime behind a wrapper directory. Theos RESOURCE_DIRS
-# copies the *contents* of each listed directory into the .app root. Without
-# this wrapper, DocxAssets itself is flattened and index.html/docx-host.js end
-# up at the bundle root, while the native viewer correctly looks for
-# <bundle>/DocxAssets/... .
 rm -rf "$BUNDLE" "$CACHE"
 mkdir -p "$OUT" "$CACHE"
 cat > "$CACHE/package.json" <<'JSON'
