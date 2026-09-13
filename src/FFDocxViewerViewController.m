@@ -46,14 +46,23 @@ static NSString * const FFDocxScheme = @"ffdocx";
     if ([url.path isEqualToString:@"/document"]) {
         path = self.documentPath;
     } else {
-        NSString *relative = [url.path stringByTrimmingCharactersInSet:
+        NSString *relative = [url.path stringByRemovingPercentEncoding] ?: url.path;
+        relative = [relative stringByTrimmingCharactersInSet:
             [NSCharacterSet characterSetWithCharactersInString:@"/"]];
         if (!relative.length) relative = @"index.html";
-        NSString *candidate = [[self.assetRoot stringByAppendingPathComponent:relative]
-            stringByStandardizingPath];
-        NSString *prefix = [self.assetRoot stringByAppendingString:@"/"];
-        if ([candidate isEqualToString:self.assetRoot] || [candidate hasPrefix:prefix])
-            path = candidate;
+        for (NSString *component in relative.pathComponents) {
+            if ([component isEqualToString:@".."] || [component containsString:@"\0"]) {
+                relative = nil;
+                break;
+            }
+        }
+        if (relative.length) {
+            NSString *candidate = [[self.assetRoot stringByAppendingPathComponent:relative]
+                stringByStandardizingPath];
+            NSString *prefix = [self.assetRoot stringByAppendingString:@"/"];
+            if ([candidate isEqualToString:self.assetRoot] || [candidate hasPrefix:prefix])
+                path = candidate;
+        }
     }
 
     NSData *data = path.length ? [NSData dataWithContentsOfFile:path
@@ -101,6 +110,12 @@ static NSString * const FFDocxScheme = @"ffdocx";
 @property(nonatomic) BOOL documentRendered;
 @property(nonatomic) BOOL hasSavedScrollPosition;
 @property(nonatomic) CGPoint savedScrollPosition;
+@property(nonatomic) BOOL hasBackgroundSignature;
+@property(nonatomic) unsigned long long backgroundFileSize;
+@property(nonatomic, strong, nullable) NSDate *backgroundModificationDate;
+@property(nonatomic) BOOL errorPresented;
+@property(nonatomic, copy, nullable) NSString *pendingFailureMessage;
+@property(nonatomic) BOOL pendingFailureAllowsRetry;
 @end
 
 @implementation FFDocxViewerViewController
@@ -111,7 +126,11 @@ static NSString * const FFDocxScheme = @"ffdocx";
     if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || directory)
         return nil;
     self = [super initWithNibName:nil bundle:nil];
-    if (self) _filePath = [path copy];
+    if (self) {
+        _filePath = [path copy];
+        self.title = path.lastPathComponent;
+        self.hidesBottomBarWhenPushed = YES;
+    }
     return self;
 }
 
@@ -123,7 +142,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
     NSString *index = [NSBundle.mainBundle pathForResource:@"index" ofType:@"html"
         inDirectory:@"DocxAssets"];
     if (!index.length) {
-        [self offerQuickLook:@"DOCX 查看器资源缺失"];
+        [self presentRuntimeFailure:@"DOCX 查看器资源缺失。" allowRetry:NO];
         return;
     }
 
@@ -143,6 +162,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
     self.webView.opaque = NO;
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.navigationDelegate = self;
+    self.webView.scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     [self.view addSubview:self.webView];
     [NSLayoutConstraint activateConstraints:@[
         [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -170,6 +190,17 @@ static NSString * const FFDocxScheme = @"ffdocx";
         removeScriptMessageHandlerForName:@"ffDocx"];
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (self.pendingFailureMessage.length) {
+        NSString *message = self.pendingFailureMessage;
+        BOOL retry = self.pendingFailureAllowsRetry;
+        self.pendingFailureMessage = nil;
+        [self presentRuntimeFailure:message allowRetry:retry];
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
@@ -184,25 +215,60 @@ static NSString * const FFDocxScheme = @"ffdocx";
     UIAction *share = [UIAction actionWithTitle:@"分享原文件"
         image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf shareFile]; }];
+    UIAction *reload = [UIAction actionWithTitle:@"重新载入"
+        image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:nil
+        handler:^(__unused UIAction *action) { [weakSelf reloadManually]; }];
     UIAction *system = [UIAction actionWithTitle:@"系统快速查看"
         image:[UIImage systemImageNamed:@"eye"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[share, reload, system]]];
+}
+
+#pragma mark - Lifecycle and lossless foreground retention
+
+- (NSDictionary *)fileAttributes
+{
+    return [NSFileManager.defaultManager attributesOfItemAtPath:self.filePath error:nil] ?: @{};
+}
+
+- (void)rememberBackgroundFileSignature
+{
+    NSDictionary *attributes = [self fileAttributes];
+    self.backgroundFileSize = [attributes[NSFileSize] unsignedLongLongValue];
+    self.backgroundModificationDate = [attributes[NSFileModificationDate]
+        isKindOfClass:NSDate.class] ? attributes[NSFileModificationDate] : nil;
+    self.hasBackgroundSignature = attributes.count > 0;
+}
+
+- (BOOL)sourceChangedSinceBackground
+{
+    if (!self.hasBackgroundSignature) return NO;
+    NSDictionary *attributes = [self fileAttributes];
+    if (!attributes.count) return YES;
+    unsigned long long size = [attributes[NSFileSize] unsignedLongLongValue];
+    NSDate *modified = [attributes[NSFileModificationDate]
+        isKindOfClass:NSDate.class] ? attributes[NSFileModificationDate] : nil;
+    if (size != self.backgroundFileSize) return YES;
+    if ((modified == nil) != (self.backgroundModificationDate == nil)) return YES;
+    return modified && ![modified isEqualToDate:self.backgroundModificationDate];
 }
 
 - (void)loadDocumentPageForReason:(NSString *)reason
 {
-    if (self.recoveryInFlight) return;
+    if (self.recoveryInFlight || !self.webView) return;
     BOOL directory = NO;
     if (![NSFileManager.defaultManager fileExistsAtPath:self.filePath isDirectory:&directory] || directory) {
+        self.recoveryInFlight = NO;
+        [self presentRuntimeFailure:@"原 Word 文档已不存在。" allowRetry:NO];
         FFLogTag(@"DOCX", @"reload skipped missing path=%@ reason=%@", self.filePath, reason);
         return;
     }
 
     self.recoveryInFlight = YES;
     self.documentRendered = NO;
+    self.errorPresented = NO;
     NSURL *url = [NSURL URLWithString:@"ffdocx:///index.html"];
     NSURLRequest *request = [NSURLRequest requestWithURL:url
         cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60];
@@ -212,13 +278,21 @@ static NSString * const FFDocxScheme = @"ffdocx";
 
 - (void)applicationDidEnterBackground:(__unused NSNotification *)note
 {
+    [self rememberBackgroundFileSignature];
     [self captureScrollPosition];
+    // A healthy WebContent process is deliberately left untouched so returning
+    // from the background is lossless and does not visibly re-render the DOCX.
     FFLogTag(@"DOCX", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
 }
 
 - (void)applicationDidBecomeActive:(__unused NSNotification *)note
 {
+    if ([self sourceChangedSinceBackground]) {
+        self.needsForegroundRecovery = YES;
+        FFLogTag(@"DOCX", @"source changed while backgrounded path=%@", self.filePath);
+    }
+    self.hasBackgroundSignature = NO;
     if (self.needsForegroundRecovery) [self recoverWebContentIfVisible];
 }
 
@@ -257,7 +331,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
 
     self.needsForegroundRecovery = NO;
     self.webProcessTerminated = NO;
-    [self loadDocumentPageForReason:@"web-process-recovery"];
+    [self loadDocumentPageForReason:@"foreground-recovery"];
 }
 
 #pragma mark - WKNavigationDelegate
@@ -281,6 +355,8 @@ static NSString * const FFDocxScheme = @"ffdocx";
     self.recoveryInFlight = NO;
     FFLogTag(@"DOCX", @"navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
+    [self presentRuntimeFailure:error.localizedDescription ?: @"Word 文档页面加载失败。"
+        allowRetry:YES];
 }
 
 - (void)webView:(__unused WKWebView *)webView
@@ -289,6 +365,8 @@ static NSString * const FFDocxScheme = @"ffdocx";
     self.recoveryInFlight = NO;
     FFLogTag(@"DOCX", @"provisional navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
+    [self presentRuntimeFailure:error.localizedDescription ?: @"Word 文档页面加载失败。"
+        allowRetry:YES];
 }
 
 #pragma mark - Actions
@@ -301,25 +379,56 @@ static NSString * const FFDocxScheme = @"ffdocx";
     [self presentViewController:activity animated:YES completion:nil];
 }
 
+- (void)reloadManually
+{
+    [self captureScrollPosition];
+    self.needsForegroundRecovery = YES;
+    self.recoveryInFlight = NO;
+    [self recoverWebContentIfVisible];
+}
+
 - (void)openQuickLook
 {
     FFQuickLookViewController *quickLook =
         [[FFQuickLookViewController alloc] initWithFilePath:self.filePath];
     if (!quickLook) return;
     quickLook.title = self.title.length ? self.title : self.filePath.lastPathComponent;
+    quickLook.hidesBottomBarWhenPushed = YES;
     [self.navigationController pushViewController:quickLook animated:YES];
 }
 
-- (void)offerQuickLook:(NSString *)message
+- (void)presentRuntimeFailure:(NSString *)message allowRetry:(BOOL)allowRetry
 {
+    if (!message.length) message = @"未知错误";
+    if (!self.isViewLoaded || !self.view.window) {
+        self.pendingFailureMessage = message;
+        self.pendingFailureAllowsRetry = allowRetry;
+        return;
+    }
+    if (self.errorPresented) return;
+    self.errorPresented = YES;
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开 Word 文档"
         message:message preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    if (allowRetry) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"重试"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                weakSelf.errorPresented = NO;
+                weakSelf.recoveryInFlight = NO;
+                weakSelf.needsForegroundRecovery = YES;
+                [weakSelf recoverWebContentIfVisible];
+            }]];
+    }
     [alert addAction:[UIAlertAction actionWithTitle:@"系统快速查看"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [self openQuickLook];
+            weakSelf.errorPresented = NO;
+            [weakSelf openQuickLook];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消"
-        style:UIAlertActionStyleCancel handler:nil]];
+        style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action) {
+            weakSelf.errorPresented = NO;
+        }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -337,14 +446,16 @@ static NSString * const FFDocxScheme = @"ffdocx";
         self.webProcessTerminated = NO;
         self.needsForegroundRecovery = NO;
         self.documentRendered = YES;
+        self.errorPresented = NO;
         [self restoreScrollPositionIfNeeded];
         FFLogTag(@"DOCX", @"rendered path=%@", self.filePath);
     } else if ([type isEqualToString:@"error"]) {
         self.recoveryInFlight = NO;
         self.documentRendered = NO;
-        NSString *detail = message.body[@"message"] ?: @"渲染失败";
+        NSString *detail = [message.body[@"message"] isKindOfClass:NSString.class]
+            ? message.body[@"message"] : @"渲染失败";
         FFLogTag(@"DOCX", @"render failed path=%@ error=%@", self.filePath, detail);
-        [self offerQuickLook:detail];
+        [self presentRuntimeFailure:detail allowRetry:YES];
     }
 }
 
