@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/.docx-runtime/DocxAssets"
-CACHE="$ROOT/.docx-runtime/npm"
+RUNTIME_ROOT="$ROOT/.docx-runtime"
+BUNDLE="$RUNTIME_ROOT/bundle"
+OUT="$BUNDLE/DocxAssets"
+CACHE="$RUNTIME_ROOT/npm"
 STAMP="$OUT/.runtime-version"
 SOURCE_HASH="$(cat \
   "$ROOT/resources/docx/docx-host.js" \
   "$ROOT/resources/docx/index.html" \
   "$ROOT/resources/docx/docx.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="docx-preview=0.4.0;jszip=3.10.1;host=2;src=$SOURCE_HASH"
+VERSION="docx-preview=0.4.0;jszip=3.10.1;host=3;src=$SOURCE_HASH"
 
 node --check "$ROOT/resources/docx/docx-host.js"
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" && -s "$OUT/index.html" && -s "$OUT/docx-preview.min.js" && -s "$OUT/jszip.min.js" && -s "$OUT/docx-host.js" && -s "$OUT/docx.css" ]]; then
+if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
+      && -s "$OUT/index.html" \
+      && -s "$OUT/docx-preview.min.js" \
+      && -s "$OUT/jszip.min.js" \
+      && -s "$OUT/docx-host.js" \
+      && -s "$OUT/docx.css" ]]; then
   echo "== DOCX runtime cached: $VERSION"
   exit 0
 fi
 
-rm -rf "$OUT" "$CACHE"
+# Keep the generated runtime behind a wrapper directory. Theos RESOURCE_DIRS
+# copies the *contents* of each listed directory into the .app root. Without
+# this wrapper, DocxAssets itself is flattened and index.html/docx-host.js end
+# up at the bundle root, while the native viewer correctly looks for
+# <bundle>/DocxAssets/... .
+rm -rf "$BUNDLE" "$CACHE"
 mkdir -p "$OUT" "$CACHE"
 cat > "$CACHE/package.json" <<'JSON'
 {"private":true,"dependencies":{"docx-preview":"0.4.0","jszip":"3.10.1"}}
