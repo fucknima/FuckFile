@@ -27,6 +27,7 @@ let lastStateJSON = '';
 let stateTimer = 0;
 let pinch = null;
 let renderGeneration = 0;
+let activeFrame = null;
 
 function bridge(message) {
   try { window.webkit?.messageHandlers?.ffOffice?.postMessage(message); } catch (_) {}
@@ -68,16 +69,14 @@ function setZoom(next, anchor = null, emit = false) {
   const newZoom = clampZoom(next);
   if (Math.abs(newZoom - oldZoom) < 0.0005) return zoom;
 
-  let contentX = 0;
-  let contentY = 0;
   let anchorX = view.clientWidth / 2;
   let anchorY = view.clientHeight / 2;
   if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
     anchorX = anchor.x;
     anchorY = anchor.y;
   }
-  contentX = (view.scrollLeft + anchorX) / oldZoom;
-  contentY = (view.scrollTop + anchorY) / oldZoom;
+  const contentX = (view.scrollLeft + anchorX) / oldZoom;
+  const contentY = (view.scrollTop + anchorY) / oldZoom;
 
   zoom = newZoom;
   surface.style.zoom = String(newZoom);
@@ -191,20 +190,6 @@ function sizeFrame(frame) {
       const height = Math.max(root.scrollHeight, body.scrollHeight, viewport()?.clientHeight || 480);
       frame.style.height = `${Math.max(1, height)}px`;
     });
-
-    doc.addEventListener('click', (event) => {
-      const link = event.target?.closest?.('a[href]');
-      if (!link) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const href = link.getAttribute('href') || '';
-      if (href.startsWith('#')) {
-        const target = doc.getElementById(href.slice(1));
-        target?.scrollIntoView?.({ block: 'start' });
-      } else if (/^https?:/i.test(href)) {
-        bridge({ type: 'link', url: href });
-      }
-    }, true);
   } catch (_) {}
 }
 
@@ -213,6 +198,7 @@ function mountDocument(markup, state) {
   if (!surface) throw new Error('文档显示区域不存在。');
   surface.textContent = '';
   surface.style.zoom = String(zoom);
+  activeFrame = null;
 
   const frame = document.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-same-origin');
@@ -222,9 +208,16 @@ function mountDocument(markup, state) {
   frame.style.border = '0';
   frame.style.margin = '0 auto';
   frame.style.background = '#fff';
+  // The rendered document is visual content. Making the frame transparent to
+  // hit testing lets the parent iOS-style scroll surface keep native one-finger
+  // inertia and receive two-finger pinch gestures instead of trapping touches
+  // inside a non-scrolling iframe. Link taps are recovered by explicit hit
+  // testing in installViewerGestures().
+  frame.style.pointerEvents = 'none';
   frame.style.width = `${Math.max(320, viewport()?.clientWidth || 320)}px`;
   frame.style.height = `${Math.max(480, viewport()?.clientHeight || 480)}px`;
   frame.addEventListener('load', () => {
+    activeFrame = frame;
     sizeFrame(frame);
     setTimeout(() => sizeFrame(frame), 80);
     setTimeout(() => sizeFrame(frame), 320);
@@ -314,7 +307,39 @@ function touchDistance(touches) {
   return Math.hypot(dx, dy);
 }
 
-function installPinchZoom() {
+function openRenderedLinkAtPoint(clientX, clientY) {
+  const frame = activeFrame;
+  const view = viewport();
+  if (!frame || !view) return false;
+  try {
+    const rect = frame.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom)
+      return false;
+    const doc = frame.contentDocument;
+    if (!doc) return false;
+    const localX = (clientX - rect.left) / zoom;
+    const localY = (clientY - rect.top) / zoom;
+    const element = doc.elementFromPoint(localX, localY);
+    const link = element?.closest?.('a[href]');
+    if (!link) return false;
+    const href = link.getAttribute('href') || '';
+    if (href.startsWith('#')) {
+      const target = doc.getElementById(href.slice(1));
+      if (!target) return true;
+      const targetRect = target.getBoundingClientRect();
+      view.scrollTop = Math.max(0, view.scrollTop + targetRect.top * zoom - 12);
+      emitState(true);
+      return true;
+    }
+    if (/^https?:/i.test(href)) {
+      bridge({ type: 'link', url: href });
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function installViewerGestures() {
   const view = viewport();
   if (!view) return;
 
@@ -355,13 +380,19 @@ function installPinchZoom() {
   view.addEventListener('touchend', finish, { passive: true, capture: true });
   view.addEventListener('touchcancel', finish, { passive: true, capture: true });
   view.addEventListener('scroll', () => emitState(false), { passive: true });
+  view.addEventListener('click', (event) => {
+    if (openRenderedLinkAtPoint(event.clientX, event.clientY)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
 }
 
 function boot() {
   try {
     window.FFOffice = { open: openDocumentForNative, captureState };
     installToolbar();
-    installPinchZoom();
+    installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) emitState(true);
@@ -377,6 +408,7 @@ function boot() {
 window.addEventListener('beforeunload', () => {
   if (stateTimer) clearInterval(stateTimer);
   pinch = null;
+  activeFrame = null;
 });
 
 boot();
