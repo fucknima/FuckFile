@@ -41,7 +41,8 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"gz": @"archive", @"7z": @"archive", @"rar": @"archive",
             @"xz": @"archive", @"bz2": @"archive",
 
-            // Dedicated offline office readers.
+            // Dedicated offline Office readers. Quick Look is no longer the
+            // default route for Office formats; it remains a manual fallback.
             @"docx": @"docx", @"docm": @"docx", @"dotx": @"docx", @"dotm": @"docx",
             @"xls": @"spreadsheet", @"xlsx": @"spreadsheet", @"xlsm": @"spreadsheet",
             @"xlsb": @"spreadsheet", @"xlt": @"spreadsheet", @"xltx": @"spreadsheet",
@@ -49,15 +50,22 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"ods": @"spreadsheet", @"dif": @"spreadsheet", @"dbf": @"spreadsheet",
             @"slk": @"spreadsheet", @"sylk": @"spreadsheet",
 
-            // Formats without a dedicated reader retain system Quick Look as a fallback.
+            @"doc": @"office-document", @"dot": @"office-document",
+            @"rtf": @"office-document", @"rtfd": @"office-document",
+            @"odt": @"office-document", @"fodt": @"office-document", @"ott": @"office-document",
+            @"ppt": @"office-document", @"pptx": @"office-document", @"pptm": @"office-document",
+            @"pps": @"office-document", @"ppsx": @"office-document", @"ppsm": @"office-document",
+            @"pot": @"office-document", @"potx": @"office-document", @"potm": @"office-document",
+            @"odp": @"office-document", @"fodp": @"office-document", @"otp": @"office-document",
+            @"fods": @"office-document", @"ots": @"office-document",
+            @"pages": @"office-document", @"numbers": @"office-document", @"key": @"office-document",
+            @"wps": @"office-document", @"wpt": @"office-document",
+            @"et": @"office-document", @"ett": @"office-document",
+            @"dps": @"office-document", @"dpt": @"office-document",
+
+            // PDF remains a system preview by default; it is not part of the
+            // Office migration and the app still offers the PDFKit reader.
             @"pdf": @"quicklook",
-            @"doc": @"quicklook", @"dot": @"quicklook", @"rtf": @"quicklook", @"rtfd": @"quicklook",
-            @"ppt": @"quicklook", @"pptx": @"quicklook", @"pptm": @"quicklook",
-            @"pps": @"quicklook", @"ppsx": @"quicklook", @"ppsm": @"quicklook",
-            @"pot": @"quicklook", @"potx": @"quicklook", @"potm": @"quicklook",
-            @"pages": @"quicklook", @"numbers": @"quicklook", @"key": @"quicklook",
-            @"odt": @"quicklook", @"odp": @"quicklook", @"fods": @"quicklook",
-            @"wps": @"quicklook", @"et": @"quicklook", @"dps": @"quicklook",
         };
     });
     return table;
@@ -66,6 +74,7 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
 static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overrides";
 static NSString * const kFFRemovedOfficeReadingStatesKey = @"FFOfficeReadingStatesV1";
 static NSString * const kFFSpreadsheetViewerMigrationKey = @"FFSpreadsheetViewerMigrationV1";
+static NSString * const kFFOfficeDocumentViewerMigrationKey = @"FFOfficeDocumentViewerMigrationV2";
 
 static BOOL FFIsDocxFamily(NSString *extension)
 {
@@ -88,6 +97,22 @@ static BOOL FFIsSpreadsheetFamily(NSString *extension)
     return [set containsObject:extension.lowercaseString];
 }
 
+static BOOL FFIsOfficeDocumentFamily(NSString *extension)
+{
+    static NSSet<NSString *> *set;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        set = [NSSet setWithArray:@[
+            @"doc", @"dot", @"rtf", @"rtfd", @"odt", @"fodt", @"ott",
+            @"ppt", @"pptx", @"pptm", @"pps", @"ppsx", @"ppsm",
+            @"pot", @"potx", @"potm", @"odp", @"fodp", @"otp",
+            @"fods", @"ots", @"pages", @"numbers", @"key",
+            @"wps", @"wpt", @"et", @"ett", @"dps", @"dpt",
+        ]];
+    });
+    return [set containsObject:extension.lowercaseString];
+}
+
 @implementation FFFileAssociationService
 
 + (instancetype)sharedService
@@ -103,23 +128,25 @@ static BOOL FFIsSpreadsheetFamily(NSString *extension)
             ? [stored mutableCopy] : [NSMutableDictionary dictionary];
         __block BOOL changed = NO;
 
-        // Older builds exposed viewerID="office". Preserve the custom DOCX
-        // reader, while allowing the new spreadsheet migration below to choose
-        // the dedicated offline Univer viewer for spreadsheet formats.
+        // Older builds exposed viewerID="office". Re-map it to the current
+        // dedicated readers instead of leaving stale entries pointing at a
+        // removed viewer.
         [stored enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
             (void)stop;
             if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSString.class])
                 return;
+            NSString *extension = [(NSString *)key lowercaseString];
             if ([value isEqualToString:@"office"]) {
-                migrated[key] = FFIsDocxFamily(key) ? @"docx" : @"quicklook";
+                if (FFIsDocxFamily(extension)) migrated[key] = @"docx";
+                else if (FFIsSpreadsheetFamily(extension)) migrated[key] = @"spreadsheet";
+                else if (FFIsOfficeDocumentFamily(extension)) migrated[key] = @"office-document";
+                else migrated[key] = @"quicklook";
                 changed = YES;
             }
         }];
 
-        // One-time adoption of the new spreadsheet viewer. Old app builds may
-        // have written Quick Look as an override during the office-viewer
-        // migration. Remove only those legacy Quick Look spreadsheet overrides;
-        // explicit choices made after this migration remain untouched.
+        // One-time adoption of the dedicated spreadsheet viewer. Old app
+        // builds may have written Quick Look as an override during migration.
         if (![defaults boolForKey:kFFSpreadsheetViewerMigrationKey]) {
             for (NSString *key in [migrated.allKeys copy]) {
                 if (FFIsSpreadsheetFamily(key) && [migrated[key] isEqualToString:@"quicklook"]) {
@@ -128,6 +155,20 @@ static BOOL FFIsSpreadsheetFamily(NSString *extension)
                 }
             }
             [defaults setBool:YES forKey:kFFSpreadsheetViewerMigrationKey];
+        }
+
+        // Build 821+: every Office document family now has an app-owned default
+        // reader. Remove only legacy Quick Look overrides once so existing
+        // installs actually adopt the new defaults. Users can still explicitly
+        // choose Quick Look again afterwards if desired.
+        if (![defaults boolForKey:kFFOfficeDocumentViewerMigrationKey]) {
+            for (NSString *key in [migrated.allKeys copy]) {
+                if (FFIsOfficeDocumentFamily(key) && [migrated[key] isEqualToString:@"quicklook"]) {
+                    [migrated removeObjectForKey:key];
+                    changed = YES;
+                }
+            }
+            [defaults setBool:YES forKey:kFFOfficeDocumentViewerMigrationKey];
         }
 
         if (changed) [defaults setObject:migrated forKey:kFFAssociationOverridesKey];
