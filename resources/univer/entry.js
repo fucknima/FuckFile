@@ -15,6 +15,9 @@ let currentDocumentName = '电子表格';
 let lastStateJSON = '';
 let stateTimer = null;
 let pinchState = null;
+let panState = null;
+let momentumFrame = 0;
+let sheetMenuVisible = false;
 
 function bridge(message) {
   try {
@@ -159,7 +162,7 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     showGridlines: 1,
     rowHeader: { width: 46, hidden: 0 },
     columnHeader: { height: 20, hidden: 0 },
-    selections: ['A1'],
+    selections: [],
     rightToLeft: 0,
   };
 }
@@ -187,7 +190,7 @@ function convertWorkbook(book, name) {
     id: `ff-workbook-${Date.now().toString(36)}`,
     sheetOrder,
     name: name || 'Spreadsheet',
-    appVersion: 'FuckFile-Univer-1',
+    appVersion: 'FuckFile-Univer-Viewer-2',
     locale: LocaleType.ZH_CN,
     styles: {},
     sheets,
@@ -195,8 +198,21 @@ function convertWorkbook(book, name) {
   };
 }
 
-async function makeReadOnly(workbook) {
-  const sheets = workbook?.getSheets?.() || [];
+function activeSheet() {
+  return activeWorkbook?.getActiveSheet?.() || null;
+}
+
+function sheetId(sheet) {
+  return sheet?.getSheetId?.() || null;
+}
+
+function sheetName(sheet) {
+  return sheet?.getSheetName?.() || sheet?.getName?.() || '工作表';
+}
+
+async function enforceViewerMode(workbook = activeWorkbook) {
+  if (!workbook) return;
+  const sheets = workbook.getSheets?.() || [];
   await Promise.all(sheets.map(async (sheet) => {
     try {
       const permission = sheet.getWorksheetPermission?.();
@@ -205,10 +221,14 @@ async function makeReadOnly(workbook) {
       console.warn('Failed to mark sheet read-only', error);
     }
   }));
-}
 
-function activeSheet() {
-  return activeWorkbook?.getActiveSheet?.() || null;
+  try { workbook.disableSelection?.(); } catch (_) {}
+  try { workbook.transparentSelection?.(); } catch (_) {}
+  try { await workbook.endEditingAsync?.(false); } catch (_) {}
+  const focused = document.activeElement;
+  if (focused && focused !== document.body && focused !== document.documentElement) {
+    try { focused.blur?.(); } catch (_) {}
+  }
 }
 
 function clampZoom(value) {
@@ -217,17 +237,126 @@ function clampZoom(value) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, numeric));
 }
 
+function updateZoomHUD() {
+  const label = document.getElementById('ff-zoom-value');
+  const sheet = activeSheet();
+  const zoom = clampZoom(sheet?.getZoom?.() || 1);
+  if (label) label.textContent = `${Math.round(zoom * 100)}%`;
+}
+
 function setActiveZoom(value, emit = false) {
   const sheet = activeSheet();
   if (!sheet?.zoom) return null;
   const zoom = clampZoom(value);
   try {
     sheet.zoom(zoom);
+    updateZoomHUD();
     if (emit) emitState(true);
     return zoom;
   } catch (_) {
     return null;
   }
+}
+
+function closeSheetMenu() {
+  sheetMenuVisible = false;
+  document.getElementById('ff-sheet-menu')?.classList.add('ff-hidden');
+  document.getElementById('ff-sheet-button')?.setAttribute('aria-expanded', 'false');
+}
+
+function refreshSheetHUD() {
+  const button = document.getElementById('ff-sheet-button');
+  const menu = document.getElementById('ff-sheet-menu');
+  if (!button || !menu || !activeWorkbook) return;
+
+  const sheets = activeWorkbook.getSheets?.() || [];
+  const current = activeSheet();
+  button.textContent = sheetName(current);
+  button.disabled = sheets.length <= 1;
+  button.setAttribute('aria-label', sheets.length > 1 ? '切换工作表' : '当前工作表');
+
+  menu.textContent = '';
+  for (const sheet of sheets) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ff-sheet-menu-item';
+    if (sheetId(sheet) === sheetId(current)) item.classList.add('ff-active');
+    item.textContent = sheetName(sheet);
+    item.addEventListener('click', async () => {
+      try {
+        activeWorkbook.setActiveSheet?.(sheet);
+        await enforceViewerMode();
+        refreshSheetHUD();
+        updateZoomHUD();
+        emitState(true);
+      } finally {
+        closeSheetMenu();
+      }
+    });
+    menu.appendChild(item);
+  }
+}
+
+function installViewerToolbar() {
+  const sheetButton = document.getElementById('ff-sheet-button');
+  const menu = document.getElementById('ff-sheet-menu');
+  const zoomOut = document.getElementById('ff-zoom-out');
+  const zoomValue = document.getElementById('ff-zoom-value');
+  const zoomIn = document.getElementById('ff-zoom-in');
+
+  sheetButton?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (sheetButton.disabled) return;
+    sheetMenuVisible = !sheetMenuVisible;
+    menu?.classList.toggle('ff-hidden', !sheetMenuVisible);
+    sheetButton.setAttribute('aria-expanded', sheetMenuVisible ? 'true' : 'false');
+  });
+  zoomOut?.addEventListener('click', () => {
+    const current = activeSheet()?.getZoom?.() || 1;
+    setActiveZoom(current - 0.1, true);
+  });
+  zoomIn?.addEventListener('click', () => {
+    const current = activeSheet()?.getZoom?.() || 1;
+    setActiveZoom(current + 0.1, true);
+  });
+  zoomValue?.addEventListener('click', () => setActiveZoom(1, true));
+
+  document.addEventListener('click', (event) => {
+    if (!sheetMenuVisible) return;
+    if (menu?.contains(event.target) || sheetButton?.contains(event.target)) return;
+    closeSheetMenu();
+  });
+}
+
+function forceEndEditing() {
+  const focused = document.activeElement;
+  const app = document.getElementById('app');
+  if (focused && app?.contains(focused)) {
+    try { focused.blur?.(); } catch (_) {}
+  }
+  try { void activeWorkbook?.endEditingAsync?.(false); } catch (_) {}
+}
+
+function installFocusGuards() {
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  document.addEventListener('focusin', (event) => {
+    if (!app.contains(event.target)) return;
+    forceEndEditing();
+  }, true);
+
+  const suppress = (event) => {
+    if (!app.contains(event.target)) return;
+    if (event.cancelable) event.preventDefault();
+    event.stopImmediatePropagation();
+    forceEndEditing();
+  };
+  document.addEventListener('beforeinput', suppress, true);
+  document.addEventListener('dblclick', suppress, true);
+  document.addEventListener('contextmenu', suppress, true);
+  document.addEventListener('selectstart', suppress, true);
+  document.addEventListener('dragstart', suppress, true);
 }
 
 function touchDistance(touches) {
@@ -237,59 +366,191 @@ function touchDistance(touches) {
   return Math.hypot(dx, dy);
 }
 
-function installPinchZoom() {
-  const target = document.getElementById('app') || document;
-  const begin = (event) => {
-    if (event.touches?.length !== 2) return;
-    const sheet = activeSheet();
-    if (!sheet) return;
-    const distance = touchDistance(event.touches);
-    if (!(distance > 0)) return;
-    const zoom = clampZoom(sheet.getZoom?.() || 1);
-    pinchState = { distance, zoom };
+function stopMomentum() {
+  if (momentumFrame) cancelAnimationFrame(momentumFrame);
+  momentumFrame = 0;
+}
+
+function dispatchSheetWheel(deltaX, deltaY, clientX, clientY) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const target = document.elementFromPoint(clientX, clientY) || app;
+  try {
+    target.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: 0,
+      deltaX,
+      deltaY,
+      clientX,
+      clientY,
+    }));
+  } catch (_) {}
+}
+
+function scrollFallbackFromPan(state, totalX, totalY) {
+  const sheet = activeSheet();
+  if (!sheet?.scrollToCell || !state?.scroll) return;
+  const zoom = clampZoom(sheet.getZoom?.() || 1);
+  const rowPixels = Math.max(10, 19 * zoom);
+  const columnPixels = Math.max(24, 73 * zoom);
+  const rowDelta = Math.trunc(totalY / rowPixels);
+  const columnDelta = Math.trunc(totalX / columnPixels);
+  const row = Math.max(0, Number(state.scroll.sheetViewStartRow || 0) + rowDelta);
+  const column = Math.max(0, Number(state.scroll.sheetViewStartColumn || 0) + columnDelta);
+  try { sheet.scrollToCell(row, column, 0); } catch (_) {}
+}
+
+function installViewerGestures() {
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  const consume = (event) => {
     if (event.cancelable) event.preventDefault();
-    event.stopPropagation();
-  };
-  const change = (event) => {
-    if (!pinchState || event.touches?.length !== 2) return;
-    const distance = touchDistance(event.touches);
-    if (!(distance > 0)) return;
-    setActiveZoom(pinchState.zoom * distance / pinchState.distance, false);
-    if (event.cancelable) event.preventDefault();
-    event.stopPropagation();
-  };
-  const end = (event) => {
-    if (!pinchState) return;
-    // Keep the gesture active while both fingers remain down. As soon as one
-    // finger lifts, persist the exact Univer workbook zoom for foreground restore.
-    if (event.touches?.length >= 2) return;
-    pinchState = null;
-    emitState(true);
-    if (event.cancelable) event.preventDefault();
-    event.stopPropagation();
+    event.stopImmediatePropagation();
   };
 
-  target.addEventListener('touchstart', begin, { capture: true, passive: false });
-  target.addEventListener('touchmove', change, { capture: true, passive: false });
-  target.addEventListener('touchend', end, { capture: true, passive: false });
-  target.addEventListener('touchcancel', end, { capture: true, passive: false });
+  app.addEventListener('touchstart', (event) => {
+    stopMomentum();
+    forceEndEditing();
+
+    if (event.touches.length >= 2) {
+      const distance = touchDistance(event.touches);
+      const sheet = activeSheet();
+      if (sheet && distance > 0) {
+        pinchState = { distance, zoom: clampZoom(sheet.getZoom?.() || 1) };
+      }
+      panState = null;
+      consume(event);
+      return;
+    }
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      const sheet = activeSheet();
+      panState = {
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        lastY: touch.clientY,
+        lastTime: performance.now(),
+        velocityX: 0,
+        velocityY: 0,
+        moves: 0,
+        wheelObserved: false,
+        useFallback: false,
+        scroll: sheet?.getScrollState?.() || null,
+      };
+      pinchState = null;
+      consume(event);
+    }
+  }, { capture: true, passive: false });
+
+  app.addEventListener('touchmove', (event) => {
+    forceEndEditing();
+
+    if (event.touches.length >= 2) {
+      if (!pinchState) {
+        const distance = touchDistance(event.touches);
+        const sheet = activeSheet();
+        if (sheet && distance > 0)
+          pinchState = { distance, zoom: clampZoom(sheet.getZoom?.() || 1) };
+      }
+      const distance = touchDistance(event.touches);
+      if (pinchState && distance > 0)
+        setActiveZoom(pinchState.zoom * distance / pinchState.distance, false);
+      panState = null;
+      consume(event);
+      return;
+    }
+
+    if (event.touches.length === 1 && panState) {
+      const touch = event.touches[0];
+      const now = performance.now();
+      const dx = panState.lastX - touch.clientX;
+      const dy = panState.lastY - touch.clientY;
+      const dt = Math.max(8, now - panState.lastTime);
+      panState.velocityX = panState.velocityX * 0.65 + (dx / dt * 16) * 0.35;
+      panState.velocityY = panState.velocityY * 0.65 + (dy / dt * 16) * 0.35;
+      panState.lastX = touch.clientX;
+      panState.lastY = touch.clientY;
+      panState.lastTime = now;
+      panState.moves += 1;
+
+      const before = activeSheet()?.getScrollState?.() || null;
+      dispatchSheetWheel(dx, dy, touch.clientX, touch.clientY);
+      const after = activeSheet()?.getScrollState?.() || null;
+      if (before && after &&
+          (before.sheetViewStartRow !== after.sheetViewStartRow ||
+           before.sheetViewStartColumn !== after.sheetViewStartColumn ||
+           before.offsetX !== after.offsetX || before.offsetY !== after.offsetY)) {
+        panState.wheelObserved = true;
+      }
+      if (!panState.wheelObserved && panState.moves >= 3) panState.useFallback = true;
+      if (panState.useFallback) {
+        const totalX = panState.startX - touch.clientX;
+        const totalY = panState.startY - touch.clientY;
+        scrollFallbackFromPan(panState, totalX, totalY);
+      }
+      consume(event);
+    }
+  }, { capture: true, passive: false });
+
+  const finish = (event) => {
+    forceEndEditing();
+    if (pinchState && event.touches.length < 2) {
+      pinchState = null;
+      emitState(true);
+      panState = null;
+      consume(event);
+      return;
+    }
+
+    if (panState && event.touches.length === 0) {
+      const final = panState;
+      panState = null;
+      emitState(true);
+
+      if (!final.useFallback && final.wheelObserved &&
+          (Math.abs(final.velocityX) > 0.8 || Math.abs(final.velocityY) > 0.8)) {
+        let vx = final.velocityX;
+        let vy = final.velocityY;
+        let x = final.lastX;
+        let y = final.lastY;
+        const coast = () => {
+          vx *= 0.90;
+          vy *= 0.90;
+          if (Math.abs(vx) < 0.25 && Math.abs(vy) < 0.25) {
+            momentumFrame = 0;
+            emitState(true);
+            return;
+          }
+          dispatchSheetWheel(vx, vy, x, y);
+          momentumFrame = requestAnimationFrame(coast);
+        };
+        momentumFrame = requestAnimationFrame(coast);
+      }
+      consume(event);
+    }
+  };
+
+  app.addEventListener('touchend', finish, { capture: true, passive: false });
+  app.addEventListener('touchcancel', finish, { capture: true, passive: false });
 }
 
 function captureState() {
   try {
     if (!activeWorkbook) return null;
-    const sheet = activeWorkbook.getActiveSheet?.();
+    const sheet = activeSheet();
     if (!sheet) return null;
     const scroll = sheet.getScrollState?.() || {};
-    const activeRange = activeWorkbook.getActiveRange?.();
     return {
-      sheetId: sheet.getSheetId?.() || null,
+      sheetId: sheetId(sheet),
       zoom: Number(sheet.getZoom?.() || 1),
       row: Number(scroll.sheetViewStartRow || 0),
       column: Number(scroll.sheetViewStartColumn || 0),
       offsetX: Number(scroll.offsetX || 0),
       offsetY: Number(scroll.offsetY || 0),
-      range: activeRange?.getA1Notation?.() || null,
     };
   } catch (_) {
     return null;
@@ -307,21 +568,18 @@ function emitState(force = false) {
 
 function restoreState(state) {
   if (!state || !activeWorkbook) return;
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
       const sheets = activeWorkbook.getSheets?.() || [];
-      let sheet = sheets.find((item) => item.getSheetId?.() === state.sheetId) || sheets[0];
+      const sheet = sheets.find((item) => sheetId(item) === state.sheetId) || sheets[0];
       if (!sheet) return;
       activeWorkbook.setActiveSheet?.(sheet);
+      await enforceViewerMode();
       if (Number.isFinite(state.zoom)) setActiveZoom(state.zoom, false);
       if (Number.isFinite(state.row) && Number.isFinite(state.column))
         sheet.scrollToCell?.(Math.max(0, state.row | 0), Math.max(0, state.column | 0), 0);
-      if (typeof state.range === 'string' && state.range.length) {
-        try {
-          const range = sheet.getRange?.(state.range);
-          if (range) activeWorkbook.setActiveRange?.(range);
-        } catch (_) {}
-      }
+      refreshSheetHUD();
+      updateZoomHUD();
       emitState(true);
     } catch (_) {}
   }, 180);
@@ -333,9 +591,6 @@ async function openDocument(payload = {}) {
   try {
     if (!window.XLSX?.read) throw new Error('SheetJS 解析器未加载。');
 
-    // WKURLSchemeHandler responses can surface as status 0 even when WebKit
-    // delivered the custom-scheme body successfully. Treat only an explicit
-    // HTTP-style error status as failure; arrayBuffer() is authoritative.
     const response = await fetch('ffsheet:///document', { cache: 'no-store' });
     if (response.status >= 400) throw new Error(`读取文件失败（${response.status}）`);
     const buffer = await response.arrayBuffer();
@@ -356,7 +611,9 @@ async function openDocument(payload = {}) {
       try { activeWorkbook.dispose(); } catch (_) {}
     }
     activeWorkbook = univerAPI.createWorkbook(data);
-    await makeReadOnly(activeWorkbook);
+    await enforceViewerMode();
+    refreshSheetHUD();
+    updateZoomHUD();
     restoreState(payload.state || null);
 
     hideStatus();
@@ -369,12 +626,8 @@ async function openDocument(payload = {}) {
   }
 }
 
-// Objective-C uses WKWebView evaluateJavaScript to start opening the file.
-// Returning the Promise from the async openDocument() makes WebKit attempt to
-// bridge a Promise back into Foundation, which produces
-// "JavaScript execution returned a result of an unsupported type" even though
-// the workbook is already loading successfully. Fire-and-forget here and return
-// an explicit null, which is a supported bridge value.
+// WKWebView cannot bridge a Promise returned by evaluateJavaScript. Keep this
+// synchronous wrapper as the native entry point and run parsing asynchronously.
 function openDocumentForNative(payload = {}) {
   void openDocument(payload);
   return null;
@@ -389,15 +642,17 @@ async function boot() {
         container: 'app',
         header: false,
         toolbar: false,
-        formulaBar: true,
-        footer: true,
+        formulaBar: false,
+        footer: false,
         contextMenu: false,
         disableAutoFocus: true,
       })],
     });
     univerAPI = result.univerAPI;
     window.FFSpreadsheet = { open: openDocumentForNative, captureState };
-    installPinchZoom();
+    installViewerToolbar();
+    installFocusGuards();
+    installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) emitState(true);
@@ -412,7 +667,9 @@ async function boot() {
 
 window.addEventListener('beforeunload', () => {
   if (stateTimer) window.clearInterval(stateTimer);
+  stopMomentum();
   pinchState = null;
+  panState = null;
 });
 
 boot();
