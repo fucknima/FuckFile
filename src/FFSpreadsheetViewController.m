@@ -137,6 +137,8 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 @property(nonatomic) BOOL hasBackgroundSignature;
 @property(nonatomic) unsigned long long backgroundFileSize;
 @property(nonatomic, strong, nullable) NSDate *backgroundModificationDate;
+@property(nonatomic, copy, nullable) NSString *pendingFailureMessage;
+@property(nonatomic) BOOL pendingFailureAllowsRetry;
 @end
 
 @implementation FFSpreadsheetViewController
@@ -151,8 +153,6 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     if (self) {
         _filePath = [path copy];
         self.title = path.lastPathComponent;
-        // A document viewer owns the full content area. Keeping the root app
-        // tab bar visible causes it to cover spreadsheet controls/content.
         self.hidesBottomBarWhenPushed = YES;
     }
     return self;
@@ -232,6 +232,17 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
         removeScriptMessageHandlerForName:@"ffSheet"];
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (self.pendingFailureMessage.length) {
+        NSString *message = self.pendingFailureMessage;
+        BOOL retry = self.pendingFailureAllowsRetry;
+        self.pendingFailureMessage = nil;
+        [self presentRuntimeFailure:message allowRetry:retry];
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
@@ -273,8 +284,6 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 {
     [self rememberBackgroundFileSignature];
     [self captureRuntimeState];
-    // Do not reload here. If WebKit keeps its content process alive, foreground
-    // return stays lossless: same sheet, scroll position and zoom.
     FFLogTag(@"Spreadsheet", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
 }
@@ -351,11 +360,12 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
     NSString *script = [NSString stringWithFormat:
         @"window.FFSpreadsheet && window.FFSpreadsheet.open(%@);", json];
+    __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         (void)result;
         if (error) {
-            self.recoveryInFlight = NO;
-            [self presentRuntimeFailure:error.localizedDescription ?: @"无法启动电子表格解析器。"
+            weakSelf.recoveryInFlight = NO;
+            [weakSelf presentRuntimeFailure:error.localizedDescription ?: @"无法启动电子表格解析器。"
                 allowRetry:YES];
         }
     }];
@@ -481,8 +491,15 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 
 - (void)presentRuntimeFailure:(NSString *)message allowRetry:(BOOL)allowRetry
 {
-    if (self.errorPresented || !self.isViewLoaded || !self.view.window) return;
+    if (!message.length) message = @"未知错误";
+    if (!self.isViewLoaded || !self.view.window) {
+        self.pendingFailureMessage = message;
+        self.pendingFailureAllowsRetry = allowRetry;
+        return;
+    }
+    if (self.errorPresented) return;
     self.errorPresented = YES;
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开电子表格"
         message:message preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
