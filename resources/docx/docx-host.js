@@ -10,6 +10,8 @@
   const native=(type,extra={})=>{try{window.webkit?.messageHandlers?.ffDocx?.postMessage({type,...extra});}catch(_){}};
   const captureState=()=>({x:window.scrollX||0,y:window.scrollY||0,zoom});
   const emitState=(force=false)=>{const value=captureState(),encoded=JSON.stringify(value);if(!force&&encoded===lastStateJSON)return;lastStateJSON=encoded;native('state',{state:value});};
+  let scrollTimer=0;
+  const emitStateThrottled=()=>{if(scrollTimer)return;scrollTimer=window.setTimeout(()=>{scrollTimer=0;emitState(false);},150);};
   const setZoom=(v,emit=false)=>{const next=Number(v);zoom=Math.max(25,Math.min(250,Math.round(Number.isFinite(next)?next:100)));doc.style.zoom=String(zoom/100);doc.style.width=`${10000/zoom}%`;document.getElementById('zoom').textContent=`${zoom}%`;if(emit)emitState(true);};
   const fitToWidth=()=>{const view=document.getElementById('viewport');const page=doc.querySelector('.docx-wrapper > section.docx')||doc.querySelector('section.docx');if(!view||!page)return null;const scale=zoom/100;const rect=page.getBoundingClientRect();const pageWidth=scale>0?rect.width/scale:0;const available=(view.clientWidth||window.innerWidth||0)-12;if(!(pageWidth>0)||!(available>0))return null;setZoom(Math.min(100,available/pageWidth*100),true);return null;};
   const restoreState=(value)=>{if(!value||typeof value!=='object')return null;if(Number.isFinite(Number(value.zoom)))setZoom(Number(value.zoom),false);requestAnimationFrame(()=>requestAnimationFrame(()=>{window.scrollTo(Number(value.x)||0,Number(value.y)||0);emitState(true);}));return null;};
@@ -26,7 +28,7 @@
   document.getElementById('next').onclick=()=>step(1);
   search.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();step(e.shiftKey?-1:1,true);}});
   search.addEventListener('search',()=>{if(!search.value)clearHits();});
-  window.addEventListener('scroll',()=>emitState(false),{passive:true});
+  window.addEventListener('scroll',emitStateThrottled,{passive:true});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)emitState(true);});
 
   (async()=>{

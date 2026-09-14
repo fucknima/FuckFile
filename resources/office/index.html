@@ -11,12 +11,22 @@
 <div id="ff-viewport" aria-label="办公文档只读查看区域">
   <div id="ff-document-host"></div>
 </div>
+<div id="ff-searchbar" class="ff-hidden" role="search">
+  <input id="ff-search-input" type="search" placeholder="在文档中搜索" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="在文档中搜索">
+  <button id="ff-search-prev" type="button" aria-label="上一处">‹</button>
+  <button id="ff-search-next" type="button" aria-label="下一处">›</button>
+  <span id="ff-search-count" aria-live="polite"></span>
+  <button id="ff-search-close" type="button" aria-label="关闭搜索">✕</button>
+</div>
 <div id="ff-status" role="status">
   <div class="ff-spinner"></div>
   <div id="ff-status-text">正在初始化办公文档阅读器…</div>
 </div>
 <div id="ff-mode-badge">只读</div>
 <div id="ff-viewerbar" role="toolbar" aria-label="办公文档查看工具栏">
+  <button id="ff-search-toggle" class="ff-tool-button" type="button" aria-label="查找">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><line x1="16.6" y1="16.6" x2="21" y2="21"></line></svg>
+  </button>
   <div id="ff-format-label">文档</div>
   <div class="ff-toolbar-spacer"></div>
   <button id="ff-zoom-out" class="ff-tool-button" type="button" aria-label="缩小">−</button>

@@ -91,6 +91,10 @@
     // Deliberately do not horizontally reflow or resize the document when the
     // phone is narrower. The authored page remains intact and becomes scrollable.
     host.style.transform = `scale(${currentZoom})`;
+    // Center the canvas when it is narrower than the viewport (zoomed below
+    // fit); entry.js mirrors this offset in its zoom anchoring.
+    host.style.left = scaledWidth < view.clientWidth
+        ? `${Math.round((view.clientWidth - scaledWidth) / 2)}px` : '0';
     stage.style.width = `${Math.max(view.clientWidth, scaledWidth)}px`;
     stage.style.height = `${Math.max(view.clientHeight, scaledHeight)}px`;
   }
@@ -137,11 +141,32 @@
     notifyZoomChanged();
   }
 
+  // Search highlighting rewrites text nodes into <mark class="ff-hit"> and
+  // back; that decoration never changes the document size, so it must not
+  // trigger a full re-measure on every find step.
+  function isSearchDecoration(record) {
+    const added = record.addedNodes || [];
+    const removed = record.removedNodes || [];
+    if (!added.length && !removed.length) return false;
+    for (const list of [added, removed]) {
+      for (let i = 0; i < list.length; i += 1) {
+        const node = list[i];
+        if (!node) continue;
+        if (node.nodeType === 3) continue;
+        if (node.nodeType === 1 && node.classList && node.classList.contains('ff-hit')) continue;
+        return false;
+      }
+    }
+    return true;
+  }
+
   const observer = new MutationObserver((records) => {
     let contentChanged = false;
     let styleChanged = false;
     for (const record of records) {
-      if (record.type === 'childList') contentChanged = true;
+      if (record.type === 'childList') {
+        if (!isSearchDecoration(record)) contentChanged = true;
+      }
       if (record.type === 'attributes' && record.target === host && record.attributeName === 'style')
         styleChanged = true;
     }

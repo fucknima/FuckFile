@@ -299,13 +299,22 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
 
 - (void)captureRuntimeState
 {
-    if (!self.documentRendered || !self.webView) return;
+    [self captureRuntimeStateWithCompletion:nil];
+}
+
+- (void)captureRuntimeStateWithCompletion:(void (^ _Nullable)(void))completion
+{
+    if (!self.documentRendered || !self.webView) {
+        if (completion) completion();
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:
         @"window.FFOffice && window.FFOffice.captureState ? window.FFOffice.captureState() : null"
         completionHandler:^(id value, NSError *error) {
             if (!error && [value isKindOfClass:NSDictionary.class])
                 weakSelf.lastState = value;
+            if (completion) completion();
         }];
 }
 
@@ -389,6 +398,10 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     didFailNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    // -999 is a superseded load (e.g. manual reload while still loading), not
+    // a user-visible failure.
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"Office", @"navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"办公文档页面加载失败。"
@@ -399,6 +412,8 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     didFailProvisionalNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"Office", @"provisional navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"办公文档页面加载失败。"
@@ -477,6 +492,9 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     UIAction *share = [UIAction actionWithTitle:@"分享原文件"
         image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf shareFile]; }];
+    UIAction *fit = [UIAction actionWithTitle:@"适应宽度"
+        image:[UIImage systemImageNamed:@"arrow.left.and.right"] identifier:nil
+        handler:^(__unused UIAction *action) { [weakSelf fitDocumentToWidth]; }];
     UIAction *reload = [UIAction actionWithTitle:@"重新载入"
         image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf reloadManually]; }];
@@ -485,7 +503,7 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, reload, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[share, fit, reload, system]]];
 }
 
 - (void)shareFile
@@ -498,10 +516,22 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
 
 - (void)reloadManually
 {
-    [self captureRuntimeState];
-    self.needsForegroundRecovery = YES;
-    self.recoveryInFlight = NO;
-    [self recoverWebContentIfVisible];
+    // Capture first: navigating away can drop a pending evaluateJavaScript,
+    // which would silently lose the reading position on reload.
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        weakSelf.needsForegroundRecovery = YES;
+        weakSelf.recoveryInFlight = NO;
+        [weakSelf recoverWebContentIfVisible];
+    }];
+}
+
+- (void)fitDocumentToWidth
+{
+    if (!self.webView) return;
+    [self.webView evaluateJavaScript:
+        @"window.FFOffice && window.FFOffice.fit ? window.FFOffice.fit() : null;"
+        completionHandler:nil];
 }
 
 - (void)openQuickLook

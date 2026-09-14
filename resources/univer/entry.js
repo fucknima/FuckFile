@@ -10,6 +10,8 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ROW_HEADER_WIDTH = 46;
 const COLUMN_HEADER_HEIGHT = 20;
+const DEFAULT_COLUMN_WIDTH = 73;
+const sheetContentWidth = new Map();
 
 let univerAPI = null;
 let activeWorkbook = null;
@@ -23,6 +25,9 @@ let scrollFrame = 0;
 let pendingScrollX = 0;
 let pendingScrollY = 0;
 let sheetMenuVisible = false;
+// Once the user picks a zoom of their own, sheet switches keep it instead of
+// re-fitting the new sheet to the viewport.
+let userZoom = false;
 
 function bridge(message) {
   try {
@@ -143,6 +148,15 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     maxColumn = Math.max(maxColumn, i);
   }
 
+  // Width of the used range, used to open the sheet fit to the viewport.
+  let contentWidth = 0;
+  for (let column = 0; column <= maxColumn; column += 1) {
+    const record = columnData[column];
+    if (record?.hd) continue;
+    contentWidth += Number.isFinite(record?.w) ? record.w : DEFAULT_COLUMN_WIDTH;
+  }
+  sheetContentWidth.set(sheetId, contentWidth);
+
   return {
     type: 0,
     id: sheetId,
@@ -155,7 +169,7 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     freeze: { xSplit: 0, ySplit: 0, startRow: -1, startColumn: -1 },
     scrollTop: 0,
     scrollLeft: 0,
-    defaultColumnWidth: 73,
+    defaultColumnWidth: DEFAULT_COLUMN_WIDTH,
     defaultRowHeight: 19,
     mergeData,
     hideRow: [],
@@ -291,6 +305,7 @@ function refreshSheetHUD() {
       try {
         activeWorkbook.setActiveSheet?.(sheet);
         await enforceViewerMode();
+        if (!userZoom) fitToWidth();
         refreshSheetHUD();
         updateZoomHUD();
         emitState(true);
@@ -423,6 +438,21 @@ function zoomAroundViewportCenter(value, emit = false) {
   return zoomAroundPoint(value, center.x, center.y, emit);
 }
 
+// Open a sheet fitted to the viewport width so the used column range is not
+// clipped on the right. Capped at 100%, like the document viewers.
+function fitToWidth() {
+  const sheet = activeSheet();
+  const app = document.getElementById('app');
+  const appWidth = Number(app?.clientWidth) || 0;
+  const contentWidth = Number(sheetContentWidth.get(sheetId(sheet))) || 0;
+  if (!sheet || !(appWidth > 0) || !(contentWidth > 0)) return null;
+  const available = Math.max(120, appWidth - ROW_HEADER_WIDTH - 8);
+  const applied = setActiveZoom(Math.min(1, available / contentWidth), false);
+  if (applied == null) return null;
+  emitState(true);
+  return applied;
+}
+
 function installViewerToolbar() {
   const sheetButton = document.getElementById('ff-sheet-button');
   const menu = document.getElementById('ff-sheet-menu');
@@ -438,14 +468,19 @@ function installViewerToolbar() {
     sheetButton.setAttribute('aria-expanded', sheetMenuVisible ? 'true' : 'false');
   });
   zoomOut?.addEventListener('click', () => {
+    userZoom = true;
     const current = activeSheet()?.getZoom?.() || 1;
     zoomAroundViewportCenter(current - 0.1, true);
   });
   zoomIn?.addEventListener('click', () => {
+    userZoom = true;
     const current = activeSheet()?.getZoom?.() || 1;
     zoomAroundViewportCenter(current + 0.1, true);
   });
-  zoomValue?.addEventListener('click', () => zoomAroundViewportCenter(1, true));
+  zoomValue?.addEventListener('click', () => {
+    userZoom = true;
+    zoomAroundViewportCenter(1, true);
+  });
 
   document.addEventListener('click', (event) => {
     if (!sheetMenuVisible) return;
@@ -538,6 +573,7 @@ function updatePinch(touches) {
   if (Math.abs(newZoom - oldZoom) >= 0.0005) {
     const applied = setActiveZoom(newZoom, false);
     if (applied != null) {
+      userZoom = true;
       const ratio = applied / oldZoom;
       // Zoom itself is top-left anchored. Compensate the scroll so the sheet
       // coordinate originally under the fingers stays under the moving pinch
@@ -713,6 +749,7 @@ function restoreExactScroll(sheet, state) {
 
 function restoreState(state) {
   if (!state || !activeWorkbook) return;
+  userZoom = true;
   setTimeout(async () => {
     try {
       const sheets = activeWorkbook.getSheets?.() || [];
@@ -734,6 +771,7 @@ function restoreState(state) {
 
 async function openDocument(payload = {}) {
   currentDocumentName = payload.name || '电子表格';
+  userZoom = false;
   setStatus(`正在打开 ${currentDocumentName}…`);
   try {
     if (!window.XLSX?.read) throw new Error('SheetJS 解析器未加载。');
@@ -752,6 +790,7 @@ async function openDocument(payload = {}) {
       bookVBA: false,
       dense: false,
     });
+    sheetContentWidth.clear();
     const data = convertWorkbook(book, currentDocumentName);
 
     if (activeWorkbook?.dispose) {
@@ -761,7 +800,8 @@ async function openDocument(payload = {}) {
     await enforceViewerMode();
     refreshSheetHUD();
     updateZoomHUD();
-    restoreState(payload.state || null);
+    if (payload.state) restoreState(payload.state);
+    else if (fitToWidth() == null) window.setTimeout(() => fitToWidth(), 180);
 
     hideStatus();
     bridge({ type: 'loaded', sheets: data.sheetOrder.length });
@@ -796,7 +836,7 @@ async function boot() {
       })],
     });
     univerAPI = result.univerAPI;
-    window.FFSpreadsheet = { open: openDocumentForNative, captureState };
+    window.FFSpreadsheet = { open: openDocumentForNative, captureState, fit: fitToWidth };
     installViewerToolbar();
     installFocusGuards();
     installViewerGestures();

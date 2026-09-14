@@ -63,6 +63,22 @@ function layoutControl() {
   return window.FFOfficeLayout || null;
 }
 
+// The shim centers a canvas that is narrower than the viewport by shifting
+// #ff-document-host; zoom anchoring has to subtract/add that shift.
+function layoutOffsetX() {
+  const offset = Number.parseFloat(host()?.style.left);
+  return Number.isFinite(offset) ? offset : 0;
+}
+
+function centeredOffsetFor(value) {
+  const view = viewport();
+  const surface = host();
+  const base = surface?.offsetWidth || 0;
+  if (!view || !(base > 0)) return 0;
+  const scaled = base * value;
+  return scaled < view.clientWidth ? Math.round((view.clientWidth - scaled) / 2) : 0;
+}
+
 // Called only from user zoom gestures/buttons: the shim must stop re-fitting
 // the document once the user has chosen a zoom of their own.
 function disableAutoFit() {
@@ -86,6 +102,7 @@ function setZoom(next, anchor = null, emit = false) {
   const view = viewport();
   const surface = host();
   if (!view || !surface) return zoom;
+  cancelPendingScrollRestore();
 
   const oldZoom = zoom;
   const newZoom = clampZoom(next);
@@ -97,11 +114,11 @@ function setZoom(next, anchor = null, emit = false) {
     anchorX = anchor.x;
     anchorY = anchor.y;
   }
-  const contentX = (view.scrollLeft + anchorX) / oldZoom;
+  const contentX = (view.scrollLeft + anchorX - layoutOffsetX()) / oldZoom;
   const contentY = (view.scrollTop + anchorY) / oldZoom;
 
   applyZoom(newZoom);
-  view.scrollLeft = Math.max(0, contentX * newZoom - anchorX);
+  view.scrollLeft = Math.max(0, contentX * newZoom - anchorX + centeredOffsetFor(newZoom));
   view.scrollTop = Math.max(0, contentY * newZoom - anchorY);
   if (emit) emitState(true);
   return zoom;
@@ -125,17 +142,225 @@ function emitState(force = false) {
   bridge({ type: 'state', state });
 }
 
+// Scrolling fires at display rate and every state message crosses the native
+// bridge; one message per 150 ms is plenty for resume-position accuracy.
+let scrollEmitTimer = 0;
+function emitStateThrottled() {
+  if (scrollEmitTimer) return;
+  scrollEmitTimer = window.setTimeout(() => {
+    scrollEmitTimer = 0;
+    emitState(false);
+  }, 150);
+}
+
+let restoreScrollToken = 0;
+
+function cancelPendingScrollRestore() {
+  restoreScrollToken += 1;
+}
+
 function restoreState(state) {
   const view = viewport();
   if (!view || !state) return;
   // While auto-fit is active the shim chooses the zoom from the measured
   // document; replaying a stale zoom would fight the fit.
   if (!autoFitActive && Number.isFinite(Number(state.zoom))) applyZoom(Number(state.zoom));
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (Number.isFinite(state.scrollX)) view.scrollLeft = Math.max(0, state.scrollX);
-    if (Number.isFinite(state.scrollY)) view.scrollTop = Math.max(0, state.scrollY);
+
+  // Images and drawings settle after the first layout, so an immediate scroll
+  // restore can clamp to the top. Re-apply once the document has settled;
+  // any user touch/scroll cancels the deferred pass so reading is never
+  // yanked back.
+  const token = ++restoreScrollToken;
+  const applyScroll = () => {
+    if (token !== restoreScrollToken) return;
+    if (Number.isFinite(Number(state.scrollX))) view.scrollLeft = Math.max(0, Number(state.scrollX));
+    if (Number.isFinite(Number(state.scrollY))) view.scrollTop = Math.max(0, Number(state.scrollY));
     emitState(true);
-  }));
+  };
+  requestAnimationFrame(() => requestAnimationFrame(applyScroll));
+  window.setTimeout(applyScroll, 450);
+  window.setTimeout(applyScroll, 1200);
+}
+
+function fitToWidth() {
+  cancelPendingScrollRestore();
+  autoFitActive = true;
+  layoutControl()?.setAutoFit(true);
+}
+
+// ---- In-document search -------------------------------------------------
+// Hits are wrapped in <mark> nodes. Styles are inline because the search must
+// also work for iframe-rendered documents (PPT/RTF/ODF), where host.css does
+// not apply.
+
+let searchHits = [];
+let searchHitIndex = -1;
+let searchQuery = '';
+
+function searchRoot() {
+  const frameBody = activeFrame?.contentDocument?.body;
+  return frameBody || host();
+}
+
+function updateSearchCount() {
+  const label = document.getElementById('ff-search-count');
+  if (!label) return;
+  if (searchHitIndex >= 0 && searchHits.length)
+    label.textContent = `${searchHitIndex + 1}/${searchHits.length}`;
+  else if (searchHits.length)
+    label.textContent = String(searchHits.length);
+  else
+    label.textContent = searchQuery ? '0' : '';
+}
+
+function clearSearchHits() {
+  for (const mark of searchHits) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    const doc = mark.ownerDocument || document;
+    parent.replaceChild(doc.createTextNode(mark.textContent || ''), mark);
+    parent.normalize();
+  }
+  searchHits = [];
+  searchHitIndex = -1;
+  searchQuery = '';
+  updateSearchCount();
+}
+
+function buildSearchHits(query) {
+  clearSearchHits();
+  const root = searchRoot();
+  if (!root || !query) return;
+  searchQuery = query;
+  const lower = query.toLocaleLowerCase();
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT')
+        return NodeFilter.FILTER_REJECT;
+      return String(node.nodeValue || '').toLocaleLowerCase().includes(lower)
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = String(node.nodeValue || '');
+    const lowered = text.toLocaleLowerCase();
+    let position = 0;
+    let index = lowered.indexOf(lower);
+    if (index < 0) continue;
+    const fragment = doc.createDocumentFragment();
+    while (index >= 0) {
+      if (index > position) fragment.appendChild(doc.createTextNode(text.slice(position, index)));
+      const mark = doc.createElement('mark');
+      mark.className = 'ff-hit';
+      mark.textContent = text.slice(index, index + query.length);
+      mark.style.background = '#ffd60a';
+      mark.style.color = '#111';
+      mark.style.borderRadius = '2px';
+      fragment.appendChild(mark);
+      searchHits.push(mark);
+      position = index + query.length;
+      index = lowered.indexOf(lower, position);
+    }
+    if (position < text.length) fragment.appendChild(doc.createTextNode(text.slice(position)));
+    node.parentNode?.replaceChild(fragment, node);
+  }
+  searchHitIndex = -1;
+  updateSearchCount();
+}
+
+function searchHitRect(mark) {
+  const rect = mark.getBoundingClientRect();
+  const frame = activeFrame;
+  const frameDoc = frame?.contentDocument;
+  if (frame && frameDoc && frameDoc.contains(mark)) {
+    // Inside an iframe: map into the parent viewport through the frame box,
+    // which already carries the fixed-layout scale.
+    const frameRect = frame.getBoundingClientRect();
+    const scale = frame.clientWidth ? frameRect.width / frame.clientWidth : 1;
+    return {
+      left: frameRect.left + rect.left * scale,
+      top: frameRect.top + rect.top * scale,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    };
+  }
+  return rect;
+}
+
+function scrollToSearchHit(mark) {
+  const view = viewport();
+  if (!view) return;
+  const rect = searchHitRect(mark);
+  const viewRect = view.getBoundingClientRect();
+  view.scrollTop = Math.max(0, view.scrollTop + rect.top - viewRect.top - view.clientHeight * 0.3);
+  view.scrollLeft = Math.max(0, view.scrollLeft + rect.left - viewRect.left - view.clientWidth * 0.2);
+}
+
+function stepSearch(direction) {
+  const input = document.getElementById('ff-search-input');
+  const query = String(input?.value || '').trim();
+  if (!query) { clearSearchHits(); return; }
+  if (!searchHits.length || searchQuery !== query) buildSearchHits(query);
+  if (!searchHits.length) { updateSearchCount(); return; }
+  const previous = searchHits[searchHitIndex];
+  if (previous) {
+    previous.style.outline = 'none';
+    previous.style.outlineOffset = '0';
+  }
+  searchHitIndex = (searchHitIndex + direction + searchHits.length) % searchHits.length;
+  const mark = searchHits[searchHitIndex];
+  mark.style.outline = '2px solid #ff9f0a';
+  mark.style.outlineOffset = '1px';
+  scrollToSearchHit(mark);
+  updateSearchCount();
+  emitState(true);
+}
+
+function setSearchBarVisible(visible) {
+  const bar = document.getElementById('ff-searchbar');
+  const input = document.getElementById('ff-search-input');
+  if (!bar) return;
+  bar.classList.toggle('ff-hidden', !visible);
+  if (visible) {
+    try { input?.focus(); input?.select?.(); } catch (_) {}
+    return;
+  }
+  clearSearchHits();
+  if (input) input.value = '';
+  try { input?.blur(); } catch (_) {}
+}
+
+function installSearch() {
+  const toggle = document.getElementById('ff-search-toggle');
+  const input = document.getElementById('ff-search-input');
+  if (!toggle || !input) return;
+
+  toggle.addEventListener('click', () => setSearchBarVisible(true));
+  document.getElementById('ff-search-close')?.addEventListener('click',
+    () => setSearchBarVisible(false));
+  document.getElementById('ff-search-prev')?.addEventListener('click', () => {
+    stepSearch(-1);
+    try { input.focus(); } catch (_) {}
+  });
+  document.getElementById('ff-search-next')?.addEventListener('click', () => {
+    stepSearch(1);
+    try { input.focus(); } catch (_) {}
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      stepSearch(event.shiftKey ? -1 : 1);
+    } else if (event.key === 'Escape') {
+      setSearchBarVisible(false);
+    }
+  });
+  input.addEventListener('search', () => { if (!input.value) clearSearchHits(); });
 }
 
 function extensionOf(name) {
@@ -162,6 +387,7 @@ function setFormatLabel(text) {
 function resetSurface(modeClass) {
   const surface = host();
   if (!surface) throw new Error('文档显示区域不存在。');
+  clearSearchHits();
   surface.textContent = '';
   surface.classList.remove('ff-word-layout', 'ff-frame-layout');
   if (modeClass) surface.classList.add(modeClass);
@@ -309,6 +535,7 @@ async function mountWordDocument(bytes, ext, state) {
     // Ream's HTML output is deliberately flowed and can drop/fold page
     // geometry. Legacy .doc/.dot is therefore normalized to OOXML first and
     // rendered by the same paginated DOCX engine used elsewhere in FuckFile.
+    setStatus(`正在转换旧版 Word 文档（${currentName}）…`);
     const parsed = Ream.parse(bytes);
     docxBytes = await parsed.convert('docx');
     mode = 'legacy-word-docx-layout';
@@ -369,6 +596,7 @@ async function openDocument(payload = {}) {
   currentExtension = extensionOf(currentName);
   zoom = clampZoom(Number(restored?.zoom || 1));
   updateZoomHUD();
+  setSearchBarVisible(false);
   setStatus(`正在打开 ${currentName}…`);
 
   try {
@@ -495,7 +723,7 @@ function installViewerGestures() {
     pinch = {
       distance,
       zoom,
-      contentX: (view.scrollLeft + center.x) / zoom,
+      contentX: (view.scrollLeft + center.x - layoutOffsetX()) / zoom,
       contentY: (view.scrollTop + center.y) / zoom,
     };
     if (event.cancelable) event.preventDefault();
@@ -508,7 +736,7 @@ function installViewerGestures() {
     const center = touchCenter(event.touches, view.getBoundingClientRect());
     const next = clampZoom(pinch.zoom * distance / pinch.distance);
     applyZoom(next);
-    view.scrollLeft = Math.max(0, pinch.contentX * next - center.x);
+    view.scrollLeft = Math.max(0, pinch.contentX * next - center.x + centeredOffsetFor(next));
     view.scrollTop = Math.max(0, pinch.contentY * next - center.y);
     if (event.cancelable) event.preventDefault();
   }, { passive: false, capture: true });
@@ -521,7 +749,9 @@ function installViewerGestures() {
   };
   view.addEventListener('touchend', finish, { passive: true, capture: true });
   view.addEventListener('touchcancel', finish, { passive: true, capture: true });
-  view.addEventListener('scroll', () => emitState(false), { passive: true });
+  view.addEventListener('touchstart', cancelPendingScrollRestore, { passive: true, capture: true });
+  view.addEventListener('wheel', cancelPendingScrollRestore, { passive: true, capture: true });
+  view.addEventListener('scroll', emitStateThrottled, { passive: true });
   view.addEventListener('click', (event) => {
     if (openDirectLink(event) || openRenderedLinkAtPoint(event.clientX, event.clientY)) {
       event.preventDefault();
@@ -532,14 +762,16 @@ function installViewerGestures() {
 
 function boot() {
   try {
-    window.FFOffice = { open: openDocumentForNative, captureState };
+    window.FFOffice = { open: openDocumentForNative, captureState, fit: fitToWidth };
     window.addEventListener('ffofficezoom', (event) => {
       const detail = event?.detail;
       if (!detail || !Number.isFinite(Number(detail.zoom))) return;
       zoom = clampZoom(Number(detail.zoom));
       updateZoomHUD();
+      if (detail.autoFit) emitState(false);
     });
     installToolbar();
+    installSearch();
     installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);
     document.addEventListener('visibilitychange', () => {

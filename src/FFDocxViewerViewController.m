@@ -214,6 +214,9 @@ static NSString * const FFDocxScheme = @"ffdocx";
     UIAction *share = [UIAction actionWithTitle:@"分享原文件"
         image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf shareFile]; }];
+    UIAction *fit = [UIAction actionWithTitle:@"适应宽度"
+        image:[UIImage systemImageNamed:@"arrow.left.and.right"] identifier:nil
+        handler:^(__unused UIAction *action) { [weakSelf fitDocumentToWidth]; }];
     UIAction *reload = [UIAction actionWithTitle:@"重新载入"
         image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf reloadManually]; }];
@@ -222,7 +225,7 @@ static NSString * const FFDocxScheme = @"ffdocx";
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, reload, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[share, fit, reload, system]]];
 }
 
 #pragma mark - Lifecycle and lossless foreground retention
@@ -295,13 +298,22 @@ static NSString * const FFDocxScheme = @"ffdocx";
 
 - (void)captureRuntimeState
 {
-    if (!self.documentRendered || !self.webView) return;
+    [self captureRuntimeStateWithCompletion:nil];
+}
+
+- (void)captureRuntimeStateWithCompletion:(void (^ _Nullable)(void))completion
+{
+    if (!self.documentRendered || !self.webView) {
+        if (completion) completion();
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:
         @"window.FFDocx && window.FFDocx.captureState ? window.FFDocx.captureState() : null"
         completionHandler:^(id value, NSError *error) {
             if (!error && [value isKindOfClass:NSDictionary.class])
                 weakSelf.lastState = value;
+            if (completion) completion();
         }];
 }
 
@@ -363,6 +375,10 @@ static NSString * const FFDocxScheme = @"ffdocx";
     didFailNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    // -999 is a superseded load (e.g. manual reload while still loading), not
+    // a user-visible failure.
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"DOCX", @"navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"Word 文档页面加载失败。"
@@ -373,6 +389,8 @@ static NSString * const FFDocxScheme = @"ffdocx";
     didFailProvisionalNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"DOCX", @"provisional navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"Word 文档页面加载失败。"
@@ -391,10 +409,14 @@ static NSString * const FFDocxScheme = @"ffdocx";
 
 - (void)reloadManually
 {
-    [self captureRuntimeState];
-    self.needsForegroundRecovery = YES;
-    self.recoveryInFlight = NO;
-    [self recoverWebContentIfVisible];
+    // Capture first: navigating away can drop a pending evaluateJavaScript,
+    // which would silently lose the reading position on reload.
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        weakSelf.needsForegroundRecovery = YES;
+        weakSelf.recoveryInFlight = NO;
+        [weakSelf recoverWebContentIfVisible];
+    }];
 }
 
 - (void)openQuickLook

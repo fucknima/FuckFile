@@ -187,8 +187,77 @@ html, body {
   touch-action: manipulation;
 }
 
+#ff-searchbar {
+  position: fixed;
+  z-index: 2147483647;
+  left: 0;
+  right: 0;
+  top: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(48px + env(safe-area-inset-top));
+  padding: calc(6px + env(safe-area-inset-top)) 8px 6px;
+  border-bottom: .5px solid rgba(60,60,67,.22);
+  background: rgba(248,248,248,.96);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  backdrop-filter: blur(18px) saturate(180%);
+}
+
+#ff-searchbar.ff-hidden { display: none; }
+
+#ff-searchbar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+  border: .5px solid rgba(60,60,67,.22);
+  border-radius: 9px;
+  background: rgba(120,120,128,.12);
+  color: #111;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#ff-searchbar button {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #0a84ff;
+  font: inherit;
+  font-size: 18px;
+  line-height: 34px;
+  padding: 0;
+}
+
+#ff-searchbar button:active { background: rgba(60,60,67,.12); }
+
+#ff-search-count {
+  flex: 0 0 auto;
+  min-width: 38px;
+  text-align: center;
+  font-size: 11px;
+  color: #8e8e93;
+  font-variant-numeric: tabular-nums;
+}
+
+.ff-tool-button svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  margin: 10px auto;
+}
+
 #ff-format-label {
-  max-width: 55%;
+  max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -212,6 +281,7 @@ html, body {
 .ff-tool-button {
   width: 38px;
   height: 38px;
+  padding: 0;
   border-radius: 10px;
   font-size: 24px !important;
   line-height: 38px;
@@ -244,4 +314,15 @@ html, body {
   #ff-format-label { color: #d1d1d6; }
   .ff-tool-button:active,
   .ff-zoom-value:active { background: rgba(235,235,245,.12) !important; }
+  #ff-searchbar {
+    background: rgba(28,28,30,.96);
+    border-color: rgba(235,235,245,.16);
+  }
+  #ff-searchbar input {
+    background: rgba(118,118,128,.24);
+    color: #fff;
+    border-color: rgba(235,235,245,.2);
+  }
+  #ff-searchbar button { color: #64a8ff; }
+  #ff-searchbar button:active { background: rgba(235,235,245,.12); }
 }

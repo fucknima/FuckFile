@@ -170,6 +170,29 @@ function testOfficeAutoFit() {
   flushFrames();
   check(Math.abs(zoomFromTransform(host) - 1.5) < 0.001,
     'office: manual zoom survives later re-measures');
+
+  // Zoomed below fit the canvas must be centered, not pinned left.
+  host.style.zoom = '0.25';
+  global.__ffObserver.cb([{ type: 'attributes', target: host, attributeName: 'style' }]);
+  check(host.style.left === '7px',
+    'office: narrow canvas is centered, got left=' + host.style.left);
+
+  // Search highlighting (marks/text nodes) must not trigger a re-measure:
+  // the authored canvas is unchanged, so freezeLayout must not run.
+  const mark = makeElement();
+  mark.nodeType = 1;
+  mark.classList.contains = (name) => name === 'ff-hit';
+  child.rectWidth = 3000;
+  const widthBefore = host.style.width;
+  global.__ffObserver.cb([{
+    type: 'childList',
+    target: host,
+    addedNodes: [mark],
+    removedNodes: [{ nodeType: 3 }],
+  }]);
+  flushFrames();
+  check(host.style.width === widthBefore,
+    'office: search decorations do not trigger a re-measure, got ' + host.style.width);
 }
 
 function testDocxFit() {

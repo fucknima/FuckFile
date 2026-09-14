@@ -390,6 +390,10 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     didFailNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    // -999 is a superseded load (e.g. manual reload while still loading), not
+    // a user-visible failure.
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"Spreadsheet", @"navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"电子表格页面加载失败。"
@@ -400,6 +404,8 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     didFailProvisionalNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
     self.recoveryInFlight = NO;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return;
     FFLogTag(@"Spreadsheet", @"provisional navigation failed path=%@ error=%@", self.filePath,
         error.localizedDescription ?: @"unknown");
     [self presentRuntimeFailure:error.localizedDescription ?: @"电子表格页面加载失败。"
@@ -452,6 +458,9 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     UIAction *share = [UIAction actionWithTitle:@"分享原文件"
         image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf shareFile]; }];
+    UIAction *fit = [UIAction actionWithTitle:@"适应宽度"
+        image:[UIImage systemImageNamed:@"arrow.left.and.right"] identifier:nil
+        handler:^(__unused UIAction *action) { [weakSelf fitDocumentToWidth]; }];
     UIAction *reload = [UIAction actionWithTitle:@"重新载入"
         image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf reloadManually]; }];
@@ -460,7 +469,15 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, reload, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[share, fit, reload, system]]];
+}
+
+- (void)fitDocumentToWidth
+{
+    if (!self.webView) return;
+    [self.webView evaluateJavaScript:
+        @"window.FFSpreadsheet && window.FFSpreadsheet.fit ? window.FFSpreadsheet.fit() : null;"
+        completionHandler:nil];
 }
 
 - (void)shareFile
