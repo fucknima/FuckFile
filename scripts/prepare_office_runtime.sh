@@ -12,12 +12,11 @@ SOURCE_HASH="$(cat \
   "$ROOT/resources/office/fixed-layout.js" \
   "$ROOT/resources/office/index.html" \
   "$ROOT/resources/office/host.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;fixed-layout=1;src=$SOURCE_HASH"
+VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;fixed-layout=2;src=$SOURCE_HASH"
 
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \
       && -s "$OUT/office-host.js" \
-      && -s "$OUT/fixed-layout.js" \
       && -s "$OUT/host.css" ]]; then
   echo "== Office runtime cached: $VERSION"
   exit 0
@@ -58,9 +57,14 @@ cp "$ROOT/resources/office/entry.js" "$CACHE/entry.js"
   --target=safari15 \
   --outfile="$OUT/office-host.js"
 
+# Keep the fixed-layout compatibility shim in the same runtime file that CI
+# already verifies inside the final .app. This avoids another Build-810 class
+# failure where index.html references a helper that was never copied.
+printf '\n' >> "$OUT/office-host.js"
+cat "$ROOT/resources/office/fixed-layout.js" >> "$OUT/office-host.js"
+
 cp "$ROOT/resources/office/index.html" "$OUT/index.html"
 cp "$ROOT/resources/office/host.css" "$OUT/host.css"
-cp "$ROOT/resources/office/fixed-layout.js" "$OUT/fixed-layout.js"
 
 mkdir -p "$OUT/licenses"
 for pkg in \
@@ -81,14 +85,13 @@ for pkg in \
 done
 
 printf '%s\n' "$VERSION" > "$STAMP"
-for file in index.html office-host.js fixed-layout.js host.css; do
+for file in index.html office-host.js host.css; do
   if [[ ! -s "$OUT/$file" ]]; then
     echo "ERROR: Office runtime output missing: $file" >&2
     exit 1
   fi
 done
 node --check "$OUT/office-host.js"
-node --check "$OUT/fixed-layout.js"
 
 grep -q 'ffoffice:///document' "$OUT/office-host.js" || {
   echo "ERROR: Office runtime document bridge missing" >&2; exit 1;
@@ -99,7 +102,7 @@ grep -q 'FFOffice' "$OUT/office-host.js" || {
 grep -q 'legacy-word-docx-layout' "$OUT/office-host.js" || {
   echo "ERROR: Office runtime legacy Word layout path missing" >&2; exit 1;
 }
-grep -q 'scale(' "$OUT/fixed-layout.js" || {
+grep -q 'ff-fixed-layout-stage' "$OUT/office-host.js" || {
   echo "ERROR: Office fixed-layout compositor scaler missing" >&2; exit 1;
 }
 
