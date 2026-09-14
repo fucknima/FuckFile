@@ -18,6 +18,15 @@
   <span id="ff-search-count" aria-live="polite"></span>
   <button id="ff-search-close" type="button" aria-label="关闭搜索">✕</button>
 </div>
+<div id="ff-notice" class="ff-hidden" role="status">
+  <span id="ff-notice-text"></span>
+  <button id="ff-notice-action" type="button">系统快速查看</button>
+  <button id="ff-notice-close" type="button" aria-label="关闭提示">✕</button>
+</div>
+<div id="ff-pagebar" class="ff-hidden">
+  <input id="ff-page-slider" type="range" min="1" max="1" step="1" value="1" aria-label="跳转页面">
+  <span id="ff-page-label" aria-live="polite"></span>
+</div>
 <div id="ff-status" role="status">
   <div class="ff-spinner"></div>
   <div id="ff-status-text">正在初始化办公文档阅读器…</div>
@@ -28,6 +37,7 @@
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><line x1="16.6" y1="16.6" x2="21" y2="21"></line></svg>
   </button>
   <div id="ff-format-label">文档</div>
+  <button id="ff-page-button" class="ff-page-button ff-hidden" type="button" aria-label="页码与跳转">1/1</button>
   <div class="ff-toolbar-spacer"></div>
   <button id="ff-zoom-out" class="ff-tool-button" type="button" aria-label="缩小">−</button>
   <button id="ff-zoom-value" class="ff-zoom-value" type="button" aria-label="恢复百分之百缩放">100%</button>

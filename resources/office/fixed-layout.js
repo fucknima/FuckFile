@@ -181,10 +181,27 @@
     if (event.target && event.target !== host) scheduleMeasure();
   }, true);
 
+  function hostOffsetX() {
+    const offset = Number.parseFloat(host.style.left);
+    return Number.isFinite(offset) ? offset : 0;
+  }
+
   window.addEventListener('resize', () => {
     if (!(baseWidth > 0)) return;
-    if (autoFit) scheduleMeasure();
-    else applyTransform();
+    if (autoFit) {
+      scheduleMeasure();
+      return;
+    }
+    // Rotation/resize while the user owns the zoom: keep the document point
+    // at the viewport centre stable instead of letting it drift.
+    const anchorX = (view.scrollLeft + view.clientWidth / 2 - hostOffsetX()) / currentZoom;
+    const anchorY = (view.scrollTop + view.clientHeight / 2) / currentZoom;
+    applyTransform();
+    const scaledWidth = baseWidth * currentZoom;
+    const offset = scaledWidth < view.clientWidth
+      ? (view.clientWidth - scaledWidth) / 2 : 0;
+    view.scrollLeft = Math.max(0, anchorX * currentZoom - view.clientWidth / 2 + offset);
+    view.scrollTop = Math.max(0, anchorY * currentZoom - view.clientHeight / 2);
   });
 
   // entry.js drives the HUD/state from this: the shim can change zoom on its

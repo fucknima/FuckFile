@@ -74,10 +74,12 @@ function zoomFromTransform(host) {
 
 let frameQueue = [];
 let events = [];
+let listeners = {};
 
 function setupDom(elements) {
   frameQueue = [];
   events = [];
+  listeners = {};
   global.requestAnimationFrame = (cb) => { frameQueue.push(cb); return frameQueue.length; };
   global.setTimeout = () => 0;
   global.CustomEvent = class CustomEvent {
@@ -94,7 +96,7 @@ function setupDom(elements) {
     scrollX: 0,
     scrollY: 0,
     dispatchEvent(event) { events.push(event); return true; },
-    addEventListener() {},
+    addEventListener(type, handler) { listeners[type] = handler; },
   };
   global.document = {
     getElementById(id) { return elements[id] || null; },
@@ -193,6 +195,14 @@ function testOfficeAutoFit() {
   flushFrames();
   check(host.style.width === widthBefore,
     'office: search decorations do not trigger a re-measure, got ' + host.style.width);
+
+  // Rotation with a user zoom keeps the point at the viewport centre stable.
+  view.clientWidth = 500;
+  view.scrollLeft = 50;
+  view.scrollTop = 100;
+  listeners.resize?.();
+  check(Math.abs(view.scrollLeft - 105.25) < 0.6 && Math.abs(view.scrollTop - 100) < 0.6,
+    'office: resize anchors the centre, got ' + view.scrollLeft + ',' + view.scrollTop);
 }
 
 function testDocxFit() {

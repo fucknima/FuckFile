@@ -2,6 +2,7 @@
 
 #import "FFLogger.h"
 #import "FFQuickLookViewController.h"
+#import "FFViewerStateStore.h"
 
 #import <WebKit/WebKit.h>
 
@@ -220,8 +221,23 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
     [center addObserver:self selector:@selector(applicationDidBecomeActive:)
         name:UIApplicationDidBecomeActiveNotification object:nil];
 
+    // Resume the last reading position for this exact file version.
+    if (!self.lastState)
+        self.lastState = [FFViewerStateStore stateForFilePath:self.filePath];
+
     [self loadRuntimePageForReason:@"initial"];
     FFLogTag(@"Spreadsheet", @"open path=%@", self.filePath);
+}
+
+- (void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    if (!self.isMovingFromParentViewController) return;
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        if (weakSelf.lastState)
+            [FFViewerStateStore setState:weakSelf.lastState forFilePath:weakSelf.filePath];
+    }];
 }
 
 - (void)dealloc
@@ -283,7 +299,11 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 - (void)applicationDidEnterBackground:(__unused NSNotification *)note
 {
     [self rememberBackgroundFileSignature];
-    [self captureRuntimeState];
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        if (weakSelf.lastState)
+            [FFViewerStateStore setState:weakSelf.lastState forFilePath:weakSelf.filePath];
+    }];
     FFLogTag(@"Spreadsheet", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
 }
@@ -300,12 +320,21 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 
 - (void)captureRuntimeState
 {
-    if (!self.documentRendered || !self.webView) return;
+    [self captureRuntimeStateWithCompletion:nil];
+}
+
+- (void)captureRuntimeStateWithCompletion:(void (^ _Nullable)(void))completion
+{
+    if (!self.documentRendered || !self.webView) {
+        if (completion) completion();
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:@"window.FFSpreadsheet && window.FFSpreadsheet.captureState ? window.FFSpreadsheet.captureState() : null"
         completionHandler:^(id value, NSError *error) {
             if (!error && [value isKindOfClass:NSDictionary.class])
                 weakSelf.lastState = value;
+            if (completion) completion();
         }];
 }
 
@@ -490,10 +519,14 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 
 - (void)reloadManually
 {
-    [self captureRuntimeState];
-    self.needsForegroundRecovery = YES;
-    self.recoveryInFlight = NO;
-    [self recoverWebContentIfVisible];
+    // Capture first: navigating away can drop a pending evaluateJavaScript,
+    // which would silently lose the reading position on reload.
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        weakSelf.needsForegroundRecovery = YES;
+        weakSelf.recoveryInFlight = NO;
+        [weakSelf recoverWebContentIfVisible];
+    }];
 }
 
 - (void)openQuickLook

@@ -343,3 +343,16 @@
 - [ ] 快速滚动测试
 - [ ] Thumbnail 性能
 - [ ] 文件任务并发限制
+
+## Office 查看器体验（2026-09-14）
+
+- [x] 打开默认适应宽度（Word/PPT/结构化预览；xlsx 按已用列范围 fit，切表重算直到手动缩放）
+- [x] 文内搜索（Office 查看器 / docx / 表格）；分页 Word 增加页码、进度与滑动跳页
+- [x] Word 布局文本可选中复制；双击在适应宽度与 100% 间切换
+- [x] .docx 家族并入统一 office-document 查看器（旧 docx 查看器保留为手动选项）
+- [x] 后台恢复：WebContent 终止可检测，缩放与阅读位置原地恢复
+- [x] 每文件阅读位置/缩放持久化（FFViewerStateStore，40 条 LRU，文件变更自动失效）
+- [x] 导出 PDF（createPDF 全文内容，走分享面板）
+- [x] 图表/嵌入对象检测与文本级格式的保真提示条，一键转系统快速查看
+- [ ] 渲染器能力上限（图表/SmartArt/OMML 公式/PPT 母版动画/mdgate 纯文本格式）：只提示，不渲染
+- [ ] xlsx 公式单元格依赖缓存值、列宽按 wch×7+5 估算；图表/条件格式/批注不渲染（Univer core preset）

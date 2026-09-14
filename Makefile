@@ -80,6 +80,7 @@ FuckFile_FILES = \
 	src/FFDocxViewerViewController.m \
 	src/FFSpreadsheetViewController.m \
 	src/FFOfficeDocumentViewController.m \
+	src/FFViewerStateStore.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \

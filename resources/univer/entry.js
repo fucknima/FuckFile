@@ -12,6 +12,7 @@ const ROW_HEADER_WIDTH = 46;
 const COLUMN_HEADER_HEIGHT = 20;
 const DEFAULT_COLUMN_WIDTH = 73;
 const sheetContentWidth = new Map();
+const sheetModels = new Map();
 
 let univerAPI = null;
 let activeWorkbook = null;
@@ -201,6 +202,7 @@ function convertWorkbook(book, name) {
     if (!source) return;
     sheetOrder.push(id);
     sheets[id] = buildSheetData(source, sheetName, id, Number(metadata[index]?.Hidden || 0) !== 0);
+    sheetModels.set(id, sheets[id]);
   });
 
   if (!sheetOrder.length) throw new Error('工作簿中的工作表均无法读取。');
@@ -305,6 +307,7 @@ function refreshSheetHUD() {
       try {
         activeWorkbook.setActiveSheet?.(sheet);
         await enforceViewerMode();
+        clearSheetSearch();
         if (!userZoom) fitToWidth();
         refreshSheetHUD();
         updateZoomHUD();
@@ -487,6 +490,122 @@ function installViewerToolbar() {
     if (menu?.contains(event.target) || sheetButton?.contains(event.target)) return;
     closeSheetMenu();
   });
+}
+
+// ---- Cell search --------------------------------------------------------
+
+let sheetSearchHits = [];
+let sheetSearchIndex = -1;
+let sheetSearchQuery = '';
+
+function columnLabel(index) {
+  let value = index + 1;
+  let label = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+}
+
+function updateSheetSearchCount() {
+  const label = document.getElementById('ff-search-count');
+  if (!label) return;
+  if (sheetSearchIndex >= 0 && sheetSearchHits.length) {
+    const hit = sheetSearchHits[sheetSearchIndex];
+    label.textContent = `${sheetSearchIndex + 1}/${sheetSearchHits.length} · ${columnLabel(hit.column)}${hit.row + 1}`;
+  } else if (sheetSearchHits.length) {
+    label.textContent = String(sheetSearchHits.length);
+  } else {
+    label.textContent = sheetSearchQuery ? '0' : '';
+  }
+}
+
+function clearSheetSearch() {
+  sheetSearchHits = [];
+  sheetSearchIndex = -1;
+  sheetSearchQuery = '';
+  updateSheetSearchCount();
+}
+
+function buildSheetSearchHits(query) {
+  clearSheetSearch();
+  const model = sheetModels.get(sheetId(activeSheet()));
+  const cellData = model?.cellData || {};
+  if (!query) return;
+  const lower = query.toLocaleLowerCase();
+  const hits = [];
+  for (const rowKey of Object.keys(cellData)) {
+    const row = cellData[rowKey];
+    if (!row) continue;
+    for (const columnKey of Object.keys(row)) {
+      const value = row[columnKey]?.v;
+      if (value === undefined || value === null) continue;
+      if (String(value).toLocaleLowerCase().includes(lower)) {
+        hits.push({ row: Number(rowKey), column: Number(columnKey) });
+        if (hits.length >= 500) break;
+      }
+    }
+    if (hits.length >= 500) break;
+  }
+  hits.sort((a, b) => a.row - b.row || a.column - b.column);
+  sheetSearchQuery = query;
+  sheetSearchHits = hits;
+  updateSheetSearchCount();
+}
+
+function stepSheetSearch(direction) {
+  const input = document.getElementById('ff-search-input');
+  const query = String(input?.value || '').trim();
+  if (!query) { clearSheetSearch(); return; }
+  if (!sheetSearchHits.length || sheetSearchQuery !== query) buildSheetSearchHits(query);
+  if (!sheetSearchHits.length) { updateSheetSearchCount(); return; }
+  sheetSearchIndex = (sheetSearchIndex + direction + sheetSearchHits.length) % sheetSearchHits.length;
+  const hit = sheetSearchHits[sheetSearchIndex];
+  try { activeSheet()?.scrollToCell?.(hit.row, hit.column, 0); } catch (_) {}
+  updateSheetSearchCount();
+  emitState(true);
+}
+
+function setSheetSearchVisible(visible) {
+  const bar = document.getElementById('ff-searchbar');
+  const input = document.getElementById('ff-search-input');
+  if (!bar) return;
+  bar.classList.toggle('ff-hidden', !visible);
+  if (visible) {
+    try { input?.focus(); input?.select?.(); } catch (_) {}
+    return;
+  }
+  clearSheetSearch();
+  if (input) input.value = '';
+  try { input?.blur(); } catch (_) {}
+}
+
+function installSheetSearch() {
+  const toggle = document.getElementById('ff-search-toggle');
+  const input = document.getElementById('ff-search-input');
+  if (!toggle || !input) return;
+  toggle.addEventListener('click', () => setSheetSearchVisible(true));
+  document.getElementById('ff-search-close')?.addEventListener('click',
+    () => setSheetSearchVisible(false));
+  document.getElementById('ff-search-prev')?.addEventListener('click', () => {
+    stepSheetSearch(-1);
+    try { input.focus(); } catch (_) {}
+  });
+  document.getElementById('ff-search-next')?.addEventListener('click', () => {
+    stepSheetSearch(1);
+    try { input.focus(); } catch (_) {}
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      stepSheetSearch(event.shiftKey ? -1 : 1);
+    } else if (event.key === 'Escape') {
+      setSheetSearchVisible(false);
+    }
+  });
+  input.addEventListener('search', () => { if (!input.value) clearSheetSearch(); });
 }
 
 function forceEndEditing() {
@@ -791,6 +910,8 @@ async function openDocument(payload = {}) {
       dense: false,
     });
     sheetContentWidth.clear();
+    sheetModels.clear();
+    setSheetSearchVisible(false);
     const data = convertWorkbook(book, currentDocumentName);
 
     if (activeWorkbook?.dispose) {
@@ -838,6 +959,7 @@ async function boot() {
     univerAPI = result.univerAPI;
     window.FFSpreadsheet = { open: openDocumentForNative, captureState, fit: fitToWidth };
     installViewerToolbar();
+    installSheetSearch();
     installFocusGuards();
     installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);

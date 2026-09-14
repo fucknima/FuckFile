@@ -43,7 +43,12 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
 
             // Dedicated offline Office readers. Quick Look is no longer the
             // default route for Office formats; it remains a manual fallback.
-            @"docx": @"docx", @"docm": @"docx", @"dotx": @"docx", @"dotm": @"docx",
+            // The .docx family shares the unified office-document viewer so
+            // fixed-layout zoom, search, page jump and selection behave the
+            // same as .doc/.ppt/…; the older docx viewer stays registered as a
+            // manual option.
+            @"docx": @"office-document", @"docm": @"office-document",
+            @"dotx": @"office-document", @"dotm": @"office-document",
             @"xls": @"spreadsheet", @"xlsx": @"spreadsheet", @"xlsm": @"spreadsheet",
             @"xlsb": @"spreadsheet", @"xlt": @"spreadsheet", @"xltx": @"spreadsheet",
             @"xltm": @"spreadsheet", @"csv": @"spreadsheet", @"tsv": @"spreadsheet",
@@ -75,6 +80,7 @@ static NSString * const kFFAssociationOverridesKey = @"FFFileAssociations.overri
 static NSString * const kFFRemovedOfficeReadingStatesKey = @"FFOfficeReadingStatesV1";
 static NSString * const kFFSpreadsheetViewerMigrationKey = @"FFSpreadsheetViewerMigrationV1";
 static NSString * const kFFOfficeDocumentViewerMigrationKey = @"FFOfficeDocumentViewerMigrationV2";
+static NSString * const kFFUnifiedWordViewerMigrationKey = @"FFUnifiedWordViewerMigrationV3";
 
 static BOOL FFIsDocxFamily(NSString *extension)
 {
@@ -137,9 +143,9 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
                 return;
             NSString *extension = [(NSString *)key lowercaseString];
             if ([value isEqualToString:@"office"]) {
-                if (FFIsDocxFamily(extension)) migrated[key] = @"docx";
-                else if (FFIsSpreadsheetFamily(extension)) migrated[key] = @"spreadsheet";
-                else if (FFIsOfficeDocumentFamily(extension)) migrated[key] = @"office-document";
+                if (FFIsSpreadsheetFamily(extension)) migrated[key] = @"spreadsheet";
+                else if (FFIsDocxFamily(extension) || FFIsOfficeDocumentFamily(extension))
+                    migrated[key] = @"office-document";
                 else migrated[key] = @"quicklook";
                 changed = YES;
             }
@@ -169,6 +175,19 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
                 }
             }
             [defaults setBool:YES forKey:kFFOfficeDocumentViewerMigrationKey];
+        }
+
+        // Build 852+: the .docx family moved onto the unified Office viewer.
+        // Drop stale explicit "docx" choices once so existing installs adopt
+        // the new default; explicit choices made afterwards remain untouched.
+        if (![defaults boolForKey:kFFUnifiedWordViewerMigrationKey]) {
+            for (NSString *key in [migrated.allKeys copy]) {
+                if (FFIsDocxFamily(key) && [migrated[key] isEqualToString:@"docx"]) {
+                    [migrated removeObjectForKey:key];
+                    changed = YES;
+                }
+            }
+            [defaults setBool:YES forKey:kFFUnifiedWordViewerMigrationKey];
         }
 
         if (changed) [defaults setObject:migrated forKey:kFFAssociationOverridesKey];

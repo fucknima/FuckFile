@@ -1,3 +1,4 @@
+import JSZip from 'jszip';
 import { Ream } from 'reamkit';
 import { renderAsync as renderDocxPreview } from 'docx-preview';
 import { toMarkdown as odfToMarkdown } from '@mdgate/odf';
@@ -150,6 +151,7 @@ function emitStateThrottled() {
   scrollEmitTimer = window.setTimeout(() => {
     scrollEmitTimer = 0;
     emitState(false);
+    updatePageHUD();
   }, 150);
 }
 
@@ -363,6 +365,110 @@ function installSearch() {
   input.addEventListener('search', () => { if (!input.value) clearSearchHits(); });
 }
 
+// ---- Page navigation ----------------------------------------------------
+
+function pageSections() {
+  const surface = host();
+  if (!surface || !surface.classList.contains('ff-word-layout')) return [];
+  return Array.from(surface.querySelectorAll('.ffdocx-wrapper > section.ffdocx'));
+}
+
+function currentPageIndex(sections) {
+  const view = viewport();
+  if (!view || !sections.length) return 0;
+  const viewRect = view.getBoundingClientRect();
+  const center = view.scrollTop + view.clientHeight / 2;
+  let index = 0;
+  for (let i = 0; i < sections.length; i += 1) {
+    const rect = sections[i].getBoundingClientRect();
+    const top = view.scrollTop + (rect.top - viewRect.top);
+    if (top <= center) index = i;
+    else break;
+  }
+  return index;
+}
+
+function updatePageHUD() {
+  const button = document.getElementById('ff-page-button');
+  const slider = document.getElementById('ff-page-slider');
+  const label = document.getElementById('ff-page-label');
+  if (!button || !slider || !label) return;
+  const sections = pageSections();
+  if (sections.length < 2) {
+    button.classList.add('ff-hidden');
+    document.getElementById('ff-pagebar')?.classList.add('ff-hidden');
+    return;
+  }
+  const index = currentPageIndex(sections);
+  const text = `${index + 1}/${sections.length}`;
+  button.classList.remove('ff-hidden');
+  button.textContent = text;
+  if (slider.max !== String(sections.length)) slider.max = String(sections.length);
+  slider.value = String(index + 1);
+  label.textContent = text;
+}
+
+function scrollToPage(index) {
+  const sections = pageSections();
+  if (!sections.length) return;
+  const clamped = Math.max(0, Math.min(sections.length - 1, index));
+  const view = viewport();
+  if (!view) return;
+  const viewRect = view.getBoundingClientRect();
+  const rect = sections[clamped].getBoundingClientRect();
+  view.scrollTop = Math.max(0, view.scrollTop + (rect.top - viewRect.top) - 8);
+  updatePageHUD();
+  emitState(true);
+}
+
+function installPageControls() {
+  const button = document.getElementById('ff-page-button');
+  const slider = document.getElementById('ff-page-slider');
+  if (!button || !slider) return;
+  button.addEventListener('click', () => {
+    document.getElementById('ff-pagebar')?.classList.toggle('ff-hidden');
+    updatePageHUD();
+  });
+  slider.addEventListener('input', () => scrollToPage(Number(slider.value) - 1));
+  slider.addEventListener('change', () => scrollToPage(Number(slider.value) - 1));
+}
+
+// ---- Fidelity notice ----------------------------------------------------
+
+function showNotice(text) {
+  const bar = document.getElementById('ff-notice');
+  const label = document.getElementById('ff-notice-text');
+  if (!bar || !label) return;
+  label.textContent = text;
+  bar.classList.remove('ff-hidden');
+}
+
+function hideNotice() {
+  document.getElementById('ff-notice')?.classList.add('ff-hidden');
+}
+
+// Charts, SmartArt and OLE embeddings are rendered by Office, not by
+// docx-preview; warn instead of silently dropping them.
+async function docxHasEmbeddedObjects(bytes) {
+  try {
+    const zip = await JSZip.loadAsync(bytes);
+    return Object.keys(zip.files).some((name) =>
+      name.startsWith('word/charts/') ||
+      name.startsWith('word/diagrams/') ||
+      name.startsWith('word/embeddings/'));
+  } catch (_) {
+    return false;
+  }
+}
+
+function installNotice() {
+  document.getElementById('ff-notice-close')?.addEventListener('click', hideNotice);
+  document.getElementById('ff-notice-action')?.addEventListener('click', () => {
+    hideNotice();
+    bridge({ type: 'quicklook' });
+  });
+}
+
 function extensionOf(name) {
   const clean = String(name || '').toLowerCase().split(/[?#]/)[0];
   const dot = clean.lastIndexOf('.');
@@ -388,6 +494,7 @@ function resetSurface(modeClass) {
   const surface = host();
   if (!surface) throw new Error('文档显示区域不存在。');
   clearSearchHits();
+  document.getElementById('ff-pagebar')?.classList.add('ff-hidden');
   surface.textContent = '';
   surface.classList.remove('ff-word-layout', 'ff-frame-layout');
   if (modeClass) surface.classList.add(modeClass);
@@ -536,6 +643,11 @@ async function mountWordDocument(bytes, ext, state) {
     // geometry. Legacy .doc/.dot is therefore normalized to OOXML first and
     // rendered by the same paginated DOCX engine used elsewhere in FuckFile.
     setStatus(`正在转换旧版 Word 文档（${currentName}）…`);
+    // Give the status a frame to paint before the synchronous WASM parse
+    // blocks the web content thread.
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
     const parsed = Ream.parse(bytes);
     docxBytes = await parsed.convert('docx');
     mode = 'legacy-word-docx-layout';
@@ -553,6 +665,9 @@ async function mountWordDocument(bytes, ext, state) {
   });
 
   setFormatLabel(LEGACY_WORD.has(ext) ? 'Word · 兼容布局预览' : 'Word · 布局预览');
+  if (await docxHasEmbeddedObjects(docxBytes)) {
+    showNotice('此文档含图表或嵌入对象，可能显示不完整；排版请以系统快速查看为准。');
+  }
   requestAnimationFrame(() => requestAnimationFrame(() => restoreState(state)));
   return mode;
 }
@@ -581,6 +696,7 @@ async function renderBytes(bytes, ext, state) {
 
   const markdown = await structuredMarkdown(bytes, ext);
   setFormatLabel(labelForExtension(ext, true));
+  showNotice('此格式为文本级预览：排版、图片可能不完整；请以系统快速查看为准。');
   mountDocument(markdownDocument(markdown), state);
   return 'structured';
 }
@@ -597,6 +713,7 @@ async function openDocument(payload = {}) {
   zoom = clampZoom(Number(restored?.zoom || 1));
   updateZoomHUD();
   setSearchBarVisible(false);
+  hideNotice();
   setStatus(`正在打开 ${currentName}…`);
 
   try {
@@ -610,6 +727,7 @@ async function openDocument(payload = {}) {
     if (generation !== renderGeneration) return;
     hideStatus();
     bridge({ type: 'loaded', mode, extension: currentExtension });
+    updatePageHUD();
     emitState(true);
   } catch (error) {
     if (generation !== renderGeneration) return;
@@ -752,6 +870,16 @@ function installViewerGestures() {
   view.addEventListener('touchstart', cancelPendingScrollRestore, { passive: true, capture: true });
   view.addEventListener('wheel', cancelPendingScrollRestore, { passive: true, capture: true });
   view.addEventListener('scroll', emitStateThrottled, { passive: true });
+  // Double-tap toggles between fit-width and actual size, like Quick Look.
+  view.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    if (autoFitActive) {
+      disableAutoFit();
+      setZoom(1, null, true);
+    } else {
+      fitToWidth();
+    }
+  });
   view.addEventListener('click', (event) => {
     if (openDirectLink(event) || openRenderedLinkAtPoint(event.clientX, event.clientY)) {
       event.preventDefault();
@@ -768,10 +896,13 @@ function boot() {
       if (!detail || !Number.isFinite(Number(detail.zoom))) return;
       zoom = clampZoom(Number(detail.zoom));
       updateZoomHUD();
+      updatePageHUD();
       if (detail.autoFit) emitState(false);
     });
     installToolbar();
     installSearch();
+    installPageControls();
+    installNotice();
     installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);
     document.addEventListener('visibilitychange', () => {

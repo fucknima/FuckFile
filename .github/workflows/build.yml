@@ -157,9 +157,10 @@ jobs:
           grep -q '@"pages": @"office-document"' src/FFFileAssociationService.m
           grep -q '@"wps": @"office-document"' src/FFFileAssociationService.m
           grep -q '@"xlsx": @"spreadsheet"' src/FFFileAssociationService.m
-          grep -q '@"docx": @"docx"' src/FFFileAssociationService.m
+          grep -q '@"docx": @"office-document"' src/FFFileAssociationService.m
           grep -q 'FFOfficeDocumentViewController' src/FFViewerRegistry.m
           grep -q 'src/FFOfficeDocumentViewController.m' Makefile
+          grep -q 'src/FFViewerStateStore.m' Makefile
           grep -q '.office-runtime/bundle' Makefile
           test -f scripts/prepare_office_runtime.sh
           test -f resources/office/entry.js
@@ -173,8 +174,13 @@ jobs:
           grep -q 'NSURLErrorCancelled' src/FFOfficeDocumentViewController.m
           grep -q 'ff-search-input' resources/office/index.html
           grep -q 'buildSearchHits' resources/office/entry.js
+          grep -q 'ff-page-slider' resources/office/index.html
+          grep -q 'exportPDF' src/FFOfficeDocumentViewController.m
+          grep -q 'FFViewerStateStore' src/FFOfficeDocumentViewController.m
           grep -q 'FFSpreadsheet.fit' src/FFSpreadsheetViewController.m
           grep -q 'fitToWidth' resources/univer/entry.js
+          grep -q 'ff-search-input' resources/univer/index.html
+          grep -q 'buildSheetSearchHits' resources/univer/entry.js
           node tests/viewer_fit_check.js
 
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)

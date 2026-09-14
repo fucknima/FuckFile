@@ -2,6 +2,7 @@
 
 #import "FFLogger.h"
 #import "FFQuickLookViewController.h"
+#import "FFViewerStateStore.h"
 
 #import <WebKit/WebKit.h>
 
@@ -217,6 +218,11 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     [center addObserver:self selector:@selector(applicationDidBecomeActive:)
         name:UIApplicationDidBecomeActiveNotification object:nil];
 
+    // Resume the last reading position for this exact file version, when one
+    // was persisted (see applicationDidEnterBackground / viewDidDisappear).
+    if (!self.lastState)
+        self.lastState = [FFViewerStateStore stateForFilePath:self.filePath];
+
     [self loadRuntimePageForReason:@"initial"];
     FFLogTag(@"Office", @"open path=%@", self.filePath);
 }
@@ -280,11 +286,26 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
 - (void)applicationDidEnterBackground:(__unused NSNotification *)note
 {
     [self rememberBackgroundFileSignature];
-    [self captureRuntimeState];
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        if (weakSelf.lastState)
+            [FFViewerStateStore setState:weakSelf.lastState forFilePath:weakSelf.filePath];
+    }];
     // Preserve the exact WebContent instance when iOS keeps it alive. No
     // foreground reload is scheduled simply because the app backgrounded.
     FFLogTag(@"Office", @"background path=%@ rendered=%d", self.filePath,
         self.documentRendered);
+}
+
+- (void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    if (!self.isMovingFromParentViewController) return;
+    __weak typeof(self) weakSelf = self;
+    [self captureRuntimeStateWithCompletion:^{
+        if (weakSelf.lastState)
+            [FFViewerStateStore setState:weakSelf.lastState forFilePath:weakSelf.filePath];
+    }];
 }
 
 - (void)applicationDidBecomeActive:(__unused NSNotification *)note
@@ -464,6 +485,10 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
             [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
         return;
     }
+    if ([type isEqualToString:@"quicklook"]) {
+        [self openQuickLook];
+        return;
+    }
     if ([type isEqualToString:@"loaded"]) {
         self.recoveryInFlight = NO;
         self.webProcessTerminated = NO;
@@ -492,6 +517,9 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     UIAction *share = [UIAction actionWithTitle:@"分享原文件"
         image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf shareFile]; }];
+    UIAction *pdf = [UIAction actionWithTitle:@"导出 PDF"
+        image:[UIImage systemImageNamed:@"doc.richtext"] identifier:nil
+        handler:^(__unused UIAction *action) { [weakSelf exportPDF]; }];
     UIAction *fit = [UIAction actionWithTitle:@"适应宽度"
         image:[UIImage systemImageNamed:@"arrow.left.and.right"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf fitDocumentToWidth]; }];
@@ -503,7 +531,7 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, fit, reload, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[share, pdf, fit, reload, system]]];
 }
 
 - (void)shareFile
@@ -532,6 +560,62 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     [self.webView evaluateJavaScript:
         @"window.FFOffice && window.FFOffice.fit ? window.FFOffice.fit() : null;"
         completionHandler:nil];
+}
+
+// Captures the whole document (not just the visible part) as a PDF and hands
+// it to the share sheet. WKWebView's print formatter only paginates onscreen
+// content, so this uses the dedicated createPDF API over the full content
+// rect instead.
+- (void)exportPDF
+{
+    if (!self.webView) return;
+    if (!self.documentRendered) {
+        [self presentExportFailure:@"文档尚未渲染完成。"];
+        return;
+    }
+    CGSize content = self.webView.scrollView.contentSize;
+    CGSize bounds = self.webView.bounds.size;
+    WKPDFConfiguration *configuration = [WKPDFConfiguration new];
+    configuration.rect = CGRectMake(0, 0,
+        MAX(content.width, bounds.width), MAX(content.height, bounds.height));
+    __weak typeof(self) weakSelf = self;
+    [self.webView createPDFWithConfiguration:configuration
+        completionHandler:^(NSData *pdfData, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finishExportPDF:pdfData error:error];
+            });
+        }];
+}
+
+- (void)finishExportPDF:(NSData *)pdf error:(NSError *)error
+{
+    if (!pdf.length) {
+        [self presentExportFailure:error.localizedDescription ?: @"没有可导出的内容。"];
+        return;
+    }
+    NSString *base = self.filePath.lastPathComponent.stringByDeletingPathExtension;
+    if (!base.length) base = @"document";
+    NSString *path = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[base stringByAppendingPathExtension:@"pdf"]];
+    NSError *writeError = nil;
+    if (![pdf writeToFile:path options:NSDataWritingAtomic error:&writeError]) {
+        [self presentExportFailure:writeError.localizedDescription ?: @"写入 PDF 失败。"];
+        return;
+    }
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+    activity.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+    [self presentViewController:activity animated:YES completion:nil];
+    FFLogTag(@"Office", @"exported pdf path=%@ bytes=%lu", self.filePath, (unsigned long)pdf.length);
+}
+
+- (void)presentExportFailure:(NSString *)message
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出 PDF 失败"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault
+        handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)openQuickLook
