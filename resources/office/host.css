@@ -32,6 +32,35 @@ html, body {
   background: transparent;
 }
 
+#ff-document-host.ff-word-layout {
+  padding: 18px 6px 32px;
+}
+
+#ff-document-host.ff-word-layout .ff-word-render {
+  min-width: 100%;
+}
+
+#ff-document-host.ff-word-layout .ffdocx-wrapper {
+  min-width: max-content;
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+#ff-document-host.ff-word-layout .ffdocx-wrapper > section.ffdocx {
+  margin: 0 auto 16px !important;
+  background: #fff !important;
+  color: #000 !important;
+  box-shadow: 0 2px 14px rgba(0,0,0,.14);
+}
+
+/* Do not squeeze Word drawings to the WebView width. docx-preview already
+   emits their authored dimensions; a generic max-width rule causes the exact
+   right-edge clipping seen in legacy .doc previews. */
+#ff-document-host.ff-word-layout img,
+#ff-document-host.ff-word-layout svg {
+  max-width: none !important;
+}
+
 #ff-document-host .ff-fallback-document {
   box-sizing: border-box;
   width: min(920px, calc(100vw - 24px));
