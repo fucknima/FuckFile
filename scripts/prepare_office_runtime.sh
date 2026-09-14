@@ -11,7 +11,7 @@ SOURCE_HASH="$(cat \
   "$ROOT/resources/office/entry.js" \
   "$ROOT/resources/office/index.html" \
   "$ROOT/resources/office/host.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="reamkit=1.29.0;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;src=$SOURCE_HASH"
+VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;src=$SOURCE_HASH"
 
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \
@@ -29,6 +29,8 @@ cat > "$CACHE/package.json" <<'JSON'
   "private": true,
   "dependencies": {
     "reamkit": "1.29.0",
+    "docx-preview": "0.4.0",
+    "jszip": "3.10.1",
     "@mdgate/odf": "0.6.25",
     "@mdgate/rtf": "0.6.25",
     "@mdgate/pages": "0.6.25",
@@ -59,7 +61,7 @@ cp "$ROOT/resources/office/host.css" "$OUT/host.css"
 
 mkdir -p "$OUT/licenses"
 for pkg in \
-  reamkit \
+  reamkit docx-preview jszip \
   @mdgate/odf @mdgate/rtf @mdgate/pages @mdgate/numbers @mdgate/keynote @mdgate/wps \
   marked dompurify; do
   src="$CACHE/node_modules/$pkg"
@@ -68,6 +70,8 @@ for pkg in \
     cp "$src/LICENSE" "$OUT/licenses/${safe}.txt"
   elif [[ -f "$src/LICENSE.md" ]]; then
     cp "$src/LICENSE.md" "$OUT/licenses/${safe}.txt"
+  elif [[ -f "$src/LICENSE.markdown" ]]; then
+    cp "$src/LICENSE.markdown" "$OUT/licenses/${safe}.txt"
   elif [[ -f "$src/package.json" ]]; then
     cp "$src/package.json" "$OUT/licenses/${safe}-package.json"
   fi
@@ -87,6 +91,9 @@ grep -q 'ffoffice:///document' "$OUT/office-host.js" || {
 }
 grep -q 'FFOffice' "$OUT/office-host.js" || {
   echo "ERROR: Office runtime native bridge missing" >&2; exit 1;
+}
+grep -q 'legacy-word-docx-layout' "$OUT/office-host.js" || {
+  echo "ERROR: Office runtime legacy Word layout path missing" >&2; exit 1;
 }
 
 echo "== Office runtime ready: $VERSION ($(du -sh "$OUT" | awk '{print $1}'))"
