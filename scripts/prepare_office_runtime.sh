@@ -12,7 +12,7 @@ SOURCE_HASH="$(cat \
   "$ROOT/resources/office/fixed-layout.js" \
   "$ROOT/resources/office/index.html" \
   "$ROOT/resources/office/host.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;fixed-layout=2;src=$SOURCE_HASH"
+VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;fixed-layout=3;src=$SOURCE_HASH"
 
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \

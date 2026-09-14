@@ -321,6 +321,17 @@ static NSString * const FFDocxScheme = @"ffdocx";
     [self.webView evaluateJavaScript:script completionHandler:nil];
 }
 
+// First open of a document: fit the page width so nothing is clipped
+// horizontally, matching Quick Look's initial scale. Re-opens restore the
+// state captured in restoreRuntimeStateIfNeeded instead.
+- (void)fitDocumentToWidth
+{
+    if (!self.webView) return;
+    [self.webView evaluateJavaScript:
+        @"window.FFDocx && window.FFDocx.fitToWidth ? window.FFDocx.fitToWidth() : null;"
+        completionHandler:nil];
+}
+
 - (void)recoverWebContentIfVisible
 {
     if (!self.needsForegroundRecovery || self.recoveryInFlight) return;
@@ -451,7 +462,8 @@ static NSString * const FFDocxScheme = @"ffdocx";
         self.needsForegroundRecovery = NO;
         self.documentRendered = YES;
         self.errorPresented = NO;
-        [self restoreRuntimeStateIfNeeded];
+        if (self.lastState) [self restoreRuntimeStateIfNeeded];
+        else [self fitDocumentToWidth];
         FFLogTag(@"DOCX", @"rendered path=%@", self.filePath);
     } else if ([type isEqualToString:@"error"]) {
         self.recoveryInFlight = NO;

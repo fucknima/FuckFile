@@ -9,7 +9,7 @@ import { toMarkdown as wpsToMarkdown } from '@mdgate/wps';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
-const MIN_ZOOM = 0.35;
+const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4.0;
 const LEGACY_WORD = new Set(['doc', 'dot']);
 const OOXML_WORD = new Set(['docx', 'docm', 'dotx', 'dotm']);
@@ -24,6 +24,7 @@ const IWORK_KEYNOTE = new Set(['key']);
 const WPS = new Set(['wps', 'wpt', 'et', 'ett', 'dps', 'dpt']);
 
 let zoom = 1;
+let autoFitActive = true;
 let currentName = '办公文档';
 let currentExtension = '';
 let lastStateJSON = '';
@@ -57,6 +58,17 @@ function clampZoom(value) {
 
 function viewport() { return document.getElementById('ff-viewport'); }
 function host() { return document.getElementById('ff-document-host'); }
+
+function layoutControl() {
+  return window.FFOfficeLayout || null;
+}
+
+// Called only from user zoom gestures/buttons: the shim must stop re-fitting
+// the document once the user has chosen a zoom of their own.
+function disableAutoFit() {
+  autoFitActive = false;
+  layoutControl()?.setAutoFit(false);
+}
 
 function updateZoomHUD() {
   const label = document.getElementById('ff-zoom-value');
@@ -101,6 +113,7 @@ function captureState() {
     zoom,
     scrollX: Number(view?.scrollLeft || 0),
     scrollY: Number(view?.scrollTop || 0),
+    autoFit: autoFitActive,
   };
 }
 
@@ -115,7 +128,9 @@ function emitState(force = false) {
 function restoreState(state) {
   const view = viewport();
   if (!view || !state) return;
-  if (Number.isFinite(state.zoom)) applyZoom(state.zoom);
+  // While auto-fit is active the shim chooses the zoom from the measured
+  // document; replaying a stale zoom would fight the fit.
+  if (!autoFitActive && Number.isFinite(Number(state.zoom))) applyZoom(Number(state.zoom));
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (Number.isFinite(state.scrollX)) view.scrollLeft = Math.max(0, state.scrollX);
     if (Number.isFinite(state.scrollY)) view.scrollTop = Math.max(0, state.scrollY);
@@ -345,9 +360,14 @@ async function renderBytes(bytes, ext, state) {
 
 async function openDocument(payload = {}) {
   const generation = ++renderGeneration;
+  const restored = payload.state && typeof payload.state === 'object' ? payload.state : null;
+  // A saved state written before the user ever zoomed keeps opening at
+  // fit-width; only an explicit user zoom turns that off persistently.
+  autoFitActive = !(restored && restored.autoFit === false);
+  layoutControl()?.setAutoFit(autoFitActive);
   currentName = payload.name || '办公文档';
   currentExtension = extensionOf(currentName);
-  zoom = clampZoom(Number(payload.state?.zoom || 1));
+  zoom = clampZoom(Number(restored?.zoom || 1));
   updateZoomHUD();
   setStatus(`正在打开 ${currentName}…`);
 
@@ -379,9 +399,18 @@ function openDocumentForNative(payload = {}) {
 }
 
 function installToolbar() {
-  document.getElementById('ff-zoom-out')?.addEventListener('click', () => setZoom(zoom - 0.1, null, true));
-  document.getElementById('ff-zoom-in')?.addEventListener('click', () => setZoom(zoom + 0.1, null, true));
-  document.getElementById('ff-zoom-value')?.addEventListener('click', () => setZoom(1, null, true));
+  document.getElementById('ff-zoom-out')?.addEventListener('click', () => {
+    disableAutoFit();
+    setZoom(zoom - 0.1, null, true);
+  });
+  document.getElementById('ff-zoom-in')?.addEventListener('click', () => {
+    disableAutoFit();
+    setZoom(zoom + 0.1, null, true);
+  });
+  document.getElementById('ff-zoom-value')?.addEventListener('click', () => {
+    disableAutoFit();
+    setZoom(1, null, true);
+  });
 }
 
 function touchCenter(touches, rect) {
@@ -461,6 +490,7 @@ function installViewerGestures() {
     if (event.touches.length !== 2) return;
     const distance = touchDistance(event.touches);
     if (!(distance > 0)) return;
+    disableAutoFit();
     const center = touchCenter(event.touches, view.getBoundingClientRect());
     pinch = {
       distance,
@@ -503,6 +533,12 @@ function installViewerGestures() {
 function boot() {
   try {
     window.FFOffice = { open: openDocumentForNative, captureState };
+    window.addEventListener('ffofficezoom', (event) => {
+      const detail = event?.detail;
+      if (!detail || !Number.isFinite(Number(detail.zoom))) return;
+      zoom = clampZoom(Number(detail.zoom));
+      updateZoomHUD();
+    });
     installToolbar();
     installViewerGestures();
     stateTimer = window.setInterval(() => emitState(false), 1200);

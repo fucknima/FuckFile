@@ -1,6 +1,8 @@
 (() => {
   'use strict';
 
+  const MIN_ZOOM = 0.25;
+  const MAX_ZOOM = 4;
   const view = document.getElementById('ff-viewport');
   const host = document.getElementById('ff-document-host');
   if (!view || !host) return;
@@ -25,14 +27,40 @@
   host.style.transformOrigin = '0 0';
 
   let currentZoom = 1;
+  let lastNotifiedZoom = 0;
   let baseWidth = 0;
   let baseHeight = 0;
   let mutating = false;
   let measureToken = 0;
+  // Fresh documents open fitted to the viewport width (no horizontal
+  // clipping). Any explicit user zoom leaves this mode for good.
+  let autoFit = true;
+
+  function clampZoom(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, n));
+  }
 
   function numericZoom(value) {
     const n = Number.parseFloat(String(value || ''));
-    return Number.isFinite(n) && n > 0 ? n : currentZoom;
+    return Number.isFinite(n) && n > 0 ? clampZoom(n) : currentZoom;
+  }
+
+  function notifyZoomChanged() {
+    if (Math.abs(currentZoom - lastNotifiedZoom) < 0.0005) return;
+    lastNotifiedZoom = currentZoom;
+    try {
+      window.dispatchEvent(new CustomEvent('ffofficezoom', {
+        detail: { zoom: currentZoom, autoFit },
+      }));
+    } catch (_) {}
+  }
+
+  function fittedZoom() {
+    const width = view.clientWidth || 0;
+    if (!(width > 0) || !(baseWidth > 0)) return currentZoom;
+    return clampZoom(Math.min(1, width / baseWidth));
   }
 
   function extent() {
@@ -80,8 +108,10 @@
     baseHeight = Math.max(size.height, view.clientHeight);
     host.style.width = `${baseWidth}px`;
     host.style.height = `${baseHeight}px`;
+    if (autoFit) currentZoom = fittedZoom();
     mutating = false;
     applyTransform();
+    notifyZoomChanged();
   }
 
   function scheduleMeasure() {
@@ -104,6 +134,7 @@
     host.style.zoom = '';
     mutating = false;
     applyTransform();
+    notifyZoomChanged();
   }
 
   const observer = new MutationObserver((records) => {
@@ -127,8 +158,21 @@
 
   window.addEventListener('resize', () => {
     if (!(baseWidth > 0)) return;
-    applyTransform();
+    if (autoFit) scheduleMeasure();
+    else applyTransform();
   });
+
+  // entry.js drives the HUD/state from this: the shim can change zoom on its
+  // own while auto-fitting, and user zoom must switch auto-fit off.
+  window.FFOfficeLayout = {
+    setAutoFit(value) {
+      const next = !!value;
+      if (next === autoFit) return;
+      autoFit = next;
+      if (autoFit) scheduleMeasure();
+    },
+    isAutoFit() { return autoFit; },
+  };
 
   // If the renderer already touched the host between the previous script's
   // boot() call and this script executing, consume it immediately.

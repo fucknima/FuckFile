@@ -164,6 +164,13 @@ jobs:
           test -f scripts/prepare_office_runtime.sh
           test -f resources/office/entry.js
 
+          # Office/Word previews must open fit-to-width like Quick Look (no
+          # horizontal clipping) and stop refitting once the user zooms.
+          grep -q 'FFOfficeLayout' resources/office/fixed-layout.js
+          grep -q 'fitToWidth' resources/docx/docx-host.js
+          grep -q 'fitDocumentToWidth' src/FFDocxViewerViewController.m
+          node tests/viewer_fit_check.js
+
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |
           xcrun --sdk iphoneos clang -fobjc-arc -c -x objective-c-header \
