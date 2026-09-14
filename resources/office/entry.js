@@ -1,4 +1,5 @@
 import { Ream } from 'reamkit';
+import { renderAsync as renderDocxPreview } from 'docx-preview';
 import { toMarkdown as odfToMarkdown } from '@mdgate/odf';
 import { toMarkdown as rtfToMarkdown } from '@mdgate/rtf';
 import { toMarkdown as pagesToMarkdown } from '@mdgate/pages';
@@ -10,7 +11,9 @@ import DOMPurify from 'dompurify';
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 4.0;
-const VISUAL_WORD = new Set(['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm']);
+const LEGACY_WORD = new Set(['doc', 'dot']);
+const OOXML_WORD = new Set(['docx', 'docm', 'dotx', 'dotm']);
+const VISUAL_WORD = new Set([...LEGACY_WORD, ...OOXML_WORD]);
 const VISUAL_PRESENTATION = new Set([
   'ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'ppsm', 'pot', 'potx', 'potm',
 ]);
@@ -60,6 +63,13 @@ function updateZoomHUD() {
   if (label) label.textContent = `${Math.round(zoom * 100)}%`;
 }
 
+function applyZoom(value) {
+  zoom = clampZoom(value);
+  const surface = host();
+  if (surface) surface.style.zoom = String(zoom);
+  updateZoomHUD();
+}
+
 function setZoom(next, anchor = null, emit = false) {
   const view = viewport();
   const surface = host();
@@ -78,10 +88,7 @@ function setZoom(next, anchor = null, emit = false) {
   const contentX = (view.scrollLeft + anchorX) / oldZoom;
   const contentY = (view.scrollTop + anchorY) / oldZoom;
 
-  zoom = newZoom;
-  surface.style.zoom = String(newZoom);
-  updateZoomHUD();
-
+  applyZoom(newZoom);
   view.scrollLeft = Math.max(0, contentX * newZoom - anchorX);
   view.scrollTop = Math.max(0, contentY * newZoom - anchorY);
   if (emit) emitState(true);
@@ -108,11 +115,7 @@ function emitState(force = false) {
 function restoreState(state) {
   const view = viewport();
   if (!view || !state) return;
-  if (Number.isFinite(state.zoom)) {
-    zoom = clampZoom(state.zoom);
-    host().style.zoom = String(zoom);
-    updateZoomHUD();
-  }
+  if (Number.isFinite(state.zoom)) applyZoom(state.zoom);
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (Number.isFinite(state.scrollX)) view.scrollLeft = Math.max(0, state.scrollX);
     if (Number.isFinite(state.scrollY)) view.scrollTop = Math.max(0, state.scrollY);
@@ -141,6 +144,17 @@ function setFormatLabel(text) {
   if (label) label.textContent = text;
 }
 
+function resetSurface(modeClass) {
+  const surface = host();
+  if (!surface) throw new Error('文档显示区域不存在。');
+  surface.textContent = '';
+  surface.classList.remove('ff-word-layout', 'ff-frame-layout');
+  if (modeClass) surface.classList.add(modeClass);
+  surface.style.zoom = String(zoom);
+  activeFrame = null;
+  return surface;
+}
+
 function cleanGeneratedDocument(markup) {
   const parsed = new DOMParser().parseFromString(String(markup || ''), 'text/html');
   for (const node of parsed.querySelectorAll('script, object, embed, form, input, textarea, button, video, audio')) node.remove();
@@ -150,6 +164,10 @@ function cleanGeneratedDocument(markup) {
   csp.setAttribute('http-equiv', 'Content-Security-Policy');
   csp.setAttribute('content', "default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; connect-src 'none'");
   parsed.head.prepend(csp);
+
+  const guard = parsed.createElement('style');
+  guard.textContent = 'html,body{overflow:visible!important}';
+  parsed.head.append(guard);
 
   return DOMPurify.sanitize('<!doctype html>\n' + parsed.documentElement.outerHTML, {
     WHOLE_DOCUMENT: true,
@@ -169,36 +187,66 @@ function markdownDocument(markdown) {
     FORBID_ATTR: ['srcset'],
   });
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-    html,body{margin:0;padding:0;background:#fff;color:#1c1c1e;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;}
-    article{box-sizing:border-box;width:min(920px,100%);min-height:100vh;margin:0 auto;padding:30px 32px 48px;line-height:1.58;overflow-wrap:anywhere;}
+    html,body{margin:0;padding:0;background:#fff;color:#1c1c1e;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;overflow:visible}
+    article{box-sizing:border-box;width:min(920px,100%);min-height:100vh;margin:0;padding:30px 32px 48px;line-height:1.58;overflow-wrap:anywhere;}
     h1,h2,h3,h4{line-height:1.28;margin-top:1.35em} table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}th,td{border:1px solid rgba(60,60,67,.28);padding:7px 8px;vertical-align:top}pre{overflow:auto;padding:12px;border-radius:8px;background:#f2f2f7}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}img{max-width:100%;height:auto}a{color:#007aff}
     @media(prefers-color-scheme:dark){html,body{background:#1c1c1e;color:#f2f2f7}pre{background:#2c2c2e}a{color:#64a8ff}}
   </style></head><body><article>${rendered}</article></body></html>`;
 }
 
+function relaxFrameClipping(doc) {
+  const win = doc.defaultView;
+  if (!win || !doc.body) return;
+  const articles = doc.querySelectorAll('article');
+  for (const article of articles) {
+    article.style.setProperty('margin-left', '0', 'important');
+    article.style.setProperty('margin-right', '0', 'important');
+  }
+  for (const node of doc.querySelectorAll('body *')) {
+    if (!(node instanceof win.HTMLElement) && !(node instanceof win.SVGElement)) continue;
+    const style = win.getComputedStyle(node);
+    const clippedX = style.overflowX === 'hidden' || style.overflowX === 'clip';
+    if (clippedX && node.scrollWidth > node.clientWidth + 1)
+      node.style.setProperty('overflow-x', 'visible', 'important');
+  }
+}
+
+function measuredDocumentSize(doc) {
+  const root = doc.documentElement;
+  const body = doc.body;
+  let maxRight = Math.max(root?.scrollWidth || 0, body?.scrollWidth || 0);
+  let maxBottom = Math.max(root?.scrollHeight || 0, body?.scrollHeight || 0);
+  if (body) {
+    const nodes = [body, ...body.querySelectorAll('*')];
+    for (const node of nodes) {
+      if (!node.getBoundingClientRect) continue;
+      const rect = node.getBoundingClientRect();
+      if (!Number.isFinite(rect.right) || !Number.isFinite(rect.bottom)) continue;
+      maxRight = Math.max(maxRight, rect.right + (doc.defaultView?.scrollX || 0));
+      maxBottom = Math.max(maxBottom, rect.bottom + (doc.defaultView?.scrollY || 0));
+    }
+  }
+  return {
+    width: Math.ceil(Math.max(1, maxRight + 2)),
+    height: Math.ceil(Math.max(1, maxBottom + 2)),
+  };
+}
+
 function sizeFrame(frame) {
   try {
     const doc = frame.contentDocument;
-    if (!doc) return;
-    const root = doc.documentElement;
-    const body = doc.body;
-    root.style.overflow = 'visible';
-    body.style.overflow = 'visible';
-    const width = Math.max(root.scrollWidth, body.scrollWidth, viewport()?.clientWidth || 320);
-    frame.style.width = `${Math.max(1, width)}px`;
-    requestAnimationFrame(() => {
-      const height = Math.max(root.scrollHeight, body.scrollHeight, viewport()?.clientHeight || 480);
-      frame.style.height = `${Math.max(1, height)}px`;
-    });
+    if (!doc?.documentElement || !doc.body) return;
+    doc.documentElement.style.overflow = 'visible';
+    doc.body.style.overflow = 'visible';
+    relaxFrameClipping(doc);
+    const size = measuredDocumentSize(doc);
+    frame.style.width = `${size.width}px`;
+    frame.style.height = `${Math.max(size.height, viewport()?.clientHeight || 480)}px`;
   } catch (_) {}
 }
 
 function mountDocument(markup, state) {
-  const surface = host();
-  if (!surface) throw new Error('文档显示区域不存在。');
-  surface.textContent = '';
-  surface.style.zoom = String(zoom);
-  activeFrame = null;
+  const surface = resetSurface('ff-frame-layout');
 
   const frame = document.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-same-origin');
@@ -208,23 +256,63 @@ function mountDocument(markup, state) {
   frame.style.border = '0';
   frame.style.margin = '0 auto';
   frame.style.background = '#fff';
-  // The rendered document is visual content. Making the frame transparent to
-  // hit testing lets the parent iOS-style scroll surface keep native one-finger
-  // inertia and receive two-finger pinch gestures instead of trapping touches
-  // inside a non-scrolling iframe. Link taps are recovered by explicit hit
-  // testing in installViewerGestures().
+  // Keep all touches on the parent scroll surface. The rendered iframe is
+  // visual content only; links are recovered by explicit hit testing below.
   frame.style.pointerEvents = 'none';
   frame.style.width = `${Math.max(320, viewport()?.clientWidth || 320)}px`;
   frame.style.height = `${Math.max(480, viewport()?.clientHeight || 480)}px`;
   frame.addEventListener('load', () => {
     activeFrame = frame;
+    const doc = frame.contentDocument;
+    if (doc) {
+      for (const image of doc.images || [])
+        image.addEventListener('load', () => sizeFrame(frame), { once: true });
+    }
     sizeFrame(frame);
-    setTimeout(() => sizeFrame(frame), 80);
+    requestAnimationFrame(() => {
+      sizeFrame(frame);
+      setTimeout(() => {
+        sizeFrame(frame);
+        restoreState(state);
+      }, 80);
+    });
     setTimeout(() => sizeFrame(frame), 320);
-    restoreState(state);
   }, { once: true });
   frame.srcdoc = cleanGeneratedDocument(markup);
   surface.appendChild(frame);
+}
+
+async function mountWordDocument(bytes, ext, state) {
+  const surface = resetSurface('ff-word-layout');
+  const container = document.createElement('div');
+  container.className = 'ff-word-render';
+  surface.appendChild(container);
+
+  let docxBytes = bytes;
+  let mode = 'word-docx-layout';
+  if (LEGACY_WORD.has(ext)) {
+    // Ream's HTML output is deliberately flowed and can drop/fold page
+    // geometry. Legacy .doc/.dot is therefore normalized to OOXML first and
+    // rendered by the same paginated DOCX engine used elsewhere in FuckFile.
+    const parsed = Ream.parse(bytes);
+    docxBytes = await parsed.convert('docx');
+    mode = 'legacy-word-docx-layout';
+  }
+
+  await renderDocxPreview(docxBytes, container, null, {
+    className: 'ffdocx',
+    inWrapper: true,
+    breakPages: true,
+    renderHeaders: true,
+    renderFooters: true,
+    renderFootnotes: true,
+    useBase64URL: true,
+    ignoreLastRenderedPageBreak: false,
+  });
+
+  setFormatLabel(LEGACY_WORD.has(ext) ? 'Word · 兼容布局预览' : 'Word · 布局预览');
+  requestAnimationFrame(() => requestAnimationFrame(() => restoreState(state)));
+  return mode;
 }
 
 async function structuredMarkdown(bytes, ext) {
@@ -238,13 +326,15 @@ async function structuredMarkdown(bytes, ext) {
 }
 
 async function renderBytes(bytes, ext, state) {
-  if (VISUAL_WORD.has(ext) || VISUAL_PRESENTATION.has(ext)) {
+  if (VISUAL_WORD.has(ext)) return mountWordDocument(bytes, ext, state);
+
+  if (VISUAL_PRESENTATION.has(ext)) {
     const parsed = Ream.parse(bytes);
     const htmlBytes = await parsed.convert('html');
     const html = new TextDecoder('utf-8').decode(htmlBytes);
     setFormatLabel(labelForExtension(ext, false));
     mountDocument(html, state);
-    return 'visual';
+    return 'visual-presentation';
   }
 
   const markdown = await structuredMarkdown(bytes, ext);
@@ -339,6 +429,30 @@ function openRenderedLinkAtPoint(clientX, clientY) {
   return false;
 }
 
+function openDirectLink(event) {
+  if (activeFrame) return false;
+  const view = viewport();
+  const target = event.target;
+  const link = target?.closest?.('a[href]');
+  if (!view || !link) return false;
+  const href = link.getAttribute('href') || '';
+  if (href.startsWith('#')) {
+    const destination = document.getElementById(href.slice(1));
+    if (destination) {
+      const viewRect = view.getBoundingClientRect();
+      const rect = destination.getBoundingClientRect();
+      view.scrollTop = Math.max(0, view.scrollTop + rect.top - viewRect.top - 12);
+      emitState(true);
+    }
+    return true;
+  }
+  if (/^https?:/i.test(href)) {
+    bridge({ type: 'link', url: href });
+    return true;
+  }
+  return false;
+}
+
 function installViewerGestures() {
   const view = viewport();
   if (!view) return;
@@ -363,9 +477,7 @@ function installViewerGestures() {
     if (!(distance > 0)) return;
     const center = touchCenter(event.touches, view.getBoundingClientRect());
     const next = clampZoom(pinch.zoom * distance / pinch.distance);
-    zoom = next;
-    host().style.zoom = String(next);
-    updateZoomHUD();
+    applyZoom(next);
     view.scrollLeft = Math.max(0, pinch.contentX * next - center.x);
     view.scrollTop = Math.max(0, pinch.contentY * next - center.y);
     if (event.cancelable) event.preventDefault();
@@ -381,7 +493,7 @@ function installViewerGestures() {
   view.addEventListener('touchcancel', finish, { passive: true, capture: true });
   view.addEventListener('scroll', () => emitState(false), { passive: true });
   view.addEventListener('click', (event) => {
-    if (openRenderedLinkAtPoint(event.clientX, event.clientY)) {
+    if (openDirectLink(event) || openRenderedLinkAtPoint(event.clientX, event.clientY)) {
       event.preventDefault();
       event.stopPropagation();
     }
