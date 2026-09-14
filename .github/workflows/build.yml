@@ -181,7 +181,12 @@ jobs:
           grep -q 'fitToWidth' resources/univer/entry.js
           grep -q 'ff-search-input' resources/univer/index.html
           grep -q 'buildSheetSearchHits' resources/univer/entry.js
+          grep -q 'style-xml.mjs' scripts/prepare_univer_runtime.sh
+          grep -q 'buildStyleContext' resources/univer/entry.js
+          grep -q 'registerSheetTap' resources/univer/entry.js
+          grep -q 'toggleZoomForDoubleTap' resources/office/entry.js
           node tests/viewer_fit_check.js
+          node tests/style_xml_check.mjs
 
       - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
         run: |

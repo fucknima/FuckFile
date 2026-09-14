@@ -354,5 +354,9 @@
 - [x] 每文件阅读位置/缩放持久化（FFViewerStateStore，40 条 LRU，文件变更自动失效）
 - [x] 导出 PDF（createPDF 全文内容，走分享面板）
 - [x] 图表/嵌入对象检测与文本级格式的保真提示条，一键转系统快速查看
+- [x] xlsx 样式落地：读 styles.xml/theme1.xml/worksheet XML，字体/加粗/斜体/下划线/删除线/颜色/填充/边框/对齐/换行/旋转/字体色映射到 Univer 样式（tests/style_xml_check.mjs 覆盖）
+- [x] xlsx 冻结窗格、网格线开关、工作表标签颜色、单元格数字格式
+- [x] 双击在适应宽度与 100% 间切换（Word/表格；iOS 不合成 dblclick，改为触屏双击检测）
 - [ ] 渲染器能力上限（图表/SmartArt/OMML 公式/PPT 母版动画/mdgate 纯文本格式）：只提示，不渲染
-- [ ] xlsx 公式单元格依赖缓存值、列宽按 wch×7+5 估算；图表/条件格式/批注不渲染（Univer core preset）
+- [ ] xlsx 公式单元格依赖缓存值；列宽按 wch×7+5 估算；富文本单元格按纯文本显示
+- [ ] xlsx 图表/条件格式/批注/数据验证不渲染（Univer core preset 限制）；xls/xlsb 二进制样式与超过 32MB 的工作簿仅保留基础显示

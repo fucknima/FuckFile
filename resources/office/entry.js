@@ -190,6 +190,22 @@ function fitToWidth() {
   layoutControl()?.setAutoFit(true);
 }
 
+// iOS does not reliably synthesize `dblclick` inside WKWebView, so double-tap
+// is detected from touch events instead (movement and duration checked).
+let lastDoubleTapAt = 0;
+
+function toggleZoomForDoubleTap() {
+  const now = Date.now();
+  if (now - lastDoubleTapAt < 400) return;
+  lastDoubleTapAt = now;
+  if (autoFitActive) {
+    disableAutoFit();
+    setZoom(1, null, true);
+  } else {
+    fitToWidth();
+  }
+}
+
 // ---- In-document search -------------------------------------------------
 // Hits are wrapped in <mark> nodes. Styles are inline because the search must
 // also work for iframe-rendered documents (PPT/RTF/ODF), where host.css does
@@ -870,15 +886,48 @@ function installViewerGestures() {
   view.addEventListener('touchstart', cancelPendingScrollRestore, { passive: true, capture: true });
   view.addEventListener('wheel', cancelPendingScrollRestore, { passive: true, capture: true });
   view.addEventListener('scroll', emitStateThrottled, { passive: true });
+
   // Double-tap toggles between fit-width and actual size, like Quick Look.
+  let tapCandidate = null;
+  let lastTapAt = 0;
+  let lastTapPoint = null;
+  view.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1 || pinch) {
+      tapCandidate = null;
+      return;
+    }
+    const touch = event.touches[0];
+    tapCandidate = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+  }, { passive: true, capture: true });
+  view.addEventListener('touchend', (event) => {
+    const candidate = tapCandidate;
+    tapCandidate = null;
+    if (!candidate || pinch || event.touches.length > 0) return;
+    const touch = event.changedTouches && event.changedTouches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - candidate.x, touch.clientY - candidate.y) > 12 ||
+        Date.now() - candidate.at > 420) {
+      lastTapAt = 0;
+      return;
+    }
+    if (event.target && event.target.closest && event.target.closest('a[href]')) {
+      lastTapAt = 0;
+      return;
+    }
+    const now = Date.now();
+    if (lastTapPoint && now - lastTapAt < 320 &&
+        Math.hypot(touch.clientX - lastTapPoint.x, touch.clientY - lastTapPoint.y) < 28) {
+      lastTapAt = 0;
+      lastTapPoint = null;
+      toggleZoomForDoubleTap();
+      return;
+    }
+    lastTapAt = now;
+    lastTapPoint = { x: touch.clientX, y: touch.clientY };
+  }, { passive: true, capture: true });
   view.addEventListener('dblclick', (event) => {
     event.preventDefault();
-    if (autoFitActive) {
-      disableAutoFit();
-      setZoom(1, null, true);
-    } else {
-      fitToWidth();
-    }
+    toggleZoomForDoubleTap();
   });
   view.addEventListener('click', (event) => {
     if (openDirectLink(event) || openRenderedLinkAtPoint(event.clientX, event.clientY)) {

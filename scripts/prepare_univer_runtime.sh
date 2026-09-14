@@ -9,9 +9,10 @@ CACHE="$RUNTIME_ROOT/npm"
 STAMP="$OUT/.runtime-version"
 SOURCE_HASH="$(cat \
   "$ROOT/resources/univer/entry.js" \
+  "$ROOT/resources/univer/style-xml.mjs" \
   "$ROOT/resources/univer/index.html" \
   "$ROOT/resources/univer/host.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="univer=1.0.0-rc.0;sheetjs=0.18.5;esbuild=0.25.9;src=$SOURCE_HASH"
+VERSION="univer=1.0.0-rc.0;sheetjs=0.18.5;jszip=3.10.1;esbuild=0.25.9;src=$SOURCE_HASH"
 
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
       && -s "$OUT/index.html" \
@@ -36,6 +37,7 @@ cat > "$CACHE/package.json" <<'JSON'
     "react-dom": "18.3.1",
     "rxjs": "7.8.2",
     "xlsx": "0.18.5",
+    "jszip": "3.10.1",
     "esbuild": "0.25.9"
   }
 }
@@ -50,6 +52,7 @@ npm install --prefix "$CACHE" --ignore-scripts --no-audit --no-fund \
 # @univerjs/* always resolves deterministically instead of depending on a
 # machine-global NODE_PATH.
 cp "$ROOT/resources/univer/entry.js" "$CACHE/entry.js"
+cp "$ROOT/resources/univer/style-xml.mjs" "$CACHE/style-xml.mjs"
 "$CACHE/node_modules/.bin/esbuild" "$CACHE/entry.js" \
   --bundle \
   --minify \

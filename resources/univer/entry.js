@@ -1,7 +1,17 @@
+import JSZip from 'jszip';
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import sheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import '@univerjs/preset-sheets-core/lib/index.css';
+import {
+  attributes as xmlAttributes,
+  parseStylesXml,
+  parseThemePalette,
+  parseWorksheetInfo,
+  resolveColor,
+  unescapeXml,
+  univerStyleForXf,
+} from './style-xml.mjs';
 
 const MAX_NONEMPTY_CELLS = 1500000;
 const MAX_ROWS = 1048576;
@@ -13,6 +23,10 @@ const COLUMN_HEADER_HEIGHT = 20;
 const DEFAULT_COLUMN_WIDTH = 73;
 const sheetContentWidth = new Map();
 const sheetModels = new Map();
+// Above this compressed size the extra styles.xml / worksheet parse is skipped
+// so big workbooks cannot blow up WebContent memory; sheets still open.
+const STYLE_PARSE_MAX_BYTES = 32 * 1024 * 1024;
+const ZIP_SHEET_EXTENSIONS = new Set(['xlsx', 'xlsm', 'xltx', 'xltm']);
 
 let univerAPI = null;
 let activeWorkbook = null;
@@ -74,13 +88,104 @@ function normalizedCellValue(cell) {
     }
   }
 
-  if (typeof cell.z === 'string' && cell.z.length && cell.z !== 'General') {
-    result.s = { n: { pattern: cell.z } };
-  }
   return result;
 }
 
-function buildSheetData(sheet, sheetName, sheetId, hidden) {
+function extensionOfName(name) {
+  const clean = String(name || '').toLowerCase().split(/[?#]/)[0];
+  const dot = clean.lastIndexOf('.');
+  return dot >= 0 ? clean.slice(dot + 1) : '';
+}
+
+// SheetJS (community) drops fonts, borders, alignment and freeze panes, so the
+// OOXML parts are read straight from the zip and mapped onto Univer styles.
+async function buildStyleContext(buffer, sheetNames, documentName) {
+  const context = {
+    tables: null,
+    palette: parseThemePalette(''),
+    xfIndexes: new Map(),
+    sheetInfo: new Map(),
+    styles: {},
+    cache: new Map(),
+  };
+  if (!ZIP_SHEET_EXTENSIONS.has(extensionOfName(documentName))) return context;
+  if (!buffer.byteLength || buffer.byteLength > STYLE_PARSE_MAX_BYTES) return context;
+
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const themeEntry = zip.file('xl/theme/theme1.xml');
+    if (themeEntry) context.palette = parseThemePalette(await themeEntry.async('string'));
+    const stylesEntry = zip.file('xl/styles.xml');
+    if (stylesEntry) context.tables = parseStylesXml(await stylesEntry.async('string'));
+
+    const paths = await mapWorksheetPaths(zip);
+    for (const name of sheetNames) {
+      const path = paths.get(name);
+      const entry = path ? zip.file(path) : null;
+      if (!entry) continue;
+      const info = parseWorksheetInfo(await entry.async('string'));
+      context.xfIndexes.set(name, info.xfIndexes);
+      context.sheetInfo.set(name, {
+        freeze: info.freeze,
+        showGridLines: info.showGridLines,
+        tabColor: (resolveColor(info.tabColor, context.palette) || {}).rgb || '',
+      });
+    }
+  } catch (_) {
+    // Styling is best-effort; the sheet still opens without it.
+  }
+  return context;
+}
+
+async function mapWorksheetPaths(zip) {
+  const paths = new Map();
+  const workbookEntry = zip.file('xl/workbook.xml');
+  const relsEntry = zip.file('xl/_rels/workbook.xml.rels');
+  if (!workbookEntry || !relsEntry) return paths;
+  const workbookXml = await workbookEntry.async('string');
+  const relsXml = await relsEntry.async('string');
+
+  const rels = new Map();
+  for (const tag of relsXml.match(/<Relationship\b[^>]*>/g) || []) {
+    const parsed = xmlAttributes(tag);
+    if (parsed.Id && parsed.Target) rels.set(parsed.Id, parsed.Target);
+  }
+  for (const tag of workbookXml.match(/<sheet\b[^>]*>/g) || []) {
+    const parsed = xmlAttributes(tag);
+    const target = parsed['r:id'] ? rels.get(parsed['r:id']) : null;
+    if (!parsed.name || !target) continue;
+    paths.set(unescapeXml(parsed.name), (target.startsWith('/') ? target.slice(1) : `xl/${target}`).split('#')[0]);
+  }
+  return paths;
+}
+
+function internCellStyle(context, style) {
+  const key = JSON.stringify(style);
+  const existing = context.cache.get(key);
+  if (existing) return existing;
+  const id = `ff-s${context.cache.size + 1}`;
+  context.cache.set(key, id);
+  context.styles[id] = style;
+  return id;
+}
+
+function styleIdForCell(context, sheetName, address, cell) {
+  let style = null;
+  const xfIndexes = context && context.xfIndexes.get(sheetName);
+  if (context && context.tables && xfIndexes) {
+    const xfIndex = xfIndexes.get(address);
+    if (xfIndex != null)
+      style = univerStyleForXf(xfIndex, context.tables, context.palette);
+  }
+  if (typeof cell.z === 'string' && cell.z.length && cell.z !== 'General') {
+    style = Object.assign({}, style || {}, { n: { pattern: cell.z } });
+  }
+  if (!style || !Object.keys(style).length) return null;
+  return internCellStyle(context, style);
+}
+
+function buildSheetData(sheet, sheetName, sheetId, hidden, styleContext) {
+  const sheetInfo = styleContext?.sheetInfo.get(sheetName) || null;
   const cellData = {};
   let maxRow = 0;
   let maxColumn = 0;
@@ -97,6 +202,9 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     if (!source) continue;
     const value = normalizedCellValue(source);
     if (!Object.keys(value).length) continue;
+
+    const styleId = styleIdForCell(styleContext, sheetName, address, source);
+    if (styleId) value.s = styleId;
 
     if (++cellCount > MAX_NONEMPTY_CELLS) {
       throw new Error(`工作表“${sheetName}”非空单元格超过 ${MAX_NONEMPTY_CELLS.toLocaleString()} 个，已停止加载以保护内存。`);
@@ -162,12 +270,12 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     type: 0,
     id: sheetId,
     name: sheetName || 'Sheet',
-    tabColor: '',
+    tabColor: sheetInfo?.tabColor || '',
     hidden: hidden ? 1 : 0,
     rowCount: Math.max(100, Math.min(MAX_ROWS, maxRow + 50)),
     columnCount: Math.max(26, Math.min(MAX_COLUMNS, maxColumn + 10)),
     zoomRatio: 1,
-    freeze: { xSplit: 0, ySplit: 0, startRow: -1, startColumn: -1 },
+    freeze: sheetInfo?.freeze || { xSplit: 0, ySplit: 0, startRow: -1, startColumn: -1 },
     scrollTop: 0,
     scrollLeft: 0,
     defaultColumnWidth: DEFAULT_COLUMN_WIDTH,
@@ -179,7 +287,7 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
     rowData,
     columnData,
     status: 0,
-    showGridlines: 1,
+    showGridlines: sheetInfo && sheetInfo.showGridLines === false ? 0 : 1,
     rowHeader: { width: ROW_HEADER_WIDTH, hidden: 0 },
     columnHeader: { height: COLUMN_HEADER_HEIGHT, hidden: 0 },
     selections: [],
@@ -187,7 +295,7 @@ function buildSheetData(sheet, sheetName, sheetId, hidden) {
   };
 }
 
-function convertWorkbook(book, name) {
+function convertWorkbook(book, name, styleContext) {
   if (!book || !Array.isArray(book.SheetNames) || !book.SheetNames.length) {
     throw new Error('文件中没有可读取的工作表。');
   }
@@ -201,7 +309,8 @@ function convertWorkbook(book, name) {
     const source = book.Sheets[sheetName];
     if (!source) return;
     sheetOrder.push(id);
-    sheets[id] = buildSheetData(source, sheetName, id, Number(metadata[index]?.Hidden || 0) !== 0);
+    sheets[id] = buildSheetData(source, sheetName, id,
+      Number(metadata[index]?.Hidden || 0) !== 0, styleContext);
     sheetModels.set(id, sheets[id]);
   });
 
@@ -211,9 +320,9 @@ function convertWorkbook(book, name) {
     id: `ff-workbook-${Date.now().toString(36)}`,
     sheetOrder,
     name: name || 'Spreadsheet',
-    appVersion: 'FuckFile-Univer-Viewer-3',
+    appVersion: 'FuckFile-Univer-Viewer-4',
     locale: LocaleType.ZH_CN,
-    styles: {},
+    styles: styleContext?.styles || {},
     sheets,
     resources: [{ name: 'SHEET_NUMFMT_PLUGIN', data: '{"model":{},"refModel":[]}' }],
   };
@@ -456,6 +565,37 @@ function fitToWidth() {
   return applied;
 }
 
+// Double-tap toggles fit-width / 100%; touch-based because iOS does not
+// reliably synthesize `dblclick` inside WKWebView.
+let lastSheetTap = null;
+
+function toggleSheetZoomForDoubleTap() {
+  const sheet = activeSheet();
+  if (!sheet) return;
+  const current = clampZoom(sheet.getZoom?.() || 1);
+  const contentWidth = Number(sheetContentWidth.get(sheetId(sheet))) || 0;
+  const appWidth = Number(document.getElementById('app')?.clientWidth) || 0;
+  let fit = 1;
+  if (contentWidth > 0 && appWidth > 0) {
+    const available = Math.max(120, appWidth - ROW_HEADER_WIDTH - 8);
+    fit = Math.min(1, available / contentWidth);
+  }
+  const atFit = Math.abs(current - clampZoom(fit)) < 0.02;
+  userZoom = true;
+  zoomAroundViewportCenter(atFit ? 1 : fit, true);
+}
+
+function registerSheetTap(pan) {
+  const now = performance.now();
+  if (lastSheetTap && now - lastSheetTap.at < 320 &&
+      Math.hypot(pan.lastX - lastSheetTap.x, pan.lastY - lastSheetTap.y) < 28) {
+    lastSheetTap = null;
+    toggleSheetZoomForDoubleTap();
+    return;
+  }
+  lastSheetTap = { x: pan.lastX, y: pan.lastY, at: now };
+}
+
 function installViewerToolbar() {
   const sheetButton = document.getElementById('ff-sheet-button');
   const menu = document.getElementById('ff-sheet-menu');
@@ -654,11 +794,15 @@ function stopMomentum() {
 function beginPan(touch) {
   if (!touch) return null;
   return {
+    startX: touch.clientX,
+    startY: touch.clientY,
+    startedAt: performance.now(),
     lastX: touch.clientX,
     lastY: touch.clientY,
     lastTime: performance.now(),
     velocityX: 0,
     velocityY: 0,
+    tapEligible: true,
   };
 }
 
@@ -777,10 +921,12 @@ function installViewerGestures() {
       flushPendingScroll();
       pinchState = null;
       emitState(true);
+      lastSheetTap = null;
       if (event.touches.length === 1) {
         // Seamlessly continue as a one-finger pan when one finger is lifted
         // after a pinch; iOS viewers do not require a fresh touch-down.
         panState = beginPan(event.touches[0]);
+        panState.tapEligible = false;
       } else {
         panState = null;
       }
@@ -793,6 +939,14 @@ function installViewerGestures() {
       const final = panState;
       panState = null;
       emitState(true);
+
+      if (final.tapEligible &&
+          Math.hypot(final.lastX - final.startX, final.lastY - final.startY) < 12 &&
+          performance.now() - final.startedAt < 420) {
+        registerSheetTap(final);
+      } else {
+        lastSheetTap = null;
+      }
 
       if (Math.abs(final.velocityX) > 0.7 || Math.abs(final.velocityY) > 0.7) {
         let vx = final.velocityX;
@@ -912,7 +1066,13 @@ async function openDocument(payload = {}) {
     sheetContentWidth.clear();
     sheetModels.clear();
     setSheetSearchVisible(false);
-    const data = convertWorkbook(book, currentDocumentName);
+    const styleContext = await buildStyleContext(buffer, book.SheetNames, currentDocumentName);
+    const data = convertWorkbook(book, currentDocumentName, styleContext);
+    // The per-cell style index maps are only needed while the snapshot is
+    // built; drop them so large workbooks do not hold them for the session.
+    styleContext.xfIndexes.clear();
+    styleContext.sheetInfo.clear();
+    styleContext.cache.clear();
 
     if (activeWorkbook?.dispose) {
       try { activeWorkbook.dispose(); } catch (_) {}
