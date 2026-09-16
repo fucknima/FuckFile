@@ -368,7 +368,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish branch IPA download
-        if: github.event_name == 'push' && github.ref_name == 'codex/comprehensive-review-fixes'
+        if: github.event_name == 'push' && (github.ref_name == 'codex/comprehensive-review-fixes' || github.ref_name == '无漏洞利用fuckfile')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
