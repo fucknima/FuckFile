@@ -111,7 +111,9 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     BOOL landscape = !self.forcedLandscape;
     self.forcedLandscape = landscape;
     [self updateRotateItem];
-    [self requestOrientation:landscape ? UIInterfaceOrientationMaskLandscape
+    // 只请求「右转横屏」（UIInterfaceOrientationLandscapeRight），
+    // 不用双值 mask：否则系统可能挑到反方向。
+    [self requestOrientation:landscape ? UIInterfaceOrientationMaskLandscapeRight
                                        : UIInterfaceOrientationMaskPortrait];
 }
 
@@ -119,7 +121,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 {
     self.rotateItem.image = [UIImage systemImageNamed:
         self.forcedLandscape ? @"rotate.left" : @"rotate.right"];
-    self.rotateItem.accessibilityLabel = self.forcedLandscape ? @"恢复竖屏" : @"横屏播放";
+    self.rotateItem.accessibilityLabel = self.forcedLandscape ? @"恢复竖屏" : @"横屏（右转）";
 }
 
 - (void)requestOrientation:(UIInterfaceOrientationMask)mask

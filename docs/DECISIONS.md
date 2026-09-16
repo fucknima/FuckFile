@@ -943,3 +943,27 @@ ImportService/PathPolicy），未引入新的事实来源。
    为 allButUpsideDown 且 `shouldAutorotate` YES。
 
 约束：不做强制旋转的私有 API；方向请求失败只提示，不改锁屏状态。
+
+## ADR-026
+
+日期：2026-09-16
+
+决定：
+
+**图片查看器布局/动画修正、播放器右转横屏，并记录 URL 登录下载方案。**
+
+1. 图片查看器：zoomView 收进可见区域（safeArea 顶 → 有底栏时到缩略图条
+   上方，无底栏时到 safeArea 底），图片在该区域居中；此前铺满全屏导致
+   顶栏与图片之间出现大片空白。切换加动画：旧图快照按方向滑出+淡出，
+   新图淡入（0.24s，约束视图只动 alpha，避免 transform 与 Auto Layout
+   冲突）。
+2. 播放器横屏只请求 `UIInterfaceOrientationMaskLandscapeRight`（右转）；
+   之前用双值 mask，系统可能选择反方向。
+3. URL 登录下载方案（待实施，先记录）：
+   - A. 内置「网页下载」浏览器（WKWebView + `WKDownloadDelegate`）：
+     用户在页面内登录，Cookie 存在共享 `WKWebsiteDataStore`；对
+     `canShowMIMEType == NO` / `shouldPerformDownload` 的响应用
+     WKDownload 接管，落盘复用 FFImportService（重名加序号）。
+   - B. 下载对话框支持 cURL / 自定义请求头（Cookie、Referer、UA），
+     覆盖一次性直链场景。
+   - C（不做）：导入桌面浏览器 Cookie；D（不做）：为每个站点实现表单登录。

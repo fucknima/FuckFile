@@ -147,6 +147,8 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
 @property(nonatomic, strong) UILabel *errorLabel;
 @property(nonatomic, strong) UIToolbar *toolbar;
 @property(nonatomic, strong) UICollectionView *strip;
+@property(nonatomic, strong) NSLayoutConstraint *zoomBottomBars;
+@property(nonatomic, strong) NSLayoutConstraint *zoomBottomSafe;
 @property(nonatomic, strong) NSCache<NSString *, UIImage *> *imageCache;
 @end
 
@@ -203,11 +205,24 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     self.imageCache = [[NSCache alloc] init];
     self.imageCache.countLimit = 12;
 
+    // 图片只在「导航栏下方 → 工具栏/缩略图条上方」的可见区域里居中，
+    // 否则会在顶栏与图片之间留下一条明显的空白（0 图/多图两种布局切换）。
+    self.zoomBottomBars = [self.zoomView.bottomAnchor
+        constraintEqualToAnchor:self.strip.topAnchor constant:-6];
+    self.zoomBottomSafe = [self.zoomView.bottomAnchor
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor];
+    NSLayoutConstraint *zoomTop = [self.zoomView.topAnchor
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor];
+    NSLayoutConstraint *zoomLeading = [self.zoomView.leadingAnchor
+        constraintEqualToAnchor:self.view.leadingAnchor];
+    NSLayoutConstraint *zoomTrailing = [self.zoomView.trailingAnchor
+        constraintEqualToAnchor:self.view.trailingAnchor];
+    zoomTop.active = YES;
+    zoomLeading.active = YES;
+    zoomTrailing.active = YES;
+    self.zoomBottomSafe.active = YES;
+
     [NSLayoutConstraint activateConstraints:@[
-        [self.zoomView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.zoomView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.zoomView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.zoomView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
         [self.errorLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [self.errorLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
         [self.toolbar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -220,6 +235,7 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     ]];
 
     self.navigationItem.rightBarButtonItems = @[ [self moreItem], [self shareItem] ];
+
 
     UISwipeGestureRecognizer *left = [[UISwipeGestureRecognizer alloc]
         initWithTarget:self action:@selector(swiped:)];
@@ -262,6 +278,9 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     BOOL multi = self.imagePaths.count > 1;
     self.toolbar.hidden = !multi;
     self.strip.hidden = !multi;
+    // 有底栏时图片让位给底栏，没有底栏时铺满安全区。
+    self.zoomBottomBars.active = multi;
+    self.zoomBottomSafe.active = !multi;
     if (!multi) {
         [self.toolbar setItems:@[] animated:NO];
         return;
@@ -324,6 +343,12 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
 
 - (void)showImageAtIndex:(NSUInteger)index
 {
+    [self showImageAtIndex:index animated:NO direction:0];
+}
+
+// direction: +1 = 下一张（新图从右侧进入），-1 = 上一张，0 = 原地淡入。
+- (void)showImageAtIndex:(NSUInteger)index animated:(BOOL)animated direction:(NSInteger)direction
+{
     if (!self.imagePaths.count) {
         self.errorLabel.hidden = NO;
         [self updateToolbar];
@@ -342,7 +367,7 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     UIImage *cached = [self.imageCache objectForKey:path];
     if (cached) {
         self.errorLabel.hidden = YES;
-        [self.zoomView setImage:cached];
+        [self applyImage:cached animated:animated direction:direction];
         [self preloadNeighbours];
         return;
     }
@@ -355,10 +380,35 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
             if (!strongSelf || generation != strongSelf.loadGeneration) return;
             if (image) [strongSelf.imageCache setObject:image forKey:path];
             strongSelf.errorLabel.hidden = image != nil;
-            [strongSelf.zoomView setImage:image];
+            [strongSelf applyImage:image animated:animated direction:direction];
             [strongSelf preloadNeighbours];
         });
     });
+}
+
+// 切换动画：旧图快照滑出，新图淡入。约束视图只做 alpha，避免
+// transform 与 Auto Layout 打架。
+- (void)applyImage:(UIImage *)image animated:(BOOL)animated direction:(NSInteger)direction
+{
+    if (!animated || !self.zoomView.window) {
+        [self.zoomView setImage:image];
+        return;
+    }
+    UIView *snapshot = [self.zoomView snapshotViewAfterScreenUpdates:NO];
+    snapshot.frame = self.zoomView.frame;
+    snapshot.userInteractionEnabled = NO;
+    [self.view insertSubview:snapshot belowSubview:self.zoomView];
+    [self.zoomView setImage:image];
+    CGFloat travel = direction == 0 ? 0 : direction * self.zoomView.bounds.size.width * 0.25;
+    self.zoomView.alpha = direction == 0 ? 0.0 : 1.0;
+    [UIView animateWithDuration:0.24 delay:0 options:UIViewAnimationOptionCurveEaseOut
+        animations:^{
+            self.zoomView.alpha = 1.0;
+            snapshot.alpha = 0.0;
+            snapshot.transform = CGAffineTransformMakeTranslation(-travel, 0);
+        } completion:^(BOOL finished) {
+            [snapshot removeFromSuperview];
+        }];
 }
 
 // 相邻图片预取，连续切换不再每张都等磁盘解码。
@@ -429,19 +479,19 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     didSelectItemAtIndexPath:(NSIndexPath *)indexPath
 {
     (void)collectionView;
-    [self showImageAtIndex:(NSUInteger)indexPath.item];
+    [self showImageAtIndex:(NSUInteger)indexPath.item animated:YES direction:0];
 }
 
 - (void)showPrevious
 {
     if (self.index == 0) return;
-    [self showImageAtIndex:self.index - 1];
+    [self showImageAtIndex:self.index - 1 animated:YES direction:-1];
 }
 
 - (void)showNext
 {
     if (self.index + 1 >= self.imagePaths.count) return;
-    [self showImageAtIndex:self.index + 1];
+    [self showImageAtIndex:self.index + 1 animated:YES direction:1];
 }
 
 - (void)swiped:(UISwipeGestureRecognizer *)gesture
@@ -522,7 +572,7 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
         [self.navigationController popViewControllerAnimated:YES];
         return;
     }
-    [self showImageAtIndex:MIN(self.index, remaining.count - 1)];
+    [self showImageAtIndex:MIN(self.index, remaining.count - 1) animated:YES direction:0];
 }
 
 - (void)presentError:(NSString *)message
