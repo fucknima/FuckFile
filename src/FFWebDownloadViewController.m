@@ -16,8 +16,9 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 @property(nonatomic, strong) UIBarButtonItem *backItem;
 @property(nonatomic, strong) UIBarButtonItem *forwardItem;
 @property(nonatomic, strong) UIBarButtonItem *reloadItem;
-// download → {tempPath, suggestedName}，防止并发下载互相覆盖。
-@property(nonatomic, strong) NSMutableDictionary<WKDownload *, NSMutableDictionary *> *downloads;
+// 进行中的下载记录（download/temp/name/directory）。WKDownload 不是
+// NSCopying，不能做字典 key，用数组 + 指针比较，量级只有个位数。
+@property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *downloads;
 @end
 
 @implementation FFWebDownloadViewController
@@ -32,7 +33,7 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     self = [super init];
     if (self) {
         _destinationDirectory = [directory copy];
-        _downloads = [NSMutableDictionary dictionary];
+        _downloads = [NSMutableArray array];
         self.title = @"网页下载";
         if (url) _initialURL = url;
     }
@@ -119,7 +120,8 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     self.webView.UIDelegate = nil;
     // 未完成的下载也要摘掉 KVO，否则 NSProgress 会回调已释放的观察者。
     @synchronized (self.downloads) {
-        for (WKDownload *download in self.downloads.allKeys) {
+        for (NSMutableDictionary *record in self.downloads) {
+            WKDownload *download = record[@"download"];
             @try {
                 [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
             } @catch (__unused NSException *exception) {}
@@ -129,7 +131,7 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 }
 
 // 登录常见于 popup / target=_blank：没有第二窗口，直接在当前 WebView 打开。
-- (nullable WKWebView *)webView:(nullable WKWebView *)webView
+- (nullable WKWebView *)webView:(WKWebView *)webView
     createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
                forNavigationAction:(WKNavigationAction *)navigationAction
                     windowFeatures:(WKWindowFeatures *)windowFeatures
@@ -258,22 +260,27 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
         ? WKNavigationResponsePolicyAllow : WKNavigationResponsePolicyDownload);
 }
 
-- (nullable WKDownload *)webView:(__unused WKWebView *)webView
-          navigationAction:(WKNavigationAction *)navigationAction
-        didBecomeDownload:(WKDownload *)download
+- (void)webView:(__unused WKWebView *)webView
+    navigationAction:(WKNavigationAction *)navigationAction
+  didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
     FFLogTag(@"WebDownload", @"action download %@", navigationAction.request.URL.absoluteString);
-    return download;
 }
 
-- (nullable WKDownload *)webView:(__unused WKWebView *)webView
-        navigationResponse:(WKNavigationResponse *)navigationResponse
-        didBecomeDownload:(WKDownload *)download
+- (void)webView:(__unused WKWebView *)webView
+    navigationResponse:(WKNavigationResponse *)navigationResponse
+  didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
     FFLogTag(@"WebDownload", @"response download %@", navigationResponse.response.URL.absoluteString);
-    return download;
+}
+
+- (nullable NSMutableDictionary *)recordForDownload:(WKDownload *)download
+{
+    for (NSMutableDictionary *record in self.downloads)
+        if (record[@"download"] == download) return record;
+    return nil;
 }
 
 #pragma mark - WKDownloadDelegate
@@ -294,10 +301,11 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
         [FFWebDownloadTempPrefix stringByAppendingString:NSUUID.UUID.UUIDString]];
     // 先写临时文件，完成后才按重名规则 rename 成最终名（原子提交）。
     NSMutableDictionary *record = [NSMutableDictionary dictionary];
+    record[@"download"] = download;
     record[@"temp"] = tempPath;
     record[@"name"] = name;
     record[@"directory"] = directory;
-    @synchronized (self.downloads) { self.downloads[download] = record; }
+    @synchronized (self.downloads) { [self.downloads addObject:record]; }
 
     [download.progress addObserver:self forKeyPath:@"fractionCompleted"
         options:NSKeyValueObservingOptionNew context:NULL];
@@ -309,8 +317,8 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 {
     NSMutableDictionary *record = nil;
     @synchronized (self.downloads) {
-        record = self.downloads[download];
-        [self.downloads removeObjectForKey:download];
+        record = [self recordForDownload:download];
+        if (record) [self.downloads removeObject:record];
     }
     @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (__unused NSException *exception) {}
 
@@ -346,8 +354,8 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     (void)resumeData;
     NSMutableDictionary *record = nil;
     @synchronized (self.downloads) {
-        record = self.downloads[download];
-        [self.downloads removeObjectForKey:download];
+        record = [self recordForDownload:download];
+        if (record) [self.downloads removeObject:record];
     }
     @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (__unused NSException *exception) {}
     NSString *tempPath = record[@"temp"];
