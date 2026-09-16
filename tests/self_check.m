@@ -316,7 +316,10 @@ static void testTrash(void)
     [@"old" writeToFile:dup atomically:YES encoding:NSUTF8StringEncoding error:nil];
     [service moveToTrash:@[dup] firstError:NULL];
     [@"new" writeToFile:dup atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    FFTrashEntry *dupEntry = [service entries].firstObject;
+    FFTrashEntry *dupEntry = nil;
+    for (FFTrashEntry *entry in [service entries])
+        if ([entry.name isEqualToString:@"dup.txt"]) dupEntry = entry;
+    CHECK((dupEntry != nil), @"trash-dup-entry-found");
     NSString *restoredDup = nil;
     error = nil;
     CHECK(([service restoreEntry:dupEntry restoredPath:&restoredDup error:&error]),

@@ -107,9 +107,18 @@ static NSError *FFTrashError(NSInteger code, NSString *message)
             @"deletedAt": NSDate.date,
             @"isDirectory": @(directory),
         };
-        [metadata writeToFile:
-            [itemDirectory stringByAppendingPathComponent:FFTrashItemMetadataName]
-            atomically:YES];
+        NSString *metadataPath = [itemDirectory stringByAppendingPathComponent:FFTrashItemMetadataName];
+        NSData *metadataData = [NSPropertyListSerialization dataWithPropertyList:metadata
+            format:NSPropertyListBinaryFormat_v1_0 options:0 error:&itemError];
+        if (!metadataData.length || ![metadataData writeToFile:metadataPath
+            options:NSDataWritingAtomic error:&itemError]) {
+            // The entry would be invisible without its metadata; put the item
+            // back instead of losing it.
+            [manager moveItemAtPath:payload toPath:path error:nil];
+            [manager removeItemAtPath:itemDirectory error:nil];
+            if (error) *error = itemError ?: FFTrashError(4, @"无法写入回收站元数据。");
+            return moved;
+        }
         moved += 1;
         FFLogTag(@"Trash", @"moved name=%@ id=%@", path.lastPathComponent, identifier);
     }
@@ -129,24 +138,35 @@ static NSError *FFTrashError(NSInteger code, NSString *message)
         NSString *itemDirectory = [self.trashRoot stringByAppendingPathComponent:identifier];
         NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:
             [itemDirectory stringByAppendingPathComponent:FFTrashItemMetadataName]];
-        if (![metadata isKindOfClass:NSDictionary.class]) continue;
+        NSString *payloadPath = [itemDirectory stringByAppendingPathComponent:FFTrashItemPayloadName];
+        if (![manager fileExistsAtPath:payloadPath]) continue;
 
         FFTrashEntry *entry = [FFTrashEntry new];
         entry.identifier = identifier;
-        entry.name = [metadata[@"name"] isKindOfClass:NSString.class]
+        BOOL metadataOK = [metadata isKindOfClass:NSDictionary.class];
+        entry.name = metadataOK && [metadata[@"name"] isKindOfClass:NSString.class]
             ? metadata[@"name"] : identifier;
-        entry.originalPath = [metadata[@"originalPath"] isKindOfClass:NSString.class]
+        entry.originalPath = metadataOK && [metadata[@"originalPath"] isKindOfClass:NSString.class]
             ? metadata[@"originalPath"] : entry.name;
-        entry.payloadPath = [itemDirectory stringByAppendingPathComponent:FFTrashItemPayloadName];
-        entry.deletedAt = [metadata[@"deletedAt"] isKindOfClass:NSDate.class]
-            ? metadata[@"deletedAt"] : NSDate.distantPast;
-        entry.isDirectory = [metadata[@"isDirectory"] boolValue];
-        NSDictionary *attributes = [manager attributesOfItemAtPath:entry.payloadPath error:nil];
+        entry.payloadPath = payloadPath;
+        NSDictionary *itemAttributes = [manager attributesOfItemAtPath:itemDirectory error:nil];
+        NSDate *deletedAt = metadataOK && [metadata[@"deletedAt"] isKindOfClass:NSDate.class]
+            ? metadata[@"deletedAt"] : nil;
+        // Item directories are created at trash time, so their creation date is
+        // a reliable fallback when the metadata date is missing.
+        entry.deletedAt = deletedAt ?: ([itemAttributes[NSFileCreationDate] isKindOfClass:NSDate.class]
+            ? itemAttributes[NSFileCreationDate] : NSDate.distantPast);
+        BOOL isDirectory = NO;
+        [manager fileExistsAtPath:payloadPath isDirectory:&isDirectory];
+        entry.isDirectory = metadataOK ? [metadata[@"isDirectory"] boolValue] : isDirectory;
+        NSDictionary *attributes = [manager attributesOfItemAtPath:payloadPath error:nil];
         entry.size = entry.isDirectory ? 0 : [attributes[NSFileSize] unsignedLongLongValue];
         [result addObject:entry];
     }
     [result sortUsingComparator:^NSComparisonResult(FFTrashEntry *left, FFTrashEntry *right) {
-        return [right.deletedAt compare:left.deletedAt];
+        NSComparisonResult byDate = [right.deletedAt compare:left.deletedAt];
+        if (byDate != NSOrderedSame) return byDate;
+        return [right.identifier compare:left.identifier];
     }];
     return result;
 }
