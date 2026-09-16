@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - codex/comprehensive-review-fixes
+      - 无漏洞利用fuckfile
   pull_request:
     branches:
       - main
