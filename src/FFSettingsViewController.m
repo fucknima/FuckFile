@@ -357,7 +357,11 @@ typedef NS_ENUM(NSInteger, FFSettingsItem) {
         case FFSettingsItemLog:
             [self.navigationController pushViewController:[FFLogViewController new] animated:YES];
             break;
+        case FFSettingsItemShowHidden:
+        case FFSettingsItemShowExtensions:
+        case FFSettingsItemFoldersFirst:
         case FFSettingsItemAbout:
+            // 开关自行处理触摸，行本身无动作。
             break;
     }
 }
