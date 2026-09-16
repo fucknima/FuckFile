@@ -26,6 +26,10 @@ UI 不直接负责具体文件系统操作。
 | 文件属性页 | `FFFileInfoViewController`（inset grouped；替代 fullDetail Alert） |
 | 元数据服务 | `FFFileMetadataService`（xattr/递归统计/SHA-256/MIME；仅属性页后台调用，禁止进入目录扫描主路径） |
 | 导航体系 | Inline 标题：主 NavigationController prefersLargeTitles=NO（ADR-013） |
+| 全局搜索 | `FFGlobalSearchViewController`（复用 FFSearchService 递归搜索 + NSUserDefaults 历史，ADR-021） |
+| 存储分析 | `FFStorageAnalysisViewController`（设备容量/App 数据/缓存/分类占用，后台扫描可取消，ADR-021） |
+| iPad 分栏 | `FFMainSplitViewController`（位置侧栏 + 浏览器 detail，仅在 iPad 的「文件」tab 内启用，ADR-021） |
+| 下载任务 | `FFFileTaskKindDownload`（NSURLSession + 进度/ETA/取消/重试，仅 HTTPS，随任务历史持久化 URL） |
 
 ## 外部文件导入
 

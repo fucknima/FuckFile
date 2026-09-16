@@ -761,3 +761,49 @@ Today 与 iMessage 扩展点，分享扩展用公开 API 无法打开宿主 App�
 约束：CI 增加防回潮 guard，禁止 `FFDocxViewerViewController`、`DocxAssets`、
 `resources/docx` 重新进入构建。office-document / spreadsheet / 其余查看器
 （含 Mach-O 检查器、IPA 元数据、PDF 阅读器）全部保留。
+
+## ADR-021
+
+日期：2026-09-16
+
+决定：
+
+**补齐 v1.0 核心缺口：全局搜索、存储分析、下载任务、iPad 分栏与体验项，
+全部复用既有服务，不引入新的状态源。**
+
+1. 全局搜索页 `FFGlobalSearchViewController`：复用 `FFSearchService`
+   （递归 DFS、分批、取消、深度上限、部分结果状态）与
+   `FFPreviewRouter`；历史存 NSUserDefaults（`FFGlobalSearchHistory`，
+   20 条上限、大小写不敏感去重、可清空）。首页快捷 chip 增加「搜索」。
+   Browser 内搜索行为不变。
+2. 存储分析页 `FFStorageAnalysisViewController`：设备总量/可用/已用
+   （attributesOfFileSystem）、App 数据/缓存/回收站、六类占用
+   （图片/视频/音频/文档/压缩包/其他）。扫描在 utility 队列串行执行，
+   0.2s 节流刷新，generation 取消；缓存清理复用
+   `FFThumbnailService clearCaches` + Caches 目录清理。设置页与首页
+   「存储」chip 两个入口。
+3. 下载任务化：新增 `FFFileTaskKindDownload`（`remoteURL` 仅 HTTPS，
+   随任务历史持久化，启动读取时重新校验 scheme）。执行器用
+   `NSURLSession` + 独立 delegate queue（worker 以 0.5s 轮询信号量，
+   保证取消可达），完成经 `FFImportService` 原子落盘；HTTP >= 400 与
+   无响应体明确失败。Browser 不再使用阻塞 alert 进度框。
+4. 回收站自动清理：`purgeExpiredEntriesWithMaxAge:` + 设置项
+   「回收站自动清理」（关闭 / 7 / 30 / 90 天，默认 30 天），启动时后台
+   执行；回收站页刷新对后台通知做 main 跳转。
+5. 冲突系统补 `FFConflictActionKeepBothAll`（「应用于后续：全部保留两者」），
+   与全部替换/全部跳过同一记忆位置。
+6. 设置新增「显示扩展名」（仅 List/Grid 展示文案，重命名/冲突/属性页
+   等真实操作始终使用完整文件名）。
+7. iPad 分栏：`FFMainSplitViewController`（doubleColumn）只在 iPad 的
+   「文件」tab 内替换单栏浏览器，侧栏为位置列表（设备存储/导入/收藏/
+   最近/回收站/存储空间/设置）。iPhone 保持原有 tab + browser 结构与
+   任务胶囊；`FFRootTabBarController activeNavigationController` 与
+   Share 导入导航在两种 shell 下都可用。
+
+原因：PRODUCT §6/§13/§14/§15/§16/§19 与 ROADMAP V0.6/V0.9 的核心项
+（全局搜索、存储分析、下载管理、iPad UI）此前只落在文档；本次以既有
+Service（SearchService/ImportService/TaskManager/ThumbnailService）为
+底座补齐，不新增 Provider 抽象或重复状态。
+
+约束：网络位置客户端（WebDAV/SMB/SFTP）不在本批；存储分析不做按目录的
+Treemap 或删除建议，只做只读统计与缓存清理。

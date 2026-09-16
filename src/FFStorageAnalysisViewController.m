@@ -284,7 +284,8 @@ static unsigned long long FFStorageDirectorySize(NSString *path)
 {
     [FFThumbnailService.sharedService clearCaches];
     NSString *cacheRoot = NSSearchPathForDirectoriesInDomains(
-        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+        NSCachesDirectory, NSUserDomainMask, YES).firstObject ?: @"";
+    if (!cacheRoot.length) return;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSFileManager *manager = NSFileManager.defaultManager;
