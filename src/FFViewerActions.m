@@ -114,7 +114,7 @@
             if (strongPresenter) [self presentShareForPath:path presenter:strongPresenter];
         }];
     return [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
-        primaryAction:share];
+        menu:[UIMenu menuWithChildren:@[share]]];
 }
 
 @end
