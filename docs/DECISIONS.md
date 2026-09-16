@@ -965,5 +965,16 @@ ImportService/PathPolicy），未引入新的事实来源。
      `canShowMIMEType == NO` / `shouldPerformDownload` 的响应用
      WKDownload 接管，落盘复用 FFImportService（重名加序号）。
    - B. 下载对话框支持 cURL / 自定义请求头（Cookie、Referer、UA），
-     覆盖一次性直链场景。
+     覆盖一次性直链场景（本轮未做）。
    - C（不做）：导入桌面浏览器 Cookie；D（不做）：为每个站点实现表单登录。
+
+   实施记录（同日）：A 已落地为 `FFWebDownloadViewController`
+   （＋ → 从网页下载…）：地址栏作为导航栏 titleView，前进/后退/刷新在左；
+   `WKWebsiteDataStore.defaultDataStore` 共享并持久化登录态；
+   `shouldPerformDownload` / `canShowMIMEType == NO` 走
+   `WKNavigationResponsePolicyDownload`，`WKDownload.delegate` 接管；
+   下载先写目标目录下 `.ffdownload-<UUID>` 临时文件，完成后按重名规则
+   rename（失败清理临时文件）；KVO 汇报进度，失败/取消给出明确反馈；
+   离开页面时摘除全部 KVO 观察者，避免 NSProgress 回调已释放对象。
+   同时把图片切换改成左右滑动翻页（frame 驱动的一次性动画层，避开
+   Auto Layout 与 transform 的冲突；缩略图点选按目标方向滑动）。

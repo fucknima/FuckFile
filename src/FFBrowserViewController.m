@@ -29,6 +29,7 @@
 #import "FFSettingsViewController.h"
 #import "FFStorageAnalysisViewController.h"
 #import "FFGlobalSearchViewController.h"
+#import "FFWebDownloadViewController.h"
 
 #import <AVKit/AVKit.h>
 #import <PhotosUI/PhotosUI.h>
@@ -532,8 +533,11 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *download = [UIAction actionWithTitle:@"从 URL 下载…"
         image:[self symbolImage:@"arrow.down.circle" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [self downloadURLTapped]; }];
+    UIAction *webDownload = [UIAction actionWithTitle:@"从网页下载…"
+        image:[self symbolImage:@"safari" tint:nil]
+        identifier:nil handler:^(__unused UIAction *action) { [self webDownloadTapped]; }];
     return [UIMenu menuWithTitle:@"新建"
-        children:@[newFolder, newFile, import, photos, download]];
+        children:@[newFolder, newFile, import, photos, download, webDownload]];
 }
 
 - (void)cancelBatchMode
@@ -1370,6 +1374,14 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
             [weakSelf startDownloadFromURL:url];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// 需要登录才能下载的站点：进内置浏览器，登录后由 WKDownload 接管下载。
+- (void)webDownloadTapped
+{
+    FFWebDownloadViewController *browser = [[FFWebDownloadViewController alloc]
+        initWithDestinationDirectory:[self.currentPath copy]];
+    [self.navigationController pushViewController:browser animated:YES];
 }
 
 - (void)startDownloadFromURL:(NSURL *)url

@@ -79,6 +79,7 @@ FuckFile_FILES = \
 	src/FFSQLiteRowEditorViewController.m \
 	src/FFDirectoryPickerViewController.m \
 	src/FFViewerActions.m \
+	src/FFWebDownloadViewController.m \
 	src/FFMediaPlayerViewController.m \
 	src/FFImageViewerViewController.m \
 	src/FFViewerRegistry.m \

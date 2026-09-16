@@ -386,28 +386,47 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     });
 }
 
-// 切换动画：旧图快照滑出，新图淡入。约束视图只做 alpha，避免
-// transform 与 Auto Layout 打架。
+// 切换动画：左右滑动翻页（旧图滑出、新图从对应方向滑入）。
+// 动画层用 frame 驱动的一次性视图，不受 Auto Layout 约束影响。
 - (void)applyImage:(UIImage *)image animated:(BOOL)animated direction:(NSInteger)direction
 {
-    if (!animated || !self.zoomView.window) {
+    if (!animated || !self.zoomView.window ||
+        !self.zoomView.superview || CGRectIsEmpty(self.zoomView.bounds)) {
         [self.zoomView setImage:image];
         return;
     }
-    UIView *snapshot = [self.zoomView snapshotViewAfterScreenUpdates:NO];
-    snapshot.frame = self.zoomView.frame;
-    snapshot.userInteractionEnabled = NO;
-    [self.view insertSubview:snapshot belowSubview:self.zoomView];
+    if (direction == 0) {
+        // 原地切换（点缩略图当前项、删除后落到相邻图）用交叉淡入。
+        [UIView transitionWithView:self.zoomView duration:0.2
+            options:UIViewAnimationOptionTransitionCrossDissolve
+            animations:^{ [self.zoomView setImage:image]; } completion:nil];
+        return;
+    }
+
+    CGFloat width = self.zoomView.bounds.size.width;
+    UIView *outgoing = [self.zoomView snapshotViewAfterScreenUpdates:NO];
+    outgoing.frame = self.zoomView.frame;
+    outgoing.userInteractionEnabled = NO;
+    [self.view addSubview:outgoing];
+
+    FFImageZoomView *incoming = [[FFImageZoomView alloc] initWithFrame:
+        CGRectOffset(self.zoomView.frame, direction * width, 0)];
+    [incoming setImage:image];
+    incoming.userInteractionEnabled = NO;
+    [self.view addSubview:incoming];
+
+    // 真实视图同步换到新图，动画结束后再露出，避免中途闪回旧内容。
     [self.zoomView setImage:image];
-    CGFloat travel = direction == 0 ? 0 : direction * self.zoomView.bounds.size.width * 0.25;
-    self.zoomView.alpha = direction == 0 ? 0.0 : 1.0;
-    [UIView animateWithDuration:0.24 delay:0 options:UIViewAnimationOptionCurveEaseOut
+    self.zoomView.hidden = YES;
+
+    [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseInOut
         animations:^{
-            self.zoomView.alpha = 1.0;
-            snapshot.alpha = 0.0;
-            snapshot.transform = CGAffineTransformMakeTranslation(-travel, 0);
+            outgoing.frame = CGRectOffset(outgoing.frame, -direction * width, 0);
+            incoming.frame = CGRectOffset(incoming.frame, -direction * width, 0);
         } completion:^(BOOL finished) {
-            [snapshot removeFromSuperview];
+            [outgoing removeFromSuperview];
+            [incoming removeFromSuperview];
+            self.zoomView.hidden = NO;
         }];
 }
 
@@ -479,7 +498,9 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     didSelectItemAtIndexPath:(NSIndexPath *)indexPath
 {
     (void)collectionView;
-    [self showImageAtIndex:(NSUInteger)indexPath.item animated:YES direction:0];
+    NSUInteger target = (NSUInteger)indexPath.item;
+    NSInteger direction = target == self.index ? 0 : (target > self.index ? 1 : -1);
+    [self showImageAtIndex:target animated:YES direction:direction];
 }
 
 - (void)showPrevious
