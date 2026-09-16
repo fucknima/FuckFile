@@ -140,6 +140,49 @@ final class FFCodeEditorView: UIView {
         } else if notification.name == UIResponder.keyboardWillHideNotification {
             keyboardEndFrameInScreen = .null
         }
+        applyKeyboardInset(notification)
+    }
+
+    /// Runestone's TextView scrolls the caret into its own frame, but the frame
+    /// extends behind the keyboard, so the caret of a tap near the bottom half
+    /// stayed covered. Reserve the keyboard height as bottom inset; Runestone's
+    /// scrollRangeToVisible then keeps the caret above the keyboard.
+    private func applyKeyboardInset(_ notification: Notification) {
+        var keyboardOverlap: CGFloat = 0
+        if !keyboardEndFrameInScreen.isNull, let window = self.window {
+            let keyboardInWindow = window.convert(keyboardEndFrameInScreen, from: nil)
+            let editorInWindow = self.convert(self.bounds, to: window)
+            keyboardOverlap = max(0, editorInWindow.maxY - keyboardInWindow.minY)
+            keyboardOverlap = min(keyboardOverlap, self.bounds.height)
+        }
+
+        let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+            as? NSNumber)?.doubleValue ?? 0
+        let curve = (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey]
+            as? NSNumber)?.uintValue ?? 7
+        let options: UIView.AnimationOptions = [UIView.AnimationOptions(rawValue: curve << 16),
+                                                .beginFromCurrentState]
+        let updates = {
+            self.textView.contentInset.bottom = keyboardOverlap
+            self.textView.verticalScrollIndicatorInsets.bottom = keyboardOverlap
+            // Animate the caret scroll together with the inset so the caret
+            // never sits under the incoming keyboard.
+            self.scrollCaretIntoView()
+        }
+        if duration > 0 {
+            UIView.animate(withDuration: duration, delay: 0, options: options,
+                           animations: updates)
+        } else {
+            updates()
+        }
+    }
+
+    /// Re-runs Runestone's caret scrolling against the freshly applied inset.
+    private func scrollCaretIntoView() {
+        guard textView.isFirstResponder else { return }
+        let range = textView.selectedRange
+        guard range.length == 0 else { return }
+        textView.scrollRangeToVisible(range)
     }
 
     // MARK: - ObjC-visible surface
