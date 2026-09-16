@@ -393,6 +393,8 @@
 - [x] 无扩展名图片用 CGImageSource 内容识别兜底（FFPreviewRouter）
 - [x] 媒体播放器升级：同目录播放列表（上一集/下一集/自动续播）、断点续播、
       外挂字幕 SRT/VTT/ASS（原生渲染，无需第三方库）
+- [x] 修复打开 .heic 闪退：缩略图条在数据刷新前 selectItem 触发 UIKit 断言
+- [x] 媒体播放器一键横屏（方向请求 + 失败时提示关闭方向锁定；退出恢复竖屏）
 - [ ] 网络位置客户端：WebDAV 客户端（连接/浏览/下载/上传）
 - [ ] SMB / SFTP 客户端（需 vendored libsmb2 / libssh2，单独一批）
 - [ ] 大文件 / 重复文件查找

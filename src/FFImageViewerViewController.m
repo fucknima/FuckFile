@@ -383,10 +383,14 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
 - (void)updateStripSelection
 {
     if (self.strip.hidden || !self.imagePaths.count) return;
-    NSIndexPath *indexPath = [NSIndexPath indexPathForItem:(NSInteger)self.index inSection:0];
-    [self.strip selectItemAtIndexPath:indexPath animated:NO
-        scrollPosition:UICollectionViewScrollPositionCenteredHorizontally];
+    // 先 reloadData 让集合视图看到新数据，再选中。数据还没刷新就
+    // selectItemAtIndexPath: 会因 indexPath 越界触发 UIKit 断言
+    // （表现为打开 .heic 直接闪退）。
     [self.strip reloadData];
+    [self.strip layoutIfNeeded];
+    NSInteger items = [self.strip numberOfItemsInSection:0];
+    if (items <= 0 || self.index >= (NSUInteger)items) return;
+    NSIndexPath *indexPath = [NSIndexPath indexPathForItem:(NSInteger)self.index inSection:0];
     [self.strip selectItemAtIndexPath:indexPath animated:NO
         scrollPosition:UICollectionViewScrollPositionCenteredHorizontally];
 }

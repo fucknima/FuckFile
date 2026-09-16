@@ -921,3 +921,25 @@ ImportService/PathPolicy），未引入新的事实来源。
 原因：真机反馈三类问题（弹窗定位、导入图片打不开、播放太简陋）；
 前两项是缺陷，第三项优先用系统框架把体验补齐，避免为格式覆盖引入
 几十 MB 依赖与新的构建链风险。
+
+## ADR-025
+
+日期：2026-09-16
+
+决定：
+
+**修复 .heic 闪退（真机 309 崩溃报告）并给播放器加一键横屏。**
+
+1. 崩溃根因（.ips 的 lastExceptionBacktrace 直接给出）：
+   `FFImageViewerViewController updateStripSelection` 在缩略图条
+   `reloadData` 之前调用 `selectItemAtIndexPath:`，集合视图按旧数据
+   校验 indexPath → NSAssertionHandler → SIGABRT。修复：先
+   `reloadData` + `layoutIfNeeded`，再用 `numberOfItemsInSection:0`
+   做越界判断后才选中。与 HEIC 解码无关，任何多图目录打开都会命中。
+2. 播放器一键横屏：导航栏「方向」按钮用
+   `UIWindowScene requestGeometryUpdateWithPreferences:`（iOS 16+）请求
+   横屏/竖屏，退出播放器自动恢复竖屏；系统拒绝（如方向锁定）时提示
+   关闭控制中心的方向锁定。VC 侧显式 `supportedInterfaceOrientations`
+   为 allButUpsideDown 且 `shouldAutorotate` YES。
+
+约束：不做强制旋转的私有 API；方向请求失败只提示，不改锁屏状态。

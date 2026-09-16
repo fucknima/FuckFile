@@ -34,6 +34,8 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 @property(nonatomic, copy) NSString *activeSubtitlePath;
 @property(nonatomic, strong) id timeObserver;
 @property(nonatomic, strong) UIBarButtonItem *subtitleItem;
+@property(nonatomic, strong) UIBarButtonItem *rotateItem;
+@property(nonatomic) BOOL forcedLandscape;
 @end
 
 @implementation FFMediaPlayerViewController
@@ -79,6 +81,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     [super viewWillDisappear:animated];
     [self saveResumePosition];
     if (self.isMovingFromParentViewController) {
+        if (self.forcedLandscape) [self requestOrientation:UIInterfaceOrientationMaskPortrait];
         [self.player pause];
         if (self.timeObserver) {
             [self.player removeTimeObserver:self.timeObserver];
@@ -93,6 +96,56 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     }
 }
 
+#pragma mark - Orientation
+
+- (BOOL)shouldAutorotate { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+// 播放器里提供一键横屏：锁屏方向打开时系统可能拒绝，如实提示。
+- (void)toggleLandscape
+{
+    BOOL landscape = !self.forcedLandscape;
+    self.forcedLandscape = landscape;
+    [self updateRotateItem];
+    [self requestOrientation:landscape ? UIInterfaceOrientationMaskLandscape
+                                       : UIInterfaceOrientationMaskPortrait];
+}
+
+- (void)updateRotateItem
+{
+    self.rotateItem.image = [UIImage systemImageNamed:
+        self.forcedLandscape ? @"rotate.left" : @"rotate.right"];
+    self.rotateItem.accessibilityLabel = self.forcedLandscape ? @"恢复竖屏" : @"横屏播放";
+}
+
+- (void)requestOrientation:(UIInterfaceOrientationMask)mask
+{
+    UIWindowScene *scene = self.view.window.windowScene;
+    if (!scene) {
+        [UIViewController attemptRotationToDeviceOrientation];
+        return;
+    }
+    if (@available(iOS 16.0, *)) {
+        UIWindowSceneGeometryPreferencesIOS *preferences =
+            [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
+        __weak typeof(self) weakSelf = self;
+        [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
+            if (!error) return;
+            FFLogTag(@"Media", @"orientation request failed: %@", error.localizedDescription);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf flash:@"系统未允许旋转：请关闭控制中心的方向锁定后重试"];
+            });
+        }];
+        [self setNeedsUpdateOfSupportedInterfaceOrientations];
+    } else {
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
+}
+
 #pragma mark - Chrome
 
 - (void)buildChrome
@@ -101,7 +154,10 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
         title:nil icon:nil presenter:self allowTrash:YES];
     self.subtitleItem = [[UIBarButtonItem alloc] initWithImage:
         [UIImage systemImageNamed:@"captions.bubble"] menu:[self subtitleMenu]];
-    self.navigationItem.rightBarButtonItems = @[actions, self.subtitleItem];
+    self.rotateItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"rotate.right"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(toggleLandscape)];
+    self.navigationItem.rightBarButtonItems = @[actions, self.subtitleItem, self.rotateItem];
 
     // 播放器自带底部控制条，播放列表按钮放导航栏左侧并保留返回键。
     self.previousItem = [[UIBarButtonItem alloc]
