@@ -1376,7 +1376,7 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// 需要登录才能下载的站点：进内置浏览器，登录后由 WKDownload 接管下载。
+// 需要登录才能下载的站点：进内置浏览器，登录后下载请求由任务系统执行。
 - (void)webDownloadTapped
 {
     FFWebDownloadViewController *browser = [[FFWebDownloadViewController alloc]

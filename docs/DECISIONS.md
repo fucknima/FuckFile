@@ -1006,3 +1006,34 @@ ImportService/PathPolicy），未引入新的事实来源。
    回主线程。）
 
 原因：三项都是真机使用反馈；第 1、3 项是交互体验，第 2 项是误报缺陷。
+
+## ADR-028
+
+日期：2026-09-16
+
+决定：
+
+**网页下载统一走任务系统，WKDownload 退役；浏览器改 Safari 式底部工具条。**
+
+1. 真机反馈（#885 构建）：进入网页下载后底部仍显示根 tab bar（文件/设置），
+   与自建工具条叠在一起；地址栏独占一行 + 顶部导航栏 = 两条 chrome，视口被
+   吃掉。改为 Safari 式：导航栏只留标题、分享与下载入口；地址栏放在底部工具
+   条中间（后退/前进在左，刷新/在 Safari 打开在右）；`hidesBottomBarWhenPushed`
+   在 init 中设置。
+2. WKDownload 下载不进任务中心、离开页面即中断、无法断点续传。导航级下载
+   （`WKNavigationAction/Response.shouldPerformDownload`、不可显示 MIME）改为
+   取消导航，把请求交给 `FFFileTaskManager` 用 NSURLSession 执行：
+   - 请求头从导航请求 + 共享 `WKHTTPCookieStore` 合并（Cookie/Referer/UA），
+     登录态可复用；POST body 不可重放（HTTPBodyStream）时降级 GET 并记录日志；
+   - 不可下载的 URL scheme（blob:/data:）弹窗提示改用 Safari，不再静默失败；
+   - 任务中心拿到完整交互：进度/速度/ETA、取消、重试、历史。
+3. 断点续传：取消时用 `cancelByProducingResumeData:`、失败时从
+   error.userInfo 取 resumeData，存入 FFFileTask（内存字段，不落 TaskHistory）；
+   任务中心对带断点的下载显示「继续」，retryTask 自动从断点续传。断点被服务器
+   拒绝（文件已变/不支持 Range）时清断点全量重试一次，而不是直接判失败。
+4. 取舍：放弃 WebKit 专属下载能力（blob/JS 生成内容、部分 POST 附件）；
+   App 重启后断点不保留（历史任务显示中断，可全量重试）。
+
+原因：用户要求下载必须能在任务中心查看并支持断点续传；WKDownload 的生命周期
+绑定页面，只有改由任务系统执行才能同时满足离页继续、取消与续传。旧路径
+（临时文件原子 rename）由 FFImportService 的重名规则替代，落盘安全性不变。

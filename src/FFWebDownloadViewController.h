@@ -3,10 +3,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // In-app browser for sites that need a login before a file can be downloaded.
-// Cookies live in the shared WKWebsiteDataStore (persisted), and navigations
-// that produce a download are taken over by WKDownload and saved atomically
-// into the destination directory through the same unique-name rules as the
-// rest of the app.
+// Cookies live in the shared WKWebsiteDataStore (persisted). Navigations that
+// produce a download are handed to FFFileTaskManager (NSURLSession) with the
+// login headers attached, so progress shows in the task centre, downloads keep
+// running after the page is left, and a stopped download can resume.
 @interface FFWebDownloadViewController : UIViewController
 
 - (instancetype)initWithDestinationDirectory:(NSString *)directory;

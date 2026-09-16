@@ -850,91 +850,147 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
         return NO;
     }
 
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    __block NSURL *tempURL = nil;
-    __block NSURLResponse *response = nil;
-    __block NSError *downloadError = nil;
-    NSDate *startedAt = NSDate.date;
-
-    FFDownloadDelegate *delegate = [FFDownloadDelegate new];
-    delegate.progressBlock = ^(int64_t written, int64_t expected) {
-        task.completedBytes = written > 0 ? (unsigned long long)written : 0;
-        task.totalBytes = expected > 0 ? (unsigned long long)expected : 0;
-        task.progress = expected > 0 ? MIN(1.0, (double)written / (double)expected) : 0;
-        NSTimeInterval elapsed = [NSDate.date timeIntervalSinceDate:startedAt];
-        if (elapsed > 0.5 && written > 0) {
-            task.averageBytesPerSecond = (double)written / elapsed;
-            if (expected > written && task.averageBytesPerSecond > 0)
-                task.estimatedRemainingSeconds = (double)(expected - written) / task.averageBytesPerSecond;
-        }
-        [self notifyChangeThrottled];
-    };
-    delegate.finishBlock = ^(NSURL *location, NSURLResponse *finishedResponse, NSError *error) {
-        tempURL = location;
-        response = finishedResponse;
-        downloadError = error;
-        dispatch_semaphore_signal(semaphore);
-    };
-
-    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-    configuration.timeoutIntervalForRequest = 30;
-    configuration.timeoutIntervalForResource = 60 * 60;
-    NSOperationQueue *delegateQueue = [NSOperationQueue new];
-    delegateQueue.maxConcurrentOperationCount = 1;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration
-        delegate:delegate delegateQueue:delegateQueue];
-    NSURLSessionDownloadTask *download = [session downloadTaskWithURL:url];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 30;
+    [task.requestHeaders enumerateKeysAndObjectsUsingBlock:^(NSString *field, NSString *value, BOOL *stop) {
+        if (field.length && value.length) [request setValue:value forHTTPHeaderField:field];
+    }];
     task.detailName = url.lastPathComponent.length ? url.lastPathComponent : url.host;
     [self notifyChange];
-    [download resume];
 
-    // Poll the semaphore so a cancel request is honored even when the server
-    // sends no progress callbacks (the session would otherwise block forever).
-    while (dispatch_semaphore_wait(semaphore,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC))) != 0) {
-        if (!task.cancelled) continue;
-        if (download.state == NSURLSessionTaskStateRunning) [download cancel];
-    }
-    [session finishTasksAndInvalidate];
-    delegate.progressBlock = nil;
-    delegate.finishBlock = nil;
+    // 最多两次：先带 resumeData 续传，若服务器/文件已变化导致断点失效，
+    // 清掉断点后全量重来一次。取消不重试，断点保留给用户点「继续」。
+    for (NSInteger attempt = 0; attempt < 2; attempt++) {
+        NSData *resumeData = task.resumeData;
+        BOOL usedResumeData = resumeData.length > 0;
+        __block NSData *cancelResumeData = nil;
+        __block BOOL cancelRequested = NO;
+        __block NSURL *tempURL = nil;
+        __block NSURLResponse *response = nil;
+        __block NSError *downloadError = nil;
+        NSDate *startedAt = NSDate.date;
 
-    if (downloadError || !tempURL) {
-        if (!task.cancelled) {
-            task.failedCount = 1;
-            task.error = downloadError ?: [NSError errorWithDomain:@"FFFileTaskErrorDomain"
-                code:472 userInfo:@{NSLocalizedDescriptionKey: @"下载失败：服务器未返回文件"}];
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        FFDownloadDelegate *delegate = [FFDownloadDelegate new];
+        delegate.progressBlock = ^(int64_t written, int64_t expected) {
+            task.completedBytes = written > 0 ? (unsigned long long)written : 0;
+            task.totalBytes = expected > 0 ? (unsigned long long)expected : 0;
+            task.progress = expected > 0 ? MIN(1.0, (double)written / (double)expected) : 0;
+            NSTimeInterval elapsed = [NSDate.date timeIntervalSinceDate:startedAt];
+            if (elapsed > 0.5 && written > 0) {
+                task.averageBytesPerSecond = (double)written / elapsed;
+                if (expected > written && task.averageBytesPerSecond > 0)
+                    task.estimatedRemainingSeconds = (double)(expected - written) / task.averageBytesPerSecond;
+            }
+            [self notifyChangeThrottled];
+        };
+        delegate.finishBlock = ^(NSURL *location, NSURLResponse *finishedResponse, NSError *error) {
+            tempURL = location;
+            response = finishedResponse;
+            downloadError = error;
+            dispatch_semaphore_signal(semaphore);
+        };
+
+        NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+        configuration.timeoutIntervalForRequest = 30;
+        configuration.timeoutIntervalForResource = 60 * 60;
+        NSOperationQueue *delegateQueue = [NSOperationQueue new];
+        delegateQueue.maxConcurrentOperationCount = 1;
+        NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration
+            delegate:delegate delegateQueue:delegateQueue];
+        NSURLSessionDownloadTask *download = usedResumeData
+            ? [session downloadTaskWithResumeData:resumeData]
+            : [session downloadTaskWithRequest:request];
+        [download resume];
+
+        // Poll the semaphore so a cancel request is honored even when the server
+        // sends no progress callbacks (the session would otherwise block forever).
+        while (dispatch_semaphore_wait(semaphore,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC))) != 0) {
+            if (!task.cancelled || cancelRequested) continue;
+            cancelRequested = YES;
+            dispatch_semaphore_t resumeSemaphore = dispatch_semaphore_create(0);
+            [download cancelByProducingResumeData:^(NSData *data) {
+                cancelResumeData = data;
+                dispatch_semaphore_signal(resumeSemaphore);
+            }];
+            dispatch_semaphore_wait(resumeSemaphore,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
         }
-        return NO;
-    }
+        [session finishTasksAndInvalidate];
+        delegate.progressBlock = nil;
+        delegate.finishBlock = nil;
 
-    NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
-        ? ((NSHTTPURLResponse *)response).statusCode : 200;
-    if (status >= 400) {
-        [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+        if (cancelRequested || task.cancelled) {
+            NSData *resume = cancelResumeData.length ? cancelResumeData
+                : downloadError.userInfo[NSURLSessionDownloadTaskResumeData];
+            if ([resume isKindOfClass:NSData.class] && resume.length) task.resumeData = resume;
+            else if (!task.resumeData.length) task.resumeData = usedResumeData ? resumeData : nil;
+            FFLogTag(@"Tasks", @"download cancelled resume=%lu",
+                (unsigned long)task.resumeData.length);
+            return NO;
+        }
+
+        if (!downloadError && tempURL) {
+            NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+                ? ((NSHTTPURLResponse *)response).statusCode : 200;
+            if (status >= 400) {
+                [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+                task.resumeData = nil;
+                task.failedCount = 1;
+                task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:473
+                    userInfo:@{NSLocalizedDescriptionKey:
+                        [NSString stringWithFormat:@"服务器返回 HTTP %ld", (long)status]}];
+                return NO;
+            }
+
+            NSString *name = response.suggestedFilename;
+            if (!name.length) name = url.lastPathComponent;
+            if (!name.length) name = @"下载文件";
+            FFImportResult *result = [FFImportService importURL:tempURL
+                displayName:name toDirectory:task.destination];
+            [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+
+            if (result.success) {
+                task.succeededCount = 1;
+                task.progress = 1.0;
+                task.resumeData = nil;
+                if (task.totalBytes > 0) task.completedBytes = task.totalBytes;
+                if (result.destinationPath.lastPathComponent.length)
+                    task.detailName = result.destinationPath.lastPathComponent;
+                FFLogTag(@"Tasks", @"download ok name=%@ bytes=%llu", name, task.completedBytes);
+                return YES;
+            }
+            task.resumeData = nil;
+            task.failedCount = 1;
+            task.error = result.error;
+            return NO;
+        }
+
+        // 失败：NSURLSession 会顺带给出新的断点数据（网络中断时）。
+        NSData *errorResumeData = downloadError.userInfo[NSURLSessionDownloadTaskResumeData];
+        BOOL hasFreshResumeData = [errorResumeData isKindOfClass:NSData.class] &&
+            errorResumeData.length > 0;
+        task.resumeData = hasFreshResumeData ? errorResumeData : nil;
+
+        // 本次是续传且断点被拒（服务器换了文件 / 不支持 Range）：清掉断点，
+        // 全量重新下载一次，而不是直接把任务判失败。
+        if (usedResumeData && !hasFreshResumeData && attempt == 0) {
+            task.progress = 0;
+            task.completedBytes = 0;
+            task.totalBytes = 0;
+            task.averageBytesPerSecond = 0;
+            task.estimatedRemainingSeconds = 0;
+            FFLogTag(@"Tasks", @"download resume rejected, restarting from scratch");
+            [self notifyChange];
+            continue;
+        }
+
         task.failedCount = 1;
-        task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:473
-            userInfo:@{NSLocalizedDescriptionKey:
-                [NSString stringWithFormat:@"服务器返回 HTTP %ld", (long)status]}];
+        task.error = downloadError ?: [NSError errorWithDomain:@"FFFileTaskErrorDomain"
+            code:472 userInfo:@{NSLocalizedDescriptionKey: @"下载失败：服务器未返回文件"}];
         return NO;
     }
-
-    NSString *name = response.suggestedFilename;
-    if (!name.length) name = url.lastPathComponent;
-    if (!name.length) name = @"下载文件";
-    FFImportResult *result = [FFImportService importURL:tempURL
-        displayName:name toDirectory:task.destination];
-    [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
-
-    if (result.success) {
-        task.succeededCount = 1;
-        task.progress = 1.0;
-        if (task.totalBytes > 0) task.completedBytes = task.totalBytes;
-        FFLogTag(@"Tasks", @"download ok name=%@ bytes=%llu", name, task.completedBytes);
-        return YES;
-    }
-    task.failedCount = 1;
-    task.error = result.error;
     return NO;
 }
 

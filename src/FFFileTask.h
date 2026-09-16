@@ -48,6 +48,16 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 // Persisted with history (URL only, never credentials).
 @property(atomic, copy, nullable) NSString *remoteURL;
 
+// Request headers captured from the in-app browser (Cookie/Referer/UA) so a
+// login-protected link can be fetched by the task worker. Memory only: cookie
+// values must never reach TaskHistory.plist.
+@property(atomic, copy, nullable) NSDictionary<NSString *, NSString *> *requestHeaders;
+
+// Partial-download state produced by NSURLSession. Non-nil lets a failed or
+// cancelled download resume with a Range request instead of restarting.
+// Memory only; an app relaunch restarts from zero.
+@property(atomic, copy, nullable) NSData *resumeData;
+
 // Used by encrypted archive extraction. This is deliberately an in-memory
 // field: FFFileTask persistence must never serialize it.
 @property(atomic, copy, nullable) NSString *archivePassword;

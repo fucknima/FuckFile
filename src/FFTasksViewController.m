@@ -158,8 +158,14 @@
     else if (task.state == FFFileTaskStateCompleted)
         [detail appendFormat:@"已完成 · 成功 %lu 失败 %lu 跳过 %lu", (unsigned long)task.succeededCount,
             (unsigned long)task.failedCount, (unsigned long)task.skippedCount];
-    else if (task.state == FFFileTaskStateFailed) [detail appendString:task.error.localizedDescription ?: @"失败"];
-    else [detail appendString:task.stateText];
+    else if (task.state == FFFileTaskStateFailed) {
+        [detail appendString:task.error.localizedDescription ?: @"失败"];
+        if ([self taskHasResumeData:task]) [detail appendString:@"（已保留断点，可继续）"];
+    }
+    else {
+        [detail appendString:task.stateText];
+        if ([self taskHasResumeData:task]) [detail appendString:@"（可继续下载）"];
+    }
 
     NSMutableString *metrics = [NSMutableString stringWithFormat:@"%@", task.kindText];
     if (task.state == FFFileTaskStateRunning) {
@@ -233,16 +239,23 @@
     return task.state != FFFileTaskStateRunning && task.state != FFFileTaskStateQueued;
 }
 
+- (BOOL)taskHasResumeData:(FFFileTask *)task
+{
+    return task.kind == FFFileTaskKindDownload && task.resumeData.length > 0;
+}
+
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
     if (task.state != FFFileTaskStateFailed && task.state != FFFileTaskStateCancelled) return nil;
-    UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:@"重试"
+    BOOL resumable = [self taskHasResumeData:task];
+    UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+        title:(resumable ? @"继续" : @"重试")
         handler:^(__unused UIContextualAction *action, __unused UIView *sourceView, void (^completionHandler)(BOOL)) {
             [[FFFileTaskManager sharedManager] retryTask:task];
             completionHandler(YES);
         }];
-    retry.image = [UIImage systemImageNamed:@"arrow.clockwise"];
+    retry.image = [UIImage systemImageNamed:(resumable ? @"arrow.down.circle" : @"arrow.clockwise")];
     retry.backgroundColor = UIColor.systemBlueColor;
     return [UISwipeActionsConfiguration configurationWithActions:@[retry]];
 }
