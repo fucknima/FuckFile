@@ -1,5 +1,6 @@
 #import "FFRootTabBarController.h"
 #import "FFBrowserViewController.h"
+#import "FFMainSplitViewController.h"
 #import "FFTasksViewController.h"
 #import "FFSettingsViewController.h"
 #import "FFStorageEnvironment.h"
@@ -17,7 +18,12 @@
     [super viewDidLoad];
     self.delegate = self;
 
-    FFBrowserViewController *storage = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
+    // iPad uses a two-column shell (locations sidebar + browser) inside the
+    // 文件 tab; iPhone keeps the single-column browser. The tab bar and task
+    // pill stay identical on both.
+    UIViewController *storage = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad
+        ? (UIViewController *)[FFMainSplitViewController new]
+        : (UIViewController *)[[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];
     storage.title = @"文件";
 
     FFSettingsViewController *settings = [FFSettingsViewController new];
@@ -26,15 +32,20 @@
     NSArray<UIViewController *> *roots = @[storage, settings];
     NSArray<NSString *> *titles = @[@"文件", @"设置"];
     NSArray<NSString *> *symbols = @[@"folder", @"gearshape"];
-    NSMutableArray<UINavigationController *> *controllers = [NSMutableArray arrayWithCapacity:roots.count];
+    NSMutableArray<UIViewController *> *controllers = [NSMutableArray arrayWithCapacity:roots.count];
 
     [roots enumerateObjectsUsingBlock:^(UIViewController *root, NSUInteger idx, BOOL *stop) {
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:root];
-        nav.navigationBar.translucent = NO;
-        nav.navigationBar.prefersLargeTitles = NO;
-        nav.tabBarItem = [[UITabBarItem alloc] initWithTitle:titles[idx]
+        (void)stop;
+        UIViewController *tabRoot = root;
+        if (![root isKindOfClass:FFMainSplitViewController.class]) {
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:root];
+            nav.navigationBar.translucent = NO;
+            nav.navigationBar.prefersLargeTitles = NO;
+            tabRoot = nav;
+        }
+        tabRoot.tabBarItem = [[UITabBarItem alloc] initWithTitle:titles[idx]
             image:[UIImage systemImageNamed:symbols[idx]] selectedImage:nil];
-        [controllers addObject:nav];
+        [controllers addObject:tabRoot];
     }];
     self.viewControllers = controllers;
 
@@ -138,6 +149,8 @@
 - (UINavigationController *)activeNavigationController
 {
     UIViewController *selected = self.selectedViewController;
+    if ([selected isKindOfClass:FFMainSplitViewController.class])
+        return [(FFMainSplitViewController *)selected activeNavigationController];
     return [selected isKindOfClass:UINavigationController.class]
         ? (UINavigationController *)selected : nil;
 }

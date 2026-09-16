@@ -899,7 +899,7 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
     delegate.progressBlock = nil;
     delegate.finishBlock = nil;
 
-    if (downloadError || !tempURL.length) {
+    if (downloadError || !tempURL) {
         if (!task.cancelled) {
             task.failedCount = 1;
             task.error = downloadError ?: [NSError errorWithDomain:@"FFFileTaskErrorDomain"

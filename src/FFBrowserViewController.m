@@ -28,6 +28,7 @@
 #import "FFViewerPickerViewController.h"
 #import "FFSettingsViewController.h"
 #import "FFStorageAnalysisViewController.h"
+#import "FFGlobalSearchViewController.h"
 
 #import <AVKit/AVKit.h>
 #import <PhotosUI/PhotosUI.h>
@@ -773,9 +774,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [stack.heightAnchor constraintEqualToConstant:40],
     ]];
 
-    NSArray<NSString *> *chips = @[@"收藏", @"最近", @"导入", @"回收站", @"存储"];
-    NSArray<NSString *> *actions = @[@"quickFavorites", @"quickRecent", @"quickImport",
-        @"quickTrash", @"quickStorage"];
+    NSArray<NSString *> *chips = @[@"搜索", @"收藏", @"最近", @"导入", @"回收站", @"存储"];
+    NSArray<NSString *> *actions = @[@"quickSearch", @"quickFavorites", @"quickRecent",
+        @"quickImport", @"quickTrash", @"quickStorage"];
     for (NSUInteger index = 0; index < chips.count; index++) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.backgroundColor = UIColor.secondarySystemBackgroundColor;
@@ -788,6 +789,11 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             forControlEvents:UIControlEventTouchUpInside];
         [stack addArrangedSubview:button];
     }
+}
+
+- (void)quickSearch
+{
+    [self.navigationController pushViewController:[FFGlobalSearchViewController new] animated:YES];
 }
 
 - (void)quickFavorites

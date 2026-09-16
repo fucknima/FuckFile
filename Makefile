@@ -25,6 +25,7 @@ FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
 	src/FFRootTabBarController.m \
+	src/FFMainSplitViewController.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFBrowserViewController.m \
@@ -62,6 +63,7 @@ FuckFile_FILES = \
 	src/FFTrashService.m \
 	src/FFTrashViewController.m \
 	src/FFStorageAnalysisViewController.m \
+	src/FFGlobalSearchViewController.m \
 	src/FFBatchRename.m \
 	src/FFBatchRenameViewController.m \
 	src/FFThumbnailService.m \
