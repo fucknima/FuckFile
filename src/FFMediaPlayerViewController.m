@@ -161,7 +161,8 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 
 - (void)setForcedLandscape:(BOOL)landscape
 {
-    self.forcedLandscape = landscape;
+    // 必须写 ivar：属性自定义 setter 里再赋值会无限递归。
+    _forcedLandscape = landscape;
     [self updateRotateItem];
     [self updateFullscreenChrome];
     // 只请求「右转横屏」（UIInterfaceOrientationLandscapeRight），
