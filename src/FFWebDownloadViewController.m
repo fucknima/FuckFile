@@ -355,12 +355,15 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     decisionHandler(WKNavigationActionPolicyAllow, preferences);
 }
 
-// 导航先被放行、响应阶段才发现是不可显示的类型：取消展示，用 GET 交给任务系统。
+// 导航先被放行、响应阶段才发现不可显示：取消展示，用 GET 交给任务系统。
+// WKNavigationResponse 没有 shouldPerformDownload（只有 action 有），是否
+// 附件要看 Content-Disposition；MIME 不可显示（zip/ipa 等）同样转下载。
 - (void)webView:(__unused WKWebView *)webView
     decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
                       decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
 {
-    if (navigationResponse.shouldPerformDownload || !navigationResponse.canShowMIMEType) {
+    if (!navigationResponse.canShowMIMEType ||
+        [self responseIsAttachment:navigationResponse.response]) {
         decisionHandler(WKNavigationResponsePolicyCancel);
         NSURL *url = navigationResponse.response.URL;
         if (!url) return;
@@ -370,6 +373,18 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         return;
     }
     decisionHandler(WKNavigationResponsePolicyAllow);
+}
+
+- (BOOL)responseIsAttachment:(NSURLResponse *)response
+{
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) return NO;
+    NSDictionary *headers = ((NSHTTPURLResponse *)response).allHeaderFields;
+    for (NSString *key in headers) {
+        if ([key caseInsensitiveCompare:@"Content-Disposition"] != NSOrderedSame) continue;
+        NSString *value = [headers[key] description].lowercaseString;
+        return [value containsString:@"attachment"];
+    }
+    return NO;
 }
 
 #pragma mark - Download hand-off
@@ -403,11 +418,13 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         [prepared setValue:self.webView.customUserAgent forHTTPHeaderField:@"User-Agent"];
 
     // Cookie 由 WebKit 网络进程管理，导航请求里不一定带全，统一从共享
-    // CookieStore 取一份合并，登录态才能被 NSURLSession 复用。回调只到本次
-    // 下载落队列为止，用 self 是为了用户点完下载立刻返回时任务不丢。
+    // CookieStore 取一份合并，登录态才能被 NSURLSession 复用。回调线程不
+    // 确定，回到主线程再建任务（任务中心的通知也走主线程，状态不跨线程）。
     WKHTTPCookieStore *store = self.webView.configuration.websiteDataStore.httpCookieStore;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
-        [self startDownloadForRequest:prepared cookies:cookies];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self startDownloadForRequest:prepared cookies:cookies];
+        });
     }];
 }
 
@@ -476,6 +493,10 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 
 - (void)refreshDownloadBar
 {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self refreshDownloadBar]; });
+        return;
+    }
     NSArray<FFFileTask *> *all = [FFFileTaskManager sharedManager].tasks;
     NSUInteger active = 0;
     BOOL unfinished = NO;

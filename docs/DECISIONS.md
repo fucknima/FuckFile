@@ -1021,8 +1021,10 @@ ImportService/PathPolicy），未引入新的事实来源。
    条中间（后退/前进在左，刷新/在 Safari 打开在右）；`hidesBottomBarWhenPushed`
    在 init 中设置。
 2. WKDownload 下载不进任务中心、离开页面即中断、无法断点续传。导航级下载
-   （`WKNavigationAction/Response.shouldPerformDownload`、不可显示 MIME）改为
-   取消导航，把请求交给 `FFFileTaskManager` 用 NSURLSession 执行：
+   （`WKNavigationAction.shouldPerformDownload`（download 属性）、响应 `canShowMIMEType == NO`
+   或 `Content-Disposition: attachment`；`WKNavigationResponse` 并没有
+   `shouldPerformDownload`，以 WebKit 头文件为准）改为取消导航，把请求交给
+   `FFFileTaskManager` 用 NSURLSession 执行：
    - 请求头从导航请求 + 共享 `WKHTTPCookieStore` 合并（Cookie/Referer/UA），
      登录态可复用；POST body 不可重放（HTTPBodyStream）时降级 GET 并记录日志；
    - 不可下载的 URL scheme（blob:/data:）弹窗提示改用 Safari，不再静默失败；
