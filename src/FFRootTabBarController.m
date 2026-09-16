@@ -45,14 +45,17 @@
 
     // 任务只在运行时出现：底部胶囊显示进度/数量，点开是任务中心。
     // 不再占用一个常驻 tab（95% 时间是空的）。
-    UIButtonConfiguration *config = [UIButtonConfiguration grayConfiguration];
-    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    config.title = @"任务";
-    config.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath"];
-    config.imagePadding = 6;
-    config.baseForegroundColor = UIColor.labelColor;
-    config.baseBackgroundColor = UIColor.secondarySystemBackgroundColor;
-    self.taskPill = [UIButton buttonWithConfiguration:config primaryAction:nil];
+    // 经典 UIButton API：不依赖 UIButtonConfiguration 的 SDK 差异。
+    self.taskPill = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.taskPill.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.taskPill.tintColor = UIColor.labelColor;
+    self.taskPill.layer.cornerRadius = 19;
+    self.taskPill.contentEdgeInsets = UIEdgeInsetsMake(8, 16, 8, 16);
+    self.taskPill.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    [self.taskPill setImage:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
+        forState:UIControlStateNormal];
+    [self.taskPill setTitle:@"任务" forState:UIControlStateNormal];
+    self.taskPill.titleEdgeInsets = UIEdgeInsetsMake(0, 6, 0, -6);
     self.taskPill.translatesAutoresizingMaskIntoConstraints = NO;
     self.taskPill.hidden = YES;
     self.taskPill.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -109,15 +112,11 @@
 
     self.taskPill.hidden = active == 0;
     if (active == 0) return;
-    UIButtonConfiguration *config = self.taskPill.configuration;
-    if (current.displayName.length) {
-        config.title = [NSString stringWithFormat:@"%lu 个任务 · %@",
-            (unsigned long)active, current.displayName];
-    } else {
-        config.title = [NSString stringWithFormat:@"%lu 个任务", (unsigned long)active];
-    }
-    self.taskPill.configuration = config;
-    self.taskPill.accessibilityLabel = config.title;
+    NSString *title = current.displayName.length
+        ? [NSString stringWithFormat:@"%lu 个任务 · %@", (unsigned long)active, current.displayName]
+        : [NSString stringWithFormat:@"%lu 个任务", (unsigned long)active];
+    [self.taskPill setTitle:title forState:UIControlStateNormal];
+    self.taskPill.accessibilityLabel = title;
 }
 
 - (void)showTasks

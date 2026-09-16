@@ -772,22 +772,16 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [stack.heightAnchor constraintEqualToConstant:40],
     ]];
 
-    NSArray<NSArray<NSString *> *> *chips = @[
-        @[@"收藏", @"star"],
-        @[@"最近", @"clock"],
-        @[@"导入", @"tray.and.arrow.down"],
-        @[@"回收站", @"trash"],
-    ];
+    NSArray<NSString *> *chips = @[@"收藏", @"最近", @"导入", @"回收站"];
     NSArray<NSString *> *actions = @[@"quickFavorites", @"quickRecent", @"quickImport", @"quickTrash"];
     for (NSUInteger index = 0; index < chips.count; index++) {
-        UIButtonConfiguration *config = [UIButtonConfiguration grayConfiguration];
-        config.title = chips[index][0];
-        config.image = [UIImage systemImageNamed:chips[index][1]];
-        config.imagePadding = 6;
-        config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-        config.baseForegroundColor = UIColor.labelColor;
-        config.contentInsets = NSDirectionalEdgeInsetsMake(6, 14, 6, 14);
-        UIButton *button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.backgroundColor = UIColor.secondarySystemBackgroundColor;
+        button.tintColor = UIColor.labelColor;
+        button.layer.cornerRadius = 20;
+        button.contentEdgeInsets = UIEdgeInsetsMake(8, 16, 8, 16);
+        button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        [button setTitle:chips[index] forState:UIControlStateNormal];
         [button addTarget:self action:NSSelectorFromString(actions[index])
             forControlEvents:UIControlEventTouchUpInside];
         [stack addArrangedSubview:button];
