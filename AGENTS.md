@@ -178,3 +178,22 @@ docs/ROADMAP.md
 架构变化时维护：
 
 docs/ARCHITECTURE.md
+
+## IPA 交付
+
+每次 push 触发 CI 构建后，回复末尾必须给出最新 prerelease 的 IPA 直接下载链接。
+
+取值方式：
+
+```sh
+gh release list --limit 1          # 取最新 tag，如 review-ipa-871
+gh release view <tag> --json assets # 取 asset 名，如 FuckFile-ci-871.ipa
+```
+
+链接格式：
+
+```text
+https://github.com/fucknima/FuckFile/releases/download/<tag>/<asset>
+```
+
+CI 失败时不给链接，先修复构建。
