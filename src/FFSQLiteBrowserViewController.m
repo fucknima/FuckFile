@@ -535,39 +535,6 @@ static const NSUInteger kSQLitePageRows = 200;
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (!_rowEditing || (NSUInteger)indexPath.row >= _rows.count) return;
-    NSDictionary<NSString *, NSString *> *row = _rows[(NSUInteger)indexPath.row];
-    NSString *rowID = row[@"__ff_rowid"];
-    if (!rowID.length) return;
-    if (!_editableService) {
-        NSError *error = nil;
-        _editableService = [[FFSQLiteService alloc]
-            initEditableWithDatabasePath:_databasePath error:&error];
-        if (!_editableService) {
-            [self flash:[NSString stringWithFormat:@"无法以可写方式打开：%@",
-                error.localizedDescription ?: @"未知错误"]];
-            return;
-        }
-    }
-    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
-    for (NSString *column in [self displayColumns]) values[column] = row[column] ?: @"";
-    __weak typeof(self) weakSelf = self;
-    FFSQLiteRowEditorViewController *editor = [[FFSQLiteRowEditorViewController alloc]
-        initWithService:_editableService
-                  table:_objectName
-                  rowID:rowID.longLongValue
-                columns:[self displayColumns]
-                 values:values
-             completion:^(BOOL saved) {
-                 __strong typeof(weakSelf) strongSelf = weakSelf;
-                 if (saved && strongSelf) [strongSelf loadOffset:strongSelf->_offset];
-             }];
-    [self.navigationController pushViewController:editor animated:YES];
-}
-
 - (void)flash:(NSString *)message
 {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
