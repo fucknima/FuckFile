@@ -978,3 +978,31 @@ ImportService/PathPolicy），未引入新的事实来源。
    离开页面时摘除全部 KVO 观察者，避免 NSProgress 回调已释放对象。
    同时把图片切换改成左右滑动翻页（frame 驱动的一次性动画层，避开
    Auto Layout 与 transform 的冲突；缩略图点选按目标方向滑动）。
+
+## ADR-027
+
+日期：2026-09-16
+
+决定：
+
+**网页下载浏览器界面重做 + 播放器横屏即全屏。**
+
+1. 真机反馈：地址栏塞进导航栏 titleView、前进后退又占左键，整条栏
+   又高又挤（截图可见）。改为：导航栏只保留标题与分享；地址栏独占
+   一行（圆角、左侧地球图标、清除按钮，高 38pt）；进度条紧贴其下；
+   浏览器式底部工具条放 后退/前进/刷新/在 Safari 打开（Safari 入口也
+   是站点兼容性兜底）。地址栏不与按钮争宽度，长 URL 不再被截断。
+2. 「帧框加载已中断」误报根因：导航转成下载时 WebKit 会以
+   `WebKitErrorDomain 102`（Frame load interrupted by policy change）
+   结束该次导航，这代表下载已开始而非失败。新增
+   `FFWebDownloadIsBenignNavigationError()` 统一过滤 102 与
+   NSURLErrorCancelled，`didFailProvisionalNavigation` /
+   `didFailNavigation` / 下载失败回调共用。
+3. 播放器横屏即全屏：请求 LandscapeRight 的同时隐藏导航栏、底部标签
+   栏、状态栏与 Home Indicator，视频铺满全屏；导航栏隐藏后旋转按钮
+   不可达，因此在视频右上角加浮动「退出全屏」按钮。push 或 pop 离开
+   播放器都会自动退出全屏并恢复竖屏，避免下一个页面没有导航栏。
+   （KVO 的 NSProgress 回调可能来自后台线程，网页下载的进度更新统一
+   回主线程。）
+
+原因：三项都是真机使用反馈；第 1、3 项是交互体验，第 2 项是误报缺陷。

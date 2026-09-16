@@ -6,6 +6,17 @@
 
 static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 
+// WebKit 把「导航变成下载」当成一次策略中断（Frame load interrupted by
+// policy change，102）；它代表下载已经开始，不是错误。
+static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
+{
+    if (!error) return YES;
+    if ([error.domain isEqualToString:NSURLErrorDomain] &&
+        error.code == NSURLErrorCancelled) return YES;
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return YES;
+    return NO;
+}
+
 @interface FFWebDownloadViewController () <WKNavigationDelegate, WKDownloadDelegate,
                                             UITextFieldDelegate, WKUIDelegate>
 @property(nonatomic, copy) NSString *destinationDirectory;
@@ -13,9 +24,11 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) UITextField *addressField;
 @property(nonatomic, strong) UIProgressView *progressView;
+@property(nonatomic, strong) UIToolbar *bottomBar;
 @property(nonatomic, strong) UIBarButtonItem *backItem;
 @property(nonatomic, strong) UIBarButtonItem *forwardItem;
 @property(nonatomic, strong) UIBarButtonItem *reloadItem;
+@property(nonatomic, strong) UIBarButtonItem *safariItem;
 // 进行中的下载记录（download/temp/name/directory）。WKDownload 不是
 // NSCopying，不能做字典 key，用数组 + 指针比较，量级只有个位数。
 @property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *downloads;
@@ -46,38 +59,33 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
-    // 顶部：地址栏 + 前进/后退/刷新。
+    // 地址栏独占一行（导航栏只留标题与分享），不再和前进/后退挤在一起。
     self.addressField = [[UITextField alloc] init];
     self.addressField.borderStyle = UITextBorderStyleRoundedRect;
+    self.addressField.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.addressField.keyboardType = UIKeyboardTypeURL;
     self.addressField.returnKeyType = UIReturnKeyGo;
     self.addressField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.addressField.autocorrectionType = UITextAutocorrectionTypeNo;
     self.addressField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    self.addressField.placeholder = @"输入网址，可直接登录后下载";
+    self.addressField.placeholder = @"输入网址，登录后下载";
     self.addressField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     self.addressField.delegate = self;
-    self.addressField.frame = CGRectMake(0, 0, 240, 32);
-    // 直接做导航栏标题视图，省掉一条自绘栏位。
-    self.navigationItem.titleView = self.addressField;
+    UIImageView *globe = [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"globe"]];
+    globe.tintColor = UIColor.secondaryLabelColor;
+    globe.contentMode = UIViewContentModeCenter;
+    globe.frame = CGRectMake(0, 0, 30, 22);
+    self.addressField.leftView = globe;
+    self.addressField.leftViewMode = UITextFieldViewModeAlways;
+    self.addressField.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.addressField];
 
-    self.backItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"chevron.left"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(goBack)];
-    self.forwardItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"chevron.right"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(goForward)];
-    self.reloadItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"arrow.clockwise"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(reloadPage)];
-    self.navigationItem.leftBarButtonItems = @[ self.backItem, self.forwardItem, self.reloadItem ];
-    self.reloadItem.accessibilityLabel = @"刷新";
-
-    self.progressView = [[UIProgressView alloc] initWithProgressViewStyle:
-        UIProgressViewStyleBar];
+    self.progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
     self.progressView.progress = 0;
     self.progressView.hidden = YES;
     self.progressView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.progressView];
 
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
     // 共享默认数据存储：登录 Cookie 会持久化，与 Web Viewer 共用同一份。
@@ -88,16 +96,57 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     self.webView.allowsBackForwardNavigationGestures = YES;
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.webView];
-    [self.view addSubview:self.progressView];
+
+    // 浏览器式底部工具条：后退/前进/刷新 + 在 Safari 打开。
+    self.bottomBar = [[UIToolbar alloc] init];
+    self.bottomBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.backItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"chevron.left"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(goBack)];
+    self.backItem.accessibilityLabel = @"后退";
+    self.forwardItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"chevron.right"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(goForward)];
+    self.forwardItem.accessibilityLabel = @"前进";
+    self.reloadItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"arrow.clockwise"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(reloadPage)];
+    self.reloadItem.accessibilityLabel = @"刷新";
+    self.safariItem = [[UIBarButtonItem alloc] initWithImage:
+        [UIImage systemImageNamed:@"safari"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(openInSafari)];
+    self.safariItem.accessibilityLabel = @"在 Safari 打开";
+    UIBarButtonItem *flexA = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+    UIBarButtonItem *flexB = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+    [self.bottomBar setItems:@[ self.backItem, self.forwardItem, self.reloadItem,
+                                flexA, self.safariItem, flexB ] animated:NO];
+    [self.view addSubview:self.bottomBar];
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(shareLink)];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.progressView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.addressField.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
+            constant:8],
+        [self.addressField.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor
+            constant:12],
+        [self.addressField.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor
+            constant:-12],
+        [self.addressField.heightAnchor constraintEqualToConstant:38],
+        [self.progressView.topAnchor constraintEqualToAnchor:self.addressField.bottomAnchor
+            constant:6],
         [self.progressView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.progressView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.webView.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor],
         [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.webView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.webView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.webView.bottomAnchor constraintEqualToAnchor:self.bottomBar.topAnchor],
+        [self.bottomBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.bottomBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.bottomBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
     ]];
 
     [self.webView addObserver:self forKeyPath:@"estimatedProgress"
@@ -130,6 +179,15 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     }
 }
 
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    if (!self.isMovingFromParentViewController || self.downloads.count == 0) return;
+    FFLogTag(@"WebDownload", @"leaving page with %lu active download(s)",
+        (unsigned long)self.downloads.count);
+    [self.webView stopLoading];
+}
+
 // 登录常见于 popup / target=_blank：没有第二窗口，直接在当前 WebView 打开。
 - (nullable WKWebView *)webView:(WKWebView *)webView
     createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
@@ -143,23 +201,12 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     return nil;
 }
 
-- (void)viewWillDisappear:(BOOL)animated
-{
-    [super viewWillDisappear:animated];
-    // 离开页面时未完成的下载会被系统取消（WebView 即将释放），
-    // 已明确的临时文件在这里清掉，不留下半成品。
-    if (!self.isMovingFromParentViewController || self.downloads.count == 0) return;
-    FFLogTag(@"WebDownload", @"leaving page with %lu active download(s)",
-        (unsigned long)self.downloads.count);
-    [self.webView stopLoading];
-}
-
 #pragma mark - Address bar
 
 - (void)textFieldDidBeginEditing:(UITextField *)textField
 {
-    // 编辑时给完整 URL，方便修改路径或参数。
     if (self.webView.URL.absoluteString.length) textField.text = self.webView.URL.absoluteString;
+    [textField selectAll:nil];
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField
@@ -168,7 +215,6 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     NSString *raw = [textField.text stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!raw.length) return YES;
-    if (!raw.pathExtension.length && ![raw containsString:@"."]) { /* 交给 URL 解析 */ }
     NSURLComponents *components = [NSURLComponents componentsWithString:raw];
     if (!components.scheme.length) components.scheme = @"https";
     NSURL *url = components.URL;
@@ -190,10 +236,31 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 - (void)goForward { if (self.webView.canGoForward) [self.webView goForward]; }
 - (void)reloadPage { [self.webView reload]; }
 
+- (void)openInSafari
+{
+    NSURL *url = self.webView.URL;
+    if (!url) return;
+    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)shareLink
+{
+    NSURL *url = self.webView.URL;
+    if (!url) {
+        [self flash:@"先打开一个网页再分享"];
+        return;
+    }
+    UIActivityViewController *activity = [[UIActivityViewController alloc]
+        initWithActivityItems:@[url] applicationActivities:nil];
+    activity.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+    [self presentViewController:activity animated:YES completion:nil];
+}
+
 - (void)updateNavigationState
 {
     self.backItem.enabled = self.webView.canGoBack;
     self.forwardItem.enabled = self.webView.canGoForward;
+    self.safariItem.enabled = self.webView.URL != nil;
     if (!self.addressField.isFirstResponder)
         self.addressField.text = self.webView.URL.absoluteString ?: @"";
 }
@@ -203,37 +270,46 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
                         change:(NSDictionary<NSKeyValueChangeKey, id> *)change context:(void *)context
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (object == self.webView && [keyPath isEqualToString:@"estimatedProgress"]) {
-            CGFloat progress = [change[NSKeyValueChangeNewKey] floatValue];
-            [self.progressView setProgress:progress animated:YES];
-            self.progressView.hidden = progress >= 1.0;
-            return;
-        }
-        if (object == self.webView && [keyPath isEqualToString:@"title"]) return;
-        if ([object isKindOfClass:NSProgress.class]) {
-            NSProgress *progress = (NSProgress *)object;
-            [self.progressView setProgress:progress.fractionCompleted animated:YES];
-            return;
-        }
-    });
+    (void)context;
+    // NSProgress 的 KVO 可能来自后台线程，UI 分支统一回主线程。
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        });
+        return;
+    }
+    if (object == self.webView && [keyPath isEqualToString:@"title"]) {
+        NSString *title = change[NSKeyValueChangeNewKey];
+        if ([title isKindOfClass:NSString.class] && title.length) self.title = title;
+        return;
+    }
+    if (object == self.webView && [keyPath isEqualToString:@"estimatedProgress"]) {
+        CGFloat progress = [change[NSKeyValueChangeNewKey] floatValue];
+        self.progressView.hidden = progress >= 1.0;
+        [self.progressView setProgress:progress animated:YES];
+        return;
+    }
+    if ([keyPath isEqualToString:@"fractionCompleted"] && [object isKindOfClass:NSProgress.class]) {
+        NSProgress *progress = (NSProgress *)object;
+        self.progressView.hidden = progress.fractionCompleted >= 1.0;
+        [self.progressView setProgress:progress.fractionCompleted animated:YES];
+    }
 }
 
 #pragma mark - Navigation
 
-- (void)webView:(WKWebView *)webView didFinishNavigation:(__unused WKNavigation *)navigation
+- (void)webView:(__unused WKWebView *)webView didFinishNavigation:(__unused WKNavigation *)navigation
 {
     [self updateNavigationState];
-    [self.progressView setProgress:0 animated:NO];
     self.progressView.hidden = YES;
-    if (webView.title.length && ![webView.title isEqualToString:@"网页下载"])
-        self.title = webView.title;
+    [self.progressView setProgress:0 animated:NO];
 }
 
-- (void)webView:(__unused WKWebView *)webView didFailProvisionalNavigation:(__unused WKNavigation *)navigation
-      withError:(NSError *)error
+- (void)webView:(__unused WKWebView *)webView
+    didFailProvisionalNavigation:(__unused WKNavigation *)navigation
+                       withError:(NSError *)error
 {
-    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return;
+    if (FFWebDownloadIsBenignNavigationError(error)) return;
     FFLogTag(@"WebDownload", @"navigation FAIL %@", error);
     [self updateNavigationState];
     [self flash:[NSString stringWithFormat:@"加载失败：%@",
@@ -241,15 +317,19 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 }
 
 - (void)webView:(__unused WKWebView *)webView
+    didFailNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
+{
+    if (FFWebDownloadIsBenignNavigationError(error)) return;
+    [self updateNavigationState];
+}
+
+- (void)webView:(__unused WKWebView *)webView
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                         preferences:(WKWebpagePreferences *)preferences
                     decisionHandler:(void (^)(WKNavigationActionPolicy, WKWebpagePreferences *))decisionHandler
 {
-    if (navigationAction.shouldPerformDownload) {
-        decisionHandler(WKNavigationActionPolicyDownload, preferences);
-        return;
-    }
-    decisionHandler(WKNavigationActionPolicyAllow, preferences);
+    decisionHandler(navigationAction.shouldPerformDownload
+        ? WKNavigationActionPolicyDownload : WKNavigationActionPolicyAllow, preferences);
 }
 
 - (void)webView:(__unused WKWebView *)webView
@@ -276,14 +356,14 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     FFLogTag(@"WebDownload", @"response download %@", navigationResponse.response.URL.absoluteString);
 }
 
+#pragma mark - WKDownloadDelegate
+
 - (nullable NSMutableDictionary *)recordForDownload:(WKDownload *)download
 {
     for (NSMutableDictionary *record in self.downloads)
         if (record[@"download"] == download) return record;
     return nil;
 }
-
-#pragma mark - WKDownloadDelegate
 
 - (void)download:(WKDownload *)download
     decideDestinationUsingResponse:(NSURLResponse *)response
@@ -292,21 +372,19 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
 {
     NSString *name = suggestedFilename.length ? suggestedFilename : @"下载文件";
     NSString *directory = self.destinationDirectory;
-    if (!directory.length ||
-        ![NSFileManager.defaultManager fileExistsAtPath:directory]) {
+    if (!directory.length || ![NSFileManager.defaultManager fileExistsAtPath:directory]) {
         directory = NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
     }
+    // 先写临时文件，完成后才按重名规则 rename 成最终名（原子提交）。
     NSString *tempPath = [directory stringByAppendingPathComponent:
         [FFWebDownloadTempPrefix stringByAppendingString:NSUUID.UUID.UUIDString]];
-    // 先写临时文件，完成后才按重名规则 rename 成最终名（原子提交）。
     NSMutableDictionary *record = [NSMutableDictionary dictionary];
     record[@"download"] = download;
     record[@"temp"] = tempPath;
     record[@"name"] = name;
     record[@"directory"] = directory;
     @synchronized (self.downloads) { [self.downloads addObject:record]; }
-
     [download.progress addObserver:self forKeyPath:@"fractionCompleted"
         options:NSKeyValueObservingOptionNew context:NULL];
     FFLogTag(@"WebDownload", @"begin name=%@ dir=%@", name, directory.lastPathComponent);
@@ -320,7 +398,9 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
         record = [self recordForDownload:download];
         if (record) [self.downloads removeObject:record];
     }
-    @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (__unused NSException *exception) {}
+    @try {
+        [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+    } @catch (__unused NSException *exception) {}
 
     NSString *tempPath = record[@"temp"];
     NSString *name = record[@"name"] ?: @"下载文件";
@@ -330,22 +410,16 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *destination = [self uniqueDestinationForName:name inDirectory:directory];
     NSError *error = nil;
-    if (!destination ||
-        ![manager moveItemAtPath:tempPath toPath:destination error:&error]) {
+    if (!destination || ![manager moveItemAtPath:tempPath toPath:destination error:&error]) {
         [manager removeItemAtPath:tempPath error:nil];
         FFLogTag(@"WebDownload", @"commit FAIL %@", error);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self flash:[NSString stringWithFormat:@"保存失败：%@",
-                error.localizedDescription ?: @"无法写入目标目录"]];
-        });
+        [self flash:[NSString stringWithFormat:@"保存失败：%@",
+            error.localizedDescription ?: @"无法写入目标目录"]];
         return;
     }
     FFLogTag(@"WebDownload", @"saved %@", destination.lastPathComponent);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressView.hidden = YES;
-        [self flash:[NSString stringWithFormat:@"已保存：%@",
-            destination.lastPathComponent]];
-    });
+    self.progressView.hidden = YES;
+    [self flash:[NSString stringWithFormat:@"已保存：%@", destination.lastPathComponent]];
 }
 
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error
@@ -357,10 +431,12 @@ static NSString * const FFWebDownloadTempPrefix = @".ffdownload-";
         record = [self recordForDownload:download];
         if (record) [self.downloads removeObject:record];
     }
-    @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (__unused NSException *exception) {}
+    @try {
+        [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+    } @catch (__unused NSException *exception) {}
     NSString *tempPath = record[@"temp"];
     if (tempPath.length) [NSFileManager.defaultManager removeItemAtPath:tempPath error:nil];
-    if (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled) {
+    if (FFWebDownloadIsBenignNavigationError(error)) {
         FFLogTag(@"WebDownload", @"cancelled");
         return;
     }

@@ -35,6 +35,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 @property(nonatomic, strong) id timeObserver;
 @property(nonatomic, strong) UIBarButtonItem *subtitleItem;
 @property(nonatomic, strong) UIBarButtonItem *rotateItem;
+@property(nonatomic, strong) UIButton *exitFullscreenButton;
 @property(nonatomic) BOOL forcedLandscape;
 @end
 
@@ -66,6 +67,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
             sessionError.localizedDescription ?: @"unknown");
 
     [self buildChrome];
+    [self buildExitFullscreenButton];
     [self startPlaybackAtPath:self.filePath];
     [self installTimeObserver];
     [self loadSiblings];
@@ -80,8 +82,9 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 {
     [super viewWillDisappear:animated];
     [self saveResumePosition];
+    // 无论 push 还是 pop 都退出全屏，避免下一个页面没有导航栏。
+    if (self.forcedLandscape) [self setForcedLandscape:NO];
     if (self.isMovingFromParentViewController) {
-        if (self.forcedLandscape) [self requestOrientation:UIInterfaceOrientationMaskPortrait];
         [self.player pause];
         if (self.timeObserver) {
             [self.player removeTimeObserver:self.timeObserver];
@@ -100,6 +103,51 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 
 - (BOOL)shouldAutorotate { return YES; }
 
+// 横屏即全屏：隐藏导航栏、底部标签栏与状态栏，只留视频与退出按钮。
+- (BOOL)prefersStatusBarHidden { return self.forcedLandscape; }
+
+- (BOOL)prefersHomeIndicatorAutoHidden { return self.forcedLandscape; }
+
+- (void)buildExitFullscreenButton
+{
+    UIButton *exit = [UIButton buttonWithType:UIButtonTypeSystem];
+    [exit setImage:[UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left"]
+          forState:UIControlStateNormal];
+    exit.tintColor = UIColor.whiteColor;
+    exit.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    exit.layer.cornerRadius = 18;
+    exit.hidden = YES;
+    exit.accessibilityLabel = @"退出全屏";
+    exit.translatesAutoresizingMaskIntoConstraints = NO;
+    [exit addTarget:self action:@selector(exitFullscreenTapped)
+        forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:exit];
+    [NSLayoutConstraint activateConstraints:@[
+        [exit.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [exit.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor
+            constant:-16],
+        [exit.widthAnchor constraintEqualToConstant:36],
+        [exit.heightAnchor constraintEqualToConstant:36],
+    ]];
+    self.exitFullscreenButton = exit;
+}
+
+- (void)updateFullscreenChrome
+{
+    BOOL fullscreen = self.forcedLandscape;
+    self.navigationController.navigationBarHidden = fullscreen;
+    self.tabBarController.tabBar.hidden = fullscreen;
+    self.exitFullscreenButton.hidden = !fullscreen;
+    if (fullscreen) [self.view bringSubviewToFront:self.exitFullscreenButton];
+    [self setNeedsStatusBarAppearanceUpdate];
+    [self setNeedsUpdateOfHomeIndicatorAutoHidden];
+}
+
+- (void)exitFullscreenTapped
+{
+    [self setForcedLandscape:NO];
+}
+
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
     return UIInterfaceOrientationMaskAllButUpsideDown;
@@ -108,9 +156,14 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 // 播放器里提供一键横屏：锁屏方向打开时系统可能拒绝，如实提示。
 - (void)toggleLandscape
 {
-    BOOL landscape = !self.forcedLandscape;
+    [self setForcedLandscape:!self.forcedLandscape];
+}
+
+- (void)setForcedLandscape:(BOOL)landscape
+{
     self.forcedLandscape = landscape;
     [self updateRotateItem];
+    [self updateFullscreenChrome];
     // 只请求「右转横屏」（UIInterfaceOrientationLandscapeRight），
     // 不用双值 mask：否则系统可能挑到反方向。
     [self requestOrientation:landscape ? UIInterfaceOrientationMaskLandscapeRight
