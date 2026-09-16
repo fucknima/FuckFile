@@ -45,7 +45,8 @@
 
     // 任务只在运行时出现：底部胶囊显示进度/数量，点开是任务中心。
     // 不再占用一个常驻 tab（95% 时间是空的）。
-    UIButtonConfiguration *config = [UIButtonConfiguration capsuleConfiguration];
+    UIButtonConfiguration *config = [UIButtonConfiguration grayConfiguration];
+    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     config.title = @"任务";
     config.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath"];
     config.imagePadding = 6;
