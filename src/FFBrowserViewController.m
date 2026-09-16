@@ -5,6 +5,9 @@
 #import "FFFileTaskManager.h"
 #import "FFFileOperationService.h"
 #import "FFStorageEnvironment.h"
+#import "FFTrashService.h"
+#import "FFTrashViewController.h"
+#import "FFBatchRenameViewController.h"
 #import "FFLogger.h"
 #import "FFZipExtract.h"
 #import "FFArchiveService.h"
@@ -19,6 +22,7 @@
 #import "FFPathPolicy.h"
 #import "FFThumbnailService.h"
 #import "FFBookmarksService.h"
+#import "FFBookmarksViewController.h"
 #import "FFPathBreadcrumbView.h"
 #import "FFFileMetadataService.h"
 #import "FFFileInfoViewController.h"
@@ -77,6 +81,8 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, strong) UIBarButtonItem *plusItem;
 @property(nonatomic, strong) NSArray<UIBarButtonItem *> *batchToolbarItems;
 @property(nonatomic, strong) UISearchController *searchController;
+@property(nonatomic, strong) UIScrollView *quickAccessBar;
+@property(nonatomic, strong) NSLayoutConstraint *quickAccessHeightConstraint;
 @property(nonatomic, copy) NSString *searchText;
 @property(nonatomic) FFSortMode sortMode;
 @property(nonatomic) BOOL sortDescending;
@@ -135,8 +141,27 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     self.breadcrumbView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.breadcrumbView];
 
+    // 首页快捷入口（仅根目录）：收藏 / 最近 / 导入 / 回收站。
+    // 不再占用常驻底栏 tab。
+    self.quickAccessBar = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    self.quickAccessBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.quickAccessBar.showsHorizontalScrollIndicator = NO;
+    self.quickAccessBar.alwaysBounceHorizontal = YES;
+    [self.view addSubview:self.quickAccessBar];
+    BOOL atRoot = [self.currentPath.stringByStandardizingPath
+        isEqualToString:FFStorageRootPath().stringByStandardizingPath];
+    [self populateQuickAccessBar];
+    self.quickAccessHeightConstraint =
+        [self.quickAccessBar.heightAnchor constraintEqualToConstant:atRoot ? 56 : 0];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.quickAccessBar.topAnchor constraintEqualToAnchor:self.breadcrumbView.bottomAnchor],
+        [self.quickAccessBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.quickAccessBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        self.quickAccessHeightConstraint,
+    ]];
+
     // 自建 tableView（基类已从 UITableViewController 改为 UIViewController）。
-    // 约束布局：顶部跟随 breadcrumb（收起时等于安全区顶部）。
+    // 约束布局：顶部跟随快捷入口（收起时等于安全区顶部）。
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero
         style:UITableViewStylePlain];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -161,7 +186,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [self.breadcrumbView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.breadcrumbHeightConstraint,
         [self.tableView.topAnchor constraintEqualToAnchor:
-            self.breadcrumbView.bottomAnchor],
+            self.quickAccessBar.bottomAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         // Full-bleed 到底：系统 Integrated Search 是 floating chrome，
@@ -219,6 +244,14 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 strongSelf.pendingAutoReload = NO;
                 if (strongSelf.hasLoaded) [strongSelf reloadEntries];
             });
+        }];
+
+    // 回收站恢复/永久删除后刷新当前目录（恢复可能落回这里）。
+    [[NSNotificationCenter defaultCenter] addObserverForName:FFTrashDidChangeNotification
+        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.hasLoaded) return;
+            dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf reloadEntries]; });
         }];
 
     // 设置页修改（显示隐藏文件等）后，已打开的浏览器页面即时生效。
@@ -519,6 +552,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"square.and.arrow.up" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchShare)];
     share.accessibilityLabel = @"分享";
+    UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"pencil" tint:nil]
+        style:UIBarButtonItemStylePlain target:self action:@selector(batchRename)];
+    rename.accessibilityLabel = @"重命名";
     UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithImage:[self symbolImage:@"shippingbox" tint:nil]
         style:UIBarButtonItemStylePlain target:self action:@selector(batchCompress)];
     zip.accessibilityLabel = @"压缩";
@@ -526,7 +562,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         style:UIBarButtonItemStylePlain target:self action:@selector(batchDelete)];
     trash.tintColor = [UIColor systemRedColor];
     trash.accessibilityLabel = @"删除";
-    return @[copy, cut, share, zip, trash];
+    return @[copy, cut, rename, share, zip, trash];
 }
 
 // 无选中时禁用批量操作按钮。
@@ -693,32 +729,119 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [self flash:@"未选择任何项目"];
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除"
-        message:[NSString stringWithFormat:@"确定删除 %lu 个项目？", (unsigned long)items.count]
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"移到回收站"
+        message:[NSString stringWithFormat:@"%lu 个项目将移到回收站，可在那里恢复。",
+            (unsigned long)items.count]
         preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
+    [alert addAction:[UIAlertAction actionWithTitle:@"移到回收站" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:items.count];
             for (FFEntry *item in items) [paths addObject:item.path];
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 NSError *error = nil;
-                NSUInteger removed = [[FFFileOperationService sharedService]
-                    removeItemsAtPaths:paths firstError:&error];
-                NSUInteger failed = (NSUInteger)(paths.count - removed);
+                NSUInteger moved = [FFTrashService.sharedService moveToTrash:paths firstError:&error];
+                NSUInteger failed = (NSUInteger)(paths.count - moved);
                 if (error)
-                    FFLogTag(@"Browser", @"batch delete FAIL path=%@ error=%@",
-                             error.userInfo[NSFilePathErrorKey] ?: @"?", error);
+                    FFLogTag(@"Browser", @"batch trash FAIL error=%@", error);
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [weakSelf flash:failed == 0 ? @"删除完成"
-                        : [NSString stringWithFormat:@"删除完成，%lu 个失败", (unsigned long)failed]];
+                    [weakSelf flash:failed == 0 ? @"已移到回收站"
+                        : [NSString stringWithFormat:@"%lu 项失败", (unsigned long)failed]];
                     [weakSelf setEditing:NO animated:YES];
                     [weakSelf reloadEntries];
                 });
             });
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - Quick access
+
+- (void)populateQuickAccessBar
+{
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.spacing = 8;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.quickAccessBar addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:self.quickAccessBar.leadingAnchor constant:12],
+        [stack.trailingAnchor constraintEqualToAnchor:self.quickAccessBar.trailingAnchor constant:-12],
+        [stack.centerYAnchor constraintEqualToAnchor:self.quickAccessBar.centerYAnchor],
+        [stack.heightAnchor constraintEqualToConstant:40],
+    ]];
+
+    NSArray<NSArray<NSString *> *> *chips = @[
+        @[@"收藏", @"star"],
+        @[@"最近", @"clock"],
+        @[@"导入", @"tray.and.arrow.down"],
+        @[@"回收站", @"trash"],
+    ];
+    NSArray<NSString *> *actions = @[@"quickFavorites", @"quickRecent", @"quickImport", @"quickTrash"];
+    for (NSUInteger index = 0; index < chips.count; index++) {
+        UIButtonConfiguration *config = [UIButtonConfiguration grayConfiguration];
+        config.title = chips[index][0];
+        config.image = [UIImage systemImageNamed:chips[index][1]];
+        config.imagePadding = 6;
+        config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        config.baseForegroundColor = UIColor.labelColor;
+        config.contentInsets = NSDirectionalEdgeInsetsMake(6, 14, 6, 14);
+        UIButton *button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+        [button addTarget:self action:NSSelectorFromString(actions[index])
+            forControlEvents:UIControlEventTouchUpInside];
+        [stack addArrangedSubview:button];
+    }
+}
+
+- (void)quickFavorites
+{
+    FFBookmarksViewController *page = [[FFBookmarksViewController alloc]
+        initWithMode:FFBookmarksModeFavorites];
+    page.title = @"收藏";
+    [self.navigationController pushViewController:page animated:YES];
+}
+
+- (void)quickRecent
+{
+    FFBookmarksViewController *page = [[FFBookmarksViewController alloc]
+        initWithMode:FFBookmarksModeRecent];
+    page.title = @"最近";
+    [self.navigationController pushViewController:page animated:YES];
+}
+
+- (void)quickImport
+{
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc]
+        initWithPath:FFImportedDirectoryPath()];
+    browser.title = @"导入";
+    [self.navigationController pushViewController:browser animated:YES];
+}
+
+- (void)quickTrash
+{
+    [self.navigationController pushViewController:[FFTrashViewController new] animated:YES];
+}
+
+#pragma mark - Batch rename
+
+- (void)batchRename
+{
+    NSArray<FFEntry *> *items = [self selectedBatchEntries];
+    if (items.count == 0) {
+        [self flash:@"未选择任何项目"];
+        return;
+    }
+    FFBatchRenameViewController *page = [[FFBatchRenameViewController alloc]
+        initWithEntries:items inDirectory:self.currentPath];
+    __weak typeof(self) weakSelf = self;
+    page.onFinished = ^(BOOL applied) {
+        [weakSelf setEditing:NO animated:YES];
+        if (applied) [weakSelf reloadEntries];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
+    nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 #pragma mark - Loading
@@ -1807,9 +1930,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     self.gridRefreshControl = gridRefresh;
     [self.collectionView addSubview:gridRefresh];
     [NSLayoutConstraint activateConstraints:@[
-        // 顶部与列表一致：跟随 breadcrumb（收起时等于安全区顶部）。
+        // 顶部与列表一致：跟随快捷入口（收起时等于安全区顶部）。
         [self.collectionView.topAnchor constraintEqualToAnchor:
-            self.breadcrumbView.bottomAnchor],
+            self.quickAccessBar.bottomAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         // Full-bleed 到底（与列表一致），Automatic inset 收尾。
@@ -2500,17 +2623,17 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (void)deleteEntry:(FFEntry *)item
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除"
-        message:[NSString stringWithFormat:@"确定删除 %@？", item.path]
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"移到回收站"
+        message:[NSString stringWithFormat:@"“%@” 将移到回收站，可在那里恢复。", item.name]
         preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
+    [alert addAction:[UIAlertAction actionWithTitle:@"移到回收站" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
             NSError *error = nil;
-            if (![[FFFileOperationService sharedService] removeItemAtPath:item.path error:&error]) {
-                FFLogTag(@"Browser", @"delete FAIL path=%@ errno=%ld (%@)",
-                    item.path, (long)error.code, error.localizedDescription);
+            if ([FFTrashService.sharedService moveToTrash:@[item.path] firstError:&error] == 0 &&
+                error) {
+                FFLogTag(@"Browser", @"trash FAIL path=%@ error=%@", item.path, error);
                 [weakSelf showError:error];
             }
             [weakSelf reloadEntries];

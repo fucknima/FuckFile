@@ -109,6 +109,7 @@ jobs:
           clang -fobjc-arc -framework Foundation -lz -I src \
             tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
             src/FFSearchSession.m src/FFLogger.m src/FFStorageEnvironment.m \
+            src/FFTrashService.m src/FFBatchRename.m \
             -o /tmp/ff_selfcheck
           /tmp/ff_selfcheck
 
@@ -127,6 +128,15 @@ jobs:
           grep -q 'lstat(child.fileSystemRepresentation' src/FFSearchService.m
           grep -q 'FFResolvedPathIsInsideRoot' src/FFSearchService.m
           grep -q 'if (!showResult)' src/FFAppDelegate.m
+
+          # 底栏只保留 文件/设置；收藏/最近/任务/回收站改为页面内入口。
+          grep -q 'taskPill' src/FFRootTabBarController.m
+          grep -q 'quickAccessBar' src/FFBrowserViewController.m
+          grep -q 'FFTrashService' src/FFBrowserViewController.m
+          grep -q 'batchRename' src/FFBrowserViewController.m
+          grep -q 'src/FFTrashService.m' Makefile
+          grep -q 'src/FFBatchRename.m' Makefile
+          ! grep -q 'removeItemsAtPaths' src/FFBrowserViewController.m
 
           # No sandbox-escape / container-access stack may come back.
           for removed in \

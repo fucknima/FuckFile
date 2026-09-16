@@ -376,7 +376,7 @@ BOOL FFIsInternalStorageEntry(NSString *parentPath, NSString *name)
     dispatch_once(&onceToken, ^{
         names = [NSSet setWithArray:@[
             @"FuckFile Log.txt", @"FuckFile Log.old.txt", @"ACCESS MAP.txt",
-            @".ACCESS MAP.txt.tmp", @"Favorites.plist",
+            @".ACCESS MAP.txt.tmp", @"Favorites.plist", @".Trash",
         ]];
     });
     return [names containsObject:name];

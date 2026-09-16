@@ -1,8 +1,9 @@
-// Core 逻辑自检：FFContentProbe / FFTextCodec。
+// Core 逻辑自检：FFContentProbe / FFTextCodec / 搜索会话 / 回收站 / 批量重命名。
 // 在 macOS（CI runner）用系统 clang 编译运行：不需要 UIKit、不需要 theos。
 //
 //   clang -fobjc-arc -framework Foundation -lz -I src \
 //     tests/self_check.m src/FFContentProbe.m src/FFTextCodec.m \
+//     src/FFTrashService.m src/FFBatchRename.m \
 //     -o /tmp/ff_selfcheck && /tmp/ff_selfcheck
 #import <Foundation/Foundation.h>
 #import <zlib.h>
@@ -10,6 +11,8 @@
 #import "FFContentProbe.h"
 #import "FFTextCodec.h"
 #import "FFSearchSession.h"
+#import "FFBatchRename.h"
+#import "FFTrashService.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -252,12 +255,142 @@ static void testSearchSessionMirror(void)
           repair.currentIndex == 0, @"repair-nearest");
 }
 
+
+#pragma mark - Trash
+
+static NSString *TrashTestRoot(void)
+{
+    NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [@"ff-trash-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager createDirectoryAtPath:root
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    return root;
+}
+
+static void testTrash(void)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *sandbox = TrashTestRoot();
+    NSString *trashRoot = [sandbox stringByAppendingPathComponent:@".Trash"];
+    FFTrashService *service = [[FFTrashService alloc] initWithTrashRoot:trashRoot];
+
+    NSString *file = [sandbox stringByAppendingPathComponent:@"note.txt"];
+    [@"hello" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *folder = [sandbox stringByAppendingPathComponent:@"folder"];
+    [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"inner" writeToFile:[folder stringByAppendingPathComponent:@"inner.txt"]
+        atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    NSError *error = nil;
+    NSUInteger moved = [service moveToTrash:@[file, folder] firstError:&error];
+    CHECK(moved == 2 && error == nil, @"trash-move-count");
+    CHECK(![fm fileExistsAtPath:file] && ![fm fileExistsAtPath:folder], @"trash-source-gone");
+
+    NSArray<FFTrashEntry *> *entries = [service entries];
+    CHECK(entries.count == 2, @"trash-entry-count");
+    FFTrashEntry *fileEntry = nil, *folderEntry = nil;
+    for (FFTrashEntry *entry in entries) {
+        if ([entry.name isEqualToString:@"note.txt"]) fileEntry = entry;
+        if ([entry.name isEqualToString:@"folder"]) folderEntry = entry;
+    }
+    CHECK(fileEntry != nil && !fileEntry.isDirectory && fileEntry.size == 5, @"trash-file-metadata");
+    CHECK(folderEntry != nil && folderEntry.isDirectory, @"trash-folder-metadata");
+    CHECK([fileEntry.originalPath isEqualToString:file], @"trash-original-path");
+    CHECK([fm fileExistsAtPath:fileEntry.payloadPath], @"trash-payload-present");
+
+    // Trash root itself must never be trashable.
+    CHECK([service moveToTrash:@[trashRoot] firstError:NULL] == 0, @"trash-refuses-trash-root");
+
+    NSString *restored = nil;
+    error = nil;
+    CHECK([service restoreEntry:fileEntry restoredPath:&restored error:&error], @"trash-restore-ok");
+    CHECK([restored isEqualToString:file] && [fm fileExistsAtPath:file], @"trash-restored-in-place");
+    CHECK([service entries].count == 1, @"trash-entry-count-after-restore");
+
+    // Restore again with a name collision keeps both files.
+    [fm removeItemAtPath:file error:nil];
+    CHECK([service moveToTrash:@[file] firstError:NULL] == 0, @"trash-missing-source-skipped");
+
+    NSString *second = [sandbox stringByAppendingPathComponent:@"again.txt"];
+    [@"x" writeToFile:second atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [service moveToTrash:@[second] firstError:NULL];
+    [@"y" writeToFile:second atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [service moveToTrash:@[second] firstError:NULL];
+    FFTrashEntry *newest = [service entries].firstObject;
+    NSString *target = nil;
+    error = nil;
+    CHECK([service restoreEntry:newest restoredPath:&target error:&error], @"trash-restore-collision-ok");
+    CHECK([target.lastPathComponent hasPrefix:@"again"], @"trash-collision-name-kept");
+    CHECK(![target isEqualToString:second] && [fm fileExistsAtPath:second],
+        @"trash-collision-did-not-overwrite");
+    CHECK([fm fileExistsAtPath:target], @"trash-collision-restored-file-exists");
+
+    NSUInteger beforeEmpty = [service itemCount];
+    error = nil;
+    NSUInteger emptied = [service emptyWithError:&error];
+    CHECK(error == nil && emptied == beforeEmpty, @"trash-empty-count");
+    CHECK([service itemCount] == 0, @"trash-empty-clears");
+
+    [fm removeItemAtPath:sandbox error:nil];
+}
+
+#pragma mark - Batch rename
+
+static void testBatchRename(void)
+{
+    NSString *error = nil;
+
+    // 查找替换保留扩展名。
+    NSArray<NSString *> *replaced = [FFBatchRename newNamesForNames:
+        @[@"IMG_001.jpg", @"IMG_002.jpg"]
+        mode:FFBatchRenameModeReplace find:@"IMG" replace:@"照片" caseSensitive:NO
+        prefix:nil suffix:nil sequencePrefix:nil start:1 digits:3 error:&error];
+    CHECK([replaced isEqualToArray:@[@"照片_001.jpg", @"照片_002.jpg"]], @"rename-replace");
+
+    // 前缀/后缀作用于主体名。
+    error = nil;
+    NSArray<NSString *> *affixed = [FFBatchRename newNamesForNames:@[@"a.txt", @"b"]
+        mode:FFBatchRenameModeAffix find:nil replace:nil caseSensitive:NO
+        prefix:@"新_" suffix:@"_终" sequencePrefix:nil start:1 digits:3 error:&error];
+    CHECK([affixed isEqualToArray:@[@"新_a_终.txt", @"新_b_终"]], @"rename-affix");
+
+    // 序号命名。
+    error = nil;
+    NSArray<NSString *> *sequenced = [FFBatchRename newNamesForNames:@[@"a.txt", @"b.txt"]
+        mode:FFBatchRenameModeSequence find:nil replace:nil caseSensitive:NO
+        prefix:nil suffix:nil sequencePrefix:@"文档_" start:7 digits:3 error:&error];
+    CHECK([sequenced isEqualToArray:@[@"文档_007.txt", @"文档_008.txt"]], @"rename-sequence");
+
+    // 大小写不敏感的重名必须拒绝。
+    error = nil;
+    CHECK([FFBatchRename newNamesForNames:@[@"a.txt", @"A.txt"]
+        mode:FFBatchRenameModeAffix find:nil replace:nil caseSensitive:NO
+        prefix:@"x" suffix:nil sequencePrefix:nil start:1 digits:3 error:&error] == nil &&
+        error.length > 0, @"rename-duplicate-rejected");
+
+    // 非法字符拒绝。
+    error = nil;
+    CHECK([FFBatchRename newNamesForNames:@[@"a.txt"]
+        mode:FFBatchRenameModeReplace find:@"a" replace:@"b/c" caseSensitive:NO
+        prefix:nil suffix:nil sequencePrefix:nil start:1 digits:3 error:&error] == nil,
+        @"rename-invalid-char-rejected");
+
+    // 无变化视为错误（避免误操作）。
+    error = nil;
+    CHECK([FFBatchRename newNamesForNames:@[@"a.txt"]
+        mode:FFBatchRenameModeReplace find:@"zzz" replace:@"" caseSensitive:NO
+        prefix:nil suffix:nil sequencePrefix:nil start:1 digits:3 error:&error] == nil,
+        @"rename-noop-rejected");
+}
+
 int main(void)
 {
     @autoreleasepool {
         testProbe();
         testCodec();
         testSearchSessionMirror();
+        testTrash();
+        testBatchRename();
     }
     fprintf(stderr, "\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

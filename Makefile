@@ -65,6 +65,10 @@ FuckFile_FILES = \
 	src/FFSpreadsheetViewController.m \
 	src/FFOfficeDocumentViewController.m \
 	src/FFViewerStateStore.m \
+	src/FFTrashService.m \
+	src/FFTrashViewController.m \
+	src/FFBatchRename.m \
+	src/FFBatchRenameViewController.m \
 	src/FFThumbnailService.m \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
