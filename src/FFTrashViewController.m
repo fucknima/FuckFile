@@ -44,6 +44,11 @@
 
 - (void)reload
 {
+    // Auto-clean can post from a background queue; keep UI work on main.
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self reload]; });
+        return;
+    }
     self.entries = [FFTrashService.sharedService entries];
     [self.refreshControl endRefreshing];
     [self.tableView reloadData];

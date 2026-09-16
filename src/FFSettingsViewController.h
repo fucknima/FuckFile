@@ -5,4 +5,6 @@
 // the main navigation.
 @interface FFSettingsViewController : UITableViewController
 
++ (BOOL)showsExtensionsByDefault;
+
 @end

@@ -6,6 +6,7 @@
 #import "FFShareBridge.h"
 #import "FFLocalShareBridge.h"
 #import "FFStorageEnvironment.h"
+#import "FFTrashService.h"
 #import "FFLogger.h"
 
 static const NSTimeInterval kFFImportDedupTTL = 5.0;
@@ -55,6 +56,7 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
         NSBundle.mainBundle.bundleIdentifier ?: @"nil", FFLogPath());
 
     FFStorageRootPath();
+    [self purgeExpiredTrashInBackground];
 
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     self.shareStreamInProgress = [self isShareStreamURL:incoming];
@@ -141,6 +143,24 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
         return;
     }
     [self processSharedInboxShowingResult:YES];
+}
+
+- (void)purgeExpiredTrashInBackground
+{
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:@"FFTrashRetentionDays"];
+    NSInteger days = stored == nil ? 30 : [stored integerValue];
+    if (days <= 0) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSError *error = nil;
+        NSUInteger purged = [FFTrashService.sharedService purgeExpiredEntriesWithMaxAge:
+            (NSTimeInterval)days * 24 * 60 * 60 error:&error];
+        if (purged > 0) {
+            FFLogTag(@"Trash", @"launch auto-clean purged=%lu retention=%ldd",
+                (unsigned long)purged, (long)days);
+        } else if (error) {
+            FFLogTag(@"Trash", @"launch auto-clean failed: %@", error.localizedDescription ?: @"unknown");
+        }
+    });
 }
 
 - (void)pruneRecentImports

@@ -3,17 +3,21 @@
 #import "FFSupportedViewersViewController.h"
 #import "FFFileAssociationsViewController.h"
 #import "FFWebDAVSettingsViewController.h"
+#import "FFStorageAnalysisViewController.h"
 #import "FFWebDAVServer.h"
 #import "FFLogger.h"
 
 static NSString *const kFFSettingsShowHiddenFiles = @"FFSettingsShowHiddenFiles";
 static NSString *const kFFSettingsGridMode = @"FFSettingsGridMode";
 static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
+static NSString *const kFFSettingsShowExtensions = @"FFSettingsShowExtensions";
+static NSString *const kFFTrashRetentionDays = @"FFTrashRetentionDays";
 
 @interface FFSettingsViewController ()
 @property(nonatomic) BOOL showHiddenFiles;
 @property(nonatomic) BOOL gridMode;
 @property(nonatomic) BOOL foldersFirst;
+@property(nonatomic) BOOL showExtensions;
 @end
 
 @implementation FFSettingsViewController
@@ -52,6 +56,8 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     self.gridMode = [defaults boolForKey:kFFSettingsGridMode];
     id foldersFirst = [defaults objectForKey:kFFSettingsFoldersFirst];
     self.foldersFirst = foldersFirst == nil ? YES : [foldersFirst boolValue];
+    id showExtensions = [defaults objectForKey:kFFSettingsShowExtensions];
+    self.showExtensions = showExtensions == nil ? YES : [showExtensions boolValue];
 }
 
 #pragma mark - Table view
@@ -61,9 +67,9 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case 0: return 3;
+        case 0: return 4;
         case 1: return 2;
-        case 2: return 1;
+        case 2: return 3;
         case 3: return 1;
         case 4: return 1;
         default: return 0;
@@ -124,6 +130,14 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
                 [toggle addTarget:self action:@selector(hiddenFilesChanged:) forControlEvents:UIControlEventValueChanged];
                 cell.accessoryView = toggle;
                 cell.imageView.image = [UIImage systemImageNamed:@"eye"];
+            } else if (indexPath.row == 2) {
+                cell.textLabel.text = @"显示扩展名";
+                cell.detailTextLabel.text = @"关闭后列表隐藏文件的扩展名";
+                UISwitch *toggle = [UISwitch new];
+                toggle.on = self.showExtensions;
+                [toggle addTarget:self action:@selector(showExtensionsChanged:) forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = toggle;
+                cell.imageView.image = [UIImage systemImageNamed:@"textformat"];
             } else {
                 cell.textLabel.text = @"文件夹优先";
                 cell.detailTextLabel.text = @"排序时目录排在文件前面";
@@ -149,11 +163,21 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
             break;
         }
         case 2: {
-            FFWebDAVServer *server = FFWebDAVServer.sharedServer;
-            cell.textLabel.text = @"局域网文件共享";
-            cell.detailTextLabel.text = server.running && server.addressString.length
-                ? server.addressString : @"浏览器 + WebDAV · 仅 Wi‑Fi";
-            cell.imageView.image = [UIImage systemImageNamed:@"network"];
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"存储空间";
+                cell.detailTextLabel.text = @"设备空间 · 分类占用 · 清理缓存";
+                cell.imageView.image = [UIImage systemImageNamed:@"internaldrive"];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"回收站自动清理";
+                cell.detailTextLabel.text = [self trashRetentionDescription];
+                cell.imageView.image = [UIImage systemImageNamed:@"trash"];
+            } else {
+                FFWebDAVServer *server = FFWebDAVServer.sharedServer;
+                cell.textLabel.text = @"局域网文件共享";
+                cell.detailTextLabel.text = server.running && server.addressString.length
+                    ? server.addressString : @"浏览器 + WebDAV · 仅 Wi‑Fi";
+                cell.imageView.image = [UIImage systemImageNamed:@"network"];
+            }
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             break;
         }
@@ -192,7 +216,14 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
         return;
     }
     if (indexPath.section == 2) {
-        [self.navigationController pushViewController:[FFWebDAVSettingsViewController new] animated:YES];
+        if (indexPath.row == 0) {
+            [self.navigationController pushViewController:[FFStorageAnalysisViewController new]
+                animated:YES];
+        } else if (indexPath.row == 1) {
+            [self showTrashRetentionPicker];
+        } else {
+            [self.navigationController pushViewController:[FFWebDAVSettingsViewController new] animated:YES];
+        }
         return;
     }
     if (indexPath.section == 3) {
@@ -226,6 +257,46 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     [self.tableView reloadData];
 }
 
+#pragma mark - Trash retention
+
+- (NSInteger)trashRetentionDays
+{
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:kFFTrashRetentionDays];
+    return stored == nil ? 30 : [stored integerValue];
+}
+
+- (NSString *)trashRetentionDescription
+{
+    NSInteger days = [self trashRetentionDays];
+    if (days <= 0) return @"关闭（只手动清空）";
+    return [NSString stringWithFormat:@"删除超过 %ld 天后自动清除", (long)days];
+}
+
+- (void)showTrashRetentionPicker
+{
+    NSInteger current = [self trashRetentionDays];
+    NSArray<NSNumber *> *values = @[@0, @7, @30, @90];
+    NSArray<NSString *> *titles = @[@"关闭", @"7 天", @"30 天", @"90 天"];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"回收站自动清理"
+        message:@"删除进回收站的项目超过保留期限后自动永久删除"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [values enumerateObjectsUsingBlock:^(NSNumber *value, NSUInteger index, BOOL *stop) {
+        (void)stop;
+        NSInteger days = value.integerValue;
+        UIAlertActionStyle style = days == current ? UIAlertActionStyleCancel : UIAlertActionStyleDefault;
+        [sheet addAction:[UIAlertAction actionWithTitle:titles[index] style:style
+            handler:^(__unused UIAlertAction *action) {
+                [NSUserDefaults.standardUserDefaults setInteger:days forKey:kFFTrashRetentionDays];
+                [weakSelf.tableView reloadData];
+            }]];
+    }];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 #pragma mark - Toggles
 
 - (void)hiddenFilesChanged:(UISwitch *)toggle
@@ -242,6 +313,13 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
     [NSNotificationCenter.defaultCenter postNotificationName:@"FFSettingsChangedNotification" object:nil];
 }
 
+- (void)showExtensionsChanged:(UISwitch *)toggle
+{
+    self.showExtensions = toggle.on;
+    [NSUserDefaults.standardUserDefaults setBool:self.showExtensions forKey:kFFSettingsShowExtensions];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"FFSettingsChangedNotification" object:nil];
+}
+
 + (BOOL)showsHiddenFilesByDefault
 {
     return [NSUserDefaults.standardUserDefaults boolForKey:kFFSettingsShowHiddenFiles];
@@ -250,6 +328,12 @@ static NSString *const kFFSettingsFoldersFirst = @"FFSettingsFoldersFirst";
 + (BOOL)gridModeEnabled
 {
     return [NSUserDefaults.standardUserDefaults boolForKey:kFFSettingsGridMode];
+}
+
++ (BOOL)showsExtensionsByDefault
+{
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:kFFSettingsShowExtensions];
+    return stored == nil ? YES : [stored boolValue];
 }
 
 @end

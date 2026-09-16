@@ -26,6 +26,8 @@
 #import "FFFileMetadataService.h"
 #import "FFFileInfoViewController.h"
 #import "FFViewerPickerViewController.h"
+#import "FFSettingsViewController.h"
+#import "FFStorageAnalysisViewController.h"
 
 #import <AVKit/AVKit.h>
 #import <PhotosUI/PhotosUI.h>
@@ -771,8 +773,9 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         [stack.heightAnchor constraintEqualToConstant:40],
     ]];
 
-    NSArray<NSString *> *chips = @[@"收藏", @"最近", @"导入", @"回收站"];
-    NSArray<NSString *> *actions = @[@"quickFavorites", @"quickRecent", @"quickImport", @"quickTrash"];
+    NSArray<NSString *> *chips = @[@"收藏", @"最近", @"导入", @"回收站", @"存储"];
+    NSArray<NSString *> *actions = @[@"quickFavorites", @"quickRecent", @"quickImport",
+        @"quickTrash", @"quickStorage"];
     for (NSUInteger index = 0; index < chips.count; index++) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.backgroundColor = UIColor.secondarySystemBackgroundColor;
@@ -814,6 +817,11 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)quickTrash
 {
     [self.navigationController pushViewController:[FFTrashViewController new] animated:YES];
+}
+
+- (void)quickStorage
+{
+    [self.navigationController pushViewController:[FFStorageAnalysisViewController new] animated:YES];
 }
 
 #pragma mark - Batch rename
@@ -1347,50 +1355,14 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
 
 - (void)startDownloadFromURL:(NSURL *)url
 {
-    NSString *destination = [self.currentPath copy];
-    UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"正在下载"
-        message:url.lastPathComponent.length ? url.lastPathComponent : url.host
-        preferredStyle:UIAlertControllerStyleAlert];
-
-    __block NSURLSessionDownloadTask *task = nil;
-    __weak typeof(self) weakSelf = self;
-    __weak UIAlertController *weakProgress = progress;
-    task = [NSURLSession.sharedSession downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
-            if (downloadError || !location) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [weakProgress dismissViewControllerAnimated:YES completion:^{
-                        [weakSelf flash:downloadError.localizedDescription ?: @"下载失败"];
-                    }];
-                });
-                return;
-            }
-
-            NSString *name = response.suggestedFilename;
-            if (!name.length) name = url.lastPathComponent;
-            if (!name.length) name = @"下载文件";
-            FFImportResult *result = [FFImportService importURL:location
-                displayName:name toDirectory:destination];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakProgress dismissViewControllerAnimated:YES completion:^{
-                    if (result.success) {
-                        if (weakSelf.hasLoaded) [weakSelf reloadEntries];
-                        [weakSelf flash:[NSString stringWithFormat:@"已下载：%@",
-                            result.destinationPath.lastPathComponent ?: name]];
-                    } else {
-                        [weakSelf flash:result.error.localizedDescription ?: @"保存下载文件失败"];
-                    }
-                }];
-            });
-        }];
-
-    [progress addAction:[UIAlertAction actionWithTitle:@"取消下载"
-        style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action) {
-            [task cancel];
-        }]];
-    [self presentViewController:progress animated:YES completion:^{
-        [task resume];
-    }];
+    FFFileTask *task = [FFFileTask new];
+    task.kind = FFFileTaskKindDownload;
+    task.remoteURL = url.absoluteString;
+    task.destination = [self.currentPath copy];
+    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : url.host;
+    task.displayName = name.length ? [NSString stringWithFormat:@"下载 %@", name] : @"下载文件";
+    [[FFFileTaskManager sharedManager] enqueueTask:task];
+    [self flash:@"已加入下载任务，可在任务中心查看进度"];
 }
 
 - (void)documentPicker:(__unused UIDocumentPickerViewController *)controller
@@ -1555,10 +1527,23 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     return cell;
 }
 
+// 设置「显示扩展名」只影响列表/网格的展示文案；重命名、冲突、属性页
+// 等所有真实操作仍使用 item.name。
+- (NSString *)displayNameForItem:(FFEntry *)item
+{
+    NSString *name = item.displayName.length ? item.displayName : item.name;
+    if (item.isDirectory || [FFSettingsViewController showsExtensionsByDefault]) return name;
+    if ([name hasPrefix:@"."]) return name;
+    NSString *extension = name.pathExtension;
+    if (!extension.length) return name;
+    NSString *stripped = [name stringByDeletingPathExtension];
+    return stripped.length ? stripped : name;
+}
+
 - (void)configureCell:(UITableViewCell *)cell withItem:(FFEntry *)item
 {
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
-    config.text = item.displayName.length ? item.displayName : item.name;
+    config.text = [self displayNameForItem:item];
     // Dynamic Type（ADR-013）：文件名 Body（medium 权重提升层级）、
     // 元数据 Caption1，随系统字号。
     UIFont *bodyFont = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
@@ -1997,7 +1982,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
     UIListContentConfiguration *config = [UIListContentConfiguration
         subtitleCellConfiguration];
-    config.text = item.displayName.length ? item.displayName : item.name;
+    config.text = [self displayNameForItem:item];
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     config.textProperties.adjustsFontForContentSizeCategory = YES;
     config.textProperties.numberOfLines = 1;
@@ -2409,7 +2394,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
                 chosen = FFConflictActionKeepBoth;
                 dispatch_semaphore_signal(semaphore);
             }]];
-        // “应用于后续项目”：替换/跳过应用到剩余项目。
+        // “应用于后续项目”：替换/跳过/保留两者应用到剩余项目。
         [sheet addAction:[UIAlertAction actionWithTitle:@"应用于后续：全部替换"
             style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *action) {
@@ -2420,6 +2405,12 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *action) {
                 chosen = FFConflictActionSkipAll;
+                dispatch_semaphore_signal(semaphore);
+            }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"应用于后续：全部保留两者"
+            style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                chosen = FFConflictActionKeepBothAll;
                 dispatch_semaphore_signal(semaphore);
             }]];
         [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel

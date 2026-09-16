@@ -9,6 +9,7 @@ typedef NS_ENUM(NSInteger, FFFileTaskKind) {
     FFFileTaskKindMove,
     FFFileTaskKindExtract,
     FFFileTaskKindCompress,
+    FFFileTaskKindDownload,
 };
 
 typedef NS_ENUM(NSInteger, FFFileTaskState) {
@@ -43,6 +44,9 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 @property(atomic, copy) NSArray<NSString *> *sources;
 @property(atomic, copy) NSString *destination;
 @property(atomic) BOOL moveSourceRemoval;
+// Download tasks carry their remote HTTPS URL here; sources stay empty.
+// Persisted with history (URL only, never credentials).
+@property(atomic, copy, nullable) NSString *remoteURL;
 
 // Used by encrypted archive extraction. This is deliberately an in-memory
 // field: FFFileTask persistence must never serialize it.

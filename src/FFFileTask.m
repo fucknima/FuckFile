@@ -34,6 +34,7 @@
         case FFFileTaskKindMove: return @"移动";
         case FFFileTaskKindExtract: return @"解压";
         case FFFileTaskKindCompress: return @"压缩";
+        case FFFileTaskKindDownload: return @"下载";
     }
     return @"";
 }

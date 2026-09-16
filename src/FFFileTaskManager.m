@@ -4,6 +4,7 @@
 #import "FFArchiveService.h"
 #import "FFZipCreate.h"
 #import "FFArchiveCreate.h"
+#import "FFImportService.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
 
@@ -64,6 +65,7 @@ static NSDictionary *FFTaskDictionary(FFFileTask *task)
     row[@"archiveFormat"] = @(task.archiveFormat);
     row[@"zipCompression"] = @(task.zipCompression);
     row[@"archiveEncryption"] = @(task.archiveEncryption);
+    if (task.remoteURL.length) row[@"remoteURL"] = task.remoteURL;
     if (task.error.localizedDescription.length)
         row[@"errorDescription"] = task.error.localizedDescription;
     if (task.error.domain.length) row[@"errorDomain"] = task.error.domain;
@@ -82,8 +84,13 @@ static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
         ? row[@"displayName"] : @"文件任务";
     NSNumber *kindValue = [row[@"kind"] isKindOfClass:NSNumber.class] ? row[@"kind"] : nil;
     if (!kindValue || kindValue.integerValue < FFFileTaskKindCopy ||
-        kindValue.integerValue > FFFileTaskKindCompress)
+        kindValue.integerValue > FFFileTaskKindDownload)
         return nil;
+    NSString *remoteURL = [row[@"remoteURL"] isKindOfClass:NSString.class] ? row[@"remoteURL"] : nil;
+    if (kindValue.integerValue == FFFileTaskKindDownload) {
+        NSURL *url = [NSURL URLWithString:remoteURL ?: @""];
+        if (![[url.scheme lowercaseString] isEqualToString:@"https"]) return nil;
+    }
 
     FFFileTask *task = [FFFileTask new];
     NSString *taskID = [row[@"taskID"] isKindOfClass:NSString.class] ? row[@"taskID"] : nil;
@@ -93,6 +100,7 @@ static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
     task.detailName = [row[@"detailName"] isKindOfClass:NSString.class] ? row[@"detailName"] : nil;
     task.sources = sources;
     task.destination = destination;
+    task.remoteURL = remoteURL;
     task.moveSourceRemoval = [row[@"moveSourceRemoval"] boolValue];
     task.archiveFormat = [row[@"archiveFormat"] isKindOfClass:NSNumber.class]
         ? [row[@"archiveFormat"] integerValue] : FFArchiveCreateFormatZIP;
@@ -167,6 +175,48 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
     return [root stringByAppendingPathComponent:
         [NSString stringWithFormat:@"%@-%@", archive, suffix]];
 }
+
+// Progress/completion plumbing for HTTPS downloads. The worker thread blocks
+// on a semaphore, so the session must use its own delegate queue.
+@interface FFDownloadDelegate : NSObject <NSURLSessionDownloadDelegate>
+@property(nonatomic, copy, nullable) void (^progressBlock)(int64_t written, int64_t expected);
+@property(nonatomic, copy, nullable) void (^finishBlock)(NSURL * _Nullable tempURL,
+                                                         NSURLResponse * _Nullable response,
+                                                         NSError * _Nullable error);
+@end
+
+@implementation FFDownloadDelegate
+
+- (void)URLSession:(__unused NSURLSession *)session downloadTask:(__unused NSURLSessionDownloadTask *)downloadTask
+      didWriteData:(__unused int64_t)bytesWritten
+ totalBytesWritten:(int64_t)totalBytesWritten
+totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
+{
+    if (self.progressBlock) self.progressBlock(totalBytesWritten, totalBytesExpectedToWrite);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
+ didFinishDownloadingToURL:(NSURL *)location
+{
+    // `location` is only valid inside this callback: move it to a stable path.
+    NSURL *stable = [NSURL fileURLWithPath:
+        [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"ffdownload-%@", NSUUID.UUID.UUIDString]]];
+    NSError *moveError = nil;
+    if (![NSFileManager.defaultManager moveItemAtURL:location toURL:stable error:&moveError]) {
+        if (self.finishBlock) self.finishBlock(nil, downloadTask.response, moveError);
+        return;
+    }
+    if (self.finishBlock) self.finishBlock(stable, downloadTask.response, nil);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session task:(NSURLSessionTask *)task
+ didCompleteWithError:(NSError *)error
+{
+    if (error && self.finishBlock) self.finishBlock(nil, task.response, error);
+}
+
+@end
 
 @interface FFFileTaskManager ()
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *taskList;
@@ -427,6 +477,9 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
         case FFFileTaskKindCompress:
             ok = [self executeCompressTask:task];
             break;
+        case FFFileTaskKindDownload:
+            ok = [self executeDownloadTask:task];
+            break;
     }
 
     if (task.cancelled) {
@@ -571,7 +624,8 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
                 task.skippedCount++;
                 continue;
             }
-            if (action == FFConflictActionReplaceAll) applyAll = action;
+            if (action == FFConflictActionReplaceAll || action == FFConflictActionKeepBothAll)
+                applyAll = action;
             if (action == FFConflictActionReplace || action == FFConflictActionReplaceAll) {
                 replacing = YES;
             } else {
@@ -775,6 +829,113 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
         task.error = error;
     }
     return ok;
+}
+
+#pragma mark - Download
+
+- (BOOL)executeDownloadTask:(FFFileTask *)task
+{
+    NSURL *url = [NSURL URLWithString:task.remoteURL ?: @""];
+    if (!url || ![[url.scheme lowercaseString] isEqualToString:@"https"]) {
+        task.failedCount = 1;
+        task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:470
+            userInfo:@{NSLocalizedDescriptionKey: @"下载地址无效（仅支持 HTTPS）"}];
+        return NO;
+    }
+    if (!task.destination.length ||
+        ![NSFileManager.defaultManager fileExistsAtPath:task.destination]) {
+        task.failedCount = 1;
+        task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:471
+            userInfo:@{NSLocalizedDescriptionKey: @"下载目录不存在"}];
+        return NO;
+    }
+
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block NSURL *tempURL = nil;
+    __block NSURLResponse *response = nil;
+    __block NSError *downloadError = nil;
+    NSDate *startedAt = NSDate.date;
+
+    FFDownloadDelegate *delegate = [FFDownloadDelegate new];
+    delegate.progressBlock = ^(int64_t written, int64_t expected) {
+        task.completedBytes = written > 0 ? (unsigned long long)written : 0;
+        task.totalBytes = expected > 0 ? (unsigned long long)expected : 0;
+        task.progress = expected > 0 ? MIN(1.0, (double)written / (double)expected) : 0;
+        NSTimeInterval elapsed = [NSDate.date timeIntervalSinceDate:startedAt];
+        if (elapsed > 0.5 && written > 0) {
+            task.averageBytesPerSecond = (double)written / elapsed;
+            if (expected > written && task.averageBytesPerSecond > 0)
+                task.estimatedRemainingSeconds = (double)(expected - written) / task.averageBytesPerSecond;
+        }
+        [self notifyChangeThrottled];
+    };
+    delegate.finishBlock = ^(NSURL *location, NSURLResponse *finishedResponse, NSError *error) {
+        tempURL = location;
+        response = finishedResponse;
+        downloadError = error;
+        dispatch_semaphore_signal(semaphore);
+    };
+
+    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    configuration.timeoutIntervalForRequest = 30;
+    configuration.timeoutIntervalForResource = 60 * 60;
+    NSOperationQueue *delegateQueue = [NSOperationQueue new];
+    delegateQueue.maxConcurrentOperationCount = 1;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration
+        delegate:delegate delegateQueue:delegateQueue];
+    NSURLSessionDownloadTask *download = [session downloadTaskWithURL:url];
+    task.detailName = url.lastPathComponent.length ? url.lastPathComponent : url.host;
+    [self notifyChange];
+    [download resume];
+
+    // Poll the semaphore so a cancel request is honored even when the server
+    // sends no progress callbacks (the session would otherwise block forever).
+    while (dispatch_semaphore_wait(semaphore,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC))) != 0) {
+        if (!task.cancelled) continue;
+        if (download.state == NSURLSessionTaskStateRunning) [download cancel];
+    }
+    [session finishTasksAndInvalidate];
+    delegate.progressBlock = nil;
+    delegate.finishBlock = nil;
+
+    if (downloadError || !tempURL.length) {
+        if (!task.cancelled) {
+            task.failedCount = 1;
+            task.error = downloadError ?: [NSError errorWithDomain:@"FFFileTaskErrorDomain"
+                code:472 userInfo:@{NSLocalizedDescriptionKey: @"下载失败：服务器未返回文件"}];
+        }
+        return NO;
+    }
+
+    NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+        ? ((NSHTTPURLResponse *)response).statusCode : 200;
+    if (status >= 400) {
+        [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+        task.failedCount = 1;
+        task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:473
+            userInfo:@{NSLocalizedDescriptionKey:
+                [NSString stringWithFormat:@"服务器返回 HTTP %ld", (long)status]}];
+        return NO;
+    }
+
+    NSString *name = response.suggestedFilename;
+    if (!name.length) name = url.lastPathComponent;
+    if (!name.length) name = @"下载文件";
+    FFImportResult *result = [FFImportService importURL:tempURL
+        displayName:name toDirectory:task.destination];
+    [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+
+    if (result.success) {
+        task.succeededCount = 1;
+        task.progress = 1.0;
+        if (task.totalBytes > 0) task.completedBytes = task.totalBytes;
+        FFLogTag(@"Tasks", @"download ok name=%@ bytes=%llu", name, task.completedBytes);
+        return YES;
+    }
+    task.failedCount = 1;
+    task.error = result.error;
+    return NO;
 }
 
 @end

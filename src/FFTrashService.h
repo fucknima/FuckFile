@@ -35,6 +35,10 @@ FOUNDATION_EXPORT NSNotificationName const FFTrashDidChangeNotification;
 - (BOOL)removeEntryPermanently:(FFTrashEntry *)entry error:(NSError **)error;
 - (NSUInteger)emptyWithError:(NSError **)error;
 
+// Permanently removes entries deleted earlier than maxAge seconds ago.
+// maxAge <= 0 disables auto-clean. Returns how many items were removed.
+- (NSUInteger)purgeExpiredEntriesWithMaxAge:(NSTimeInterval)maxAge error:(NSError **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

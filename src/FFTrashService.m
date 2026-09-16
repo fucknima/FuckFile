@@ -249,4 +249,23 @@ static NSError *FFTrashError(NSInteger code, NSString *message)
     return removed;
 }
 
+- (NSUInteger)purgeExpiredEntriesWithMaxAge:(NSTimeInterval)maxAge error:(NSError **)error
+{
+    if (maxAge <= 0) return 0;
+    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-maxAge];
+    NSUInteger removed = 0;
+    for (FFTrashEntry *entry in self.entries) {
+        if (![entry.deletedAt isKindOfClass:NSDate.class]) continue;
+        if ([entry.deletedAt compare:cutoff] != NSOrderedAscending) continue;
+        NSError *itemError = nil;
+        if ([self removeEntryPermanently:entry error:&itemError]) {
+            removed += 1;
+            FFLogTag(@"Trash", @"auto-purged name=%@ deletedAt=%@", entry.name, entry.deletedAt);
+        } else if (error && !*error) {
+            *error = itemError;
+        }
+    }
+    return removed;
+}
+
 @end

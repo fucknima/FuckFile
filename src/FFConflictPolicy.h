@@ -11,6 +11,7 @@ typedef NS_ENUM(NSInteger, FFConflictAction) {
     FFConflictActionKeepBoth,
     FFConflictActionReplaceAll,
     FFConflictActionSkipAll,
+    FFConflictActionKeepBothAll,
 };
 
 NS_ASSUME_NONNULL_END
