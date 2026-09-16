@@ -17,7 +17,7 @@
 static int g_failures = 0;
 static int g_checks = 0;
 
-#define CHECK((cond), name) do { \
+#define CHECK(cond, name) do { \
     g_checks++; \
     if (!(cond)) { g_failures++; fprintf(stderr, "FAIL: %s (%s:%d)\n", name, __FILE__, __LINE__); } \
 } while (0)
