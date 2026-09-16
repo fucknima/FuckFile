@@ -1285,9 +1285,14 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
     for (PHPickerResult *result in results) {
         NSItemProvider *provider = result.itemProvider;
         NSString *identifier = nil;
+        NSString *preferredExtension = nil;
         for (NSString *candidate in provider.registeredTypeIdentifiers) {
             UTType *type = [UTType typeWithIdentifier:candidate];
-            if ([type conformsToType:UTTypeImage]) { identifier = candidate; break; }
+            if ([type conformsToType:UTTypeImage]) {
+                identifier = candidate;
+                preferredExtension = type.preferredFilenameExtension;
+                break;
+            }
         }
         if (!identifier.length) {
             if (!firstFailure) firstFailure = @"存在无法读取的照片";
@@ -1309,7 +1314,15 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
                     // PHPicker owns this temporary representation only for the
                     // duration of the provider callback. Finish the coordinated
                     // import before returning from the callback.
+                    // 相册资源的 suggestedName 常常没有扩展名（IMG_0001），
+                    // 直接落盘会导致关联/预览失效：按 UTType 补全扩展名。
                     NSString *name = suggested.length ? suggested : url.lastPathComponent;
+                    if (!name.pathExtension.length) {
+                        NSString *extension = preferredExtension.length
+                            ? preferredExtension : url.pathExtension;
+                        if (extension.length)
+                            name = [name stringByAppendingPathExtension:extension];
+                    }
                     FFImportResult *importResult = [FFImportService importURL:url
                         displayName:name toDirectory:destination];
                     if (importResult.success) imported++;

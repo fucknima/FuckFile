@@ -1,7 +1,7 @@
 #import "FFViewerRegistry.h"
 
 #import "FFImageViewerViewController.h"
-#import "FFViewerActions.h"
+#import "FFMediaPlayerViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFPdfReaderViewController.h"
@@ -16,8 +16,6 @@
 #import "FFPreviewRouter.h"
 #import "FFLogger.h"
 
-#import <AVKit/AVKit.h>
-#import <AVFoundation/AVFoundation.h>
 
 @interface FFViewerInfo ()
 @property(nonatomic, copy, readwrite) NSString *viewerID;
@@ -28,38 +26,7 @@
 @implementation FFViewerInfo
 @end
 
-#pragma mark - Media
-
-@interface FFMediaPlayerViewController : AVPlayerViewController
-@property(nonatomic, copy) NSString *filePath;
-@end
-@implementation FFMediaPlayerViewController
-- (void)viewDidLoad
-{
-    [super viewDidLoad];
-    if (self.filePath.length)
-        self.navigationItem.rightBarButtonItem = [FFViewerActions actionsItemForPath:self.filePath
-            title:nil icon:nil presenter:self allowTrash:YES];
-}
-- (void)viewWillAppear:(BOOL)animated
-{
-    [super viewWillAppear:animated];
-    AVAudioSession *session = AVAudioSession.sharedInstance;
-    NSError *error = nil;
-    if (![session setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeMoviePlayback options:0 error:&error]) {
-        FFLogTag(@"Media", @"audio session category failed: %@", error.localizedDescription ?: @"unknown");
-        return;
-    }
-    error = nil;
-    if (![session setActive:YES error:&error]) FFLogTag(@"Media", @"audio session activate failed: %@", error.localizedDescription ?: @"unknown");
-}
-- (void)dealloc
-{
-    NSError *error = nil;
-    [AVAudioSession.sharedInstance setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&error];
-    if (error) FFLogTag(@"Media", @"audio session deactivate failed: %@", error.localizedDescription ?: @"unknown");
-}
-@end
+#pragma mark - Registry
 
 @interface FFViewerRegistry ()
 @property(nonatomic, strong) NSArray<FFViewerInfo *> *viewers;
@@ -90,7 +57,7 @@
             @[@"archive", @"压缩包浏览器", @"archivebox", @"ZIP/IPA、7Z、RAR/RAR5、TAR、TGZ/TBZ/TXZ、GZ/BZ2/XZ 包内浏览与安全提取"],
             @[@"hex", @"十六进制编辑器", @"waveform.path.ecg", @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
             @[@"macho", @"Mach-O 检查器", @"cpu", @"架构切片、Load Commands、段/节、动态库、UUID、签名、Entitlements 与加密信息"],
-            @[@"media", @"媒体播放器", @"play.circle", @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）"],
+            @[@"media", @"媒体播放器", @"play.circle", @"AVPlayer 播放音视频（MP3/WAV/FLAC/MOV/MP4/MKV 等）：同目录播放列表、断点续播、外挂字幕（SRT/VTT/ASS）"],
             @[@"pdf", @"PDF 阅读器", @"doc.richtext", @"PDFKit 阅读器（可手动关联；默认 PDF 使用系统 Quick Look）"],
         ];
         NSMutableArray *built = [NSMutableArray array];
@@ -158,9 +125,6 @@
 }
 - (UIViewController *)mediaViewerAtPath:(NSString *)path
 {
-    FFMediaPlayerViewController *player = [FFMediaPlayerViewController new];
-    player.filePath = path;
-    player.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:path]];
-    return player;
+    return [[FFMediaPlayerViewController alloc] initWithPath:path];
 }
 @end

@@ -12,6 +12,7 @@
 #import "FFTextCodec.h"
 
 #import <objc/runtime.h>
+#import <ImageIO/ImageIO.h>
 #import "FFLogger.h"
 
 // Retains shared text for the barButtonItem share action. UIBarButtonItem's
@@ -122,7 +123,28 @@ navigationController:(UINavigationController *)nav
         return;
     }
 
+    // 无扩展名/未知扩展名的图片（例如相册导入的 HEIC）用内容识别兜底，
+    // 否则会掉进 QuickLook/Hex 而看起来「打不开」。
+    if ([self looksLikeImageAtPath:item.path]) {
+        NSString *title = item.displayName.length ? item.displayName : item.name;
+        if ([[FFViewerRegistry sharedRegistry] openPath:item.path title:title
+            viewerID:@"image" navigationController:nav]) return;
+    }
+
     [self fallbackToQuickLookOrHex:item nav:nav];
+}
+
+// CGImageSource 只读文件头，不整读大图。
++ (BOOL)looksLikeImageAtPath:(NSString *)path
+{
+    NSURL *url = [NSURL fileURLWithPath:path];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (!source) return NO;
+    size_t count = CGImageSourceGetCount(source);
+    CFStringRef type = CGImageSourceGetType(source);
+    BOOL looksLikeImage = count > 0 && type != NULL;
+    CFRelease(source);
+    return looksLikeImage;
 }
 
 + (void)fallbackToQuickLookOrHex:(FFEntry *)item nav:(UINavigationController *)nav

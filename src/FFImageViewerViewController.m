@@ -307,6 +307,9 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
                 builtinViewerIDForExtension:name.pathExtension];
             if ([viewerID isEqualToString:@"image"]) [images addObject:full];
         }
+        // 当前文件可能没有扩展名（相册导入）或走了内容识别兜底，不在
+        // 上面的扩展名家族里；至少要能单独显示它。
+        if (![images containsObject:startingPath]) [images insertObject:startingPath atIndex:0];
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;

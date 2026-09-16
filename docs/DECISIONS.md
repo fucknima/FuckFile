@@ -884,3 +884,40 @@ ImportService/PathPolicy），未引入新的事实来源。
 
 约束：SQLite 写路径只在用户显式操作时打开（行编辑器/SQL 控制台），
 浏览连接保持只读；删除仍走回收站；不使用 sleep/retry 掩盖错误。
+
+## ADR-024
+
+日期：2026-09-16
+
+决定：
+
+**设置弹窗改为内联展开；相册导入补扩展名；媒体播放器原生升级（不引入
+第三方播放库）。**
+
+1. 设置页不再用 UIAlertController action sheet 做选择（真机反馈 iOS 26
+   定位异常；且「当前值 = Cancel 样式」写在列表中间本身不合法）：
+   「默认视图」「回收站自动清理」改成行内展开 + checkmark，设置项用
+   显式 FFSettingsItem 枚举编址，避免动态插行时的索引算术。
+2. 相册导入（PHPicker）按 UTType.preferredFilenameExtension 补全扩展名
+   （suggestedName 常见为 IMG_0001 无后缀），这是「导入的图片打不开」的
+   根因；FFPreviewRouter 增加 CGImageSource 内容识别兜底，无扩展名/
+   未知扩展名的图片仍进图片浏览器（图片浏览器也保证当前文件一定在
+   列表里，可单独显示）。
+3. 媒体播放器从 Registry 内联类升级为 `FFMediaPlayerViewController`
+   （仍基于 AVPlayerViewController，保留 PiP/AirPlay/全屏）：
+   - 同目录播放列表（内置默认关联为 media 的扩展名），导航栏左侧
+     上一集/下一集（`leftItemsSupplementBackButton`，不遮挡播放器
+     自带的底部控制条），标题显示 n/N，播完自动续播；
+   - 断点续播：位置持久化在 NSUserDefaults（60 条上限，<8s 或接近结尾
+     不记录）；
+   - 外挂字幕：同名 SRT/VTT/ASS/SSA 自动加载，导航栏「字幕」菜单切换/
+     关闭；宽松解析（SRT 块、VTT cue、ASS Dialogue），去 HTML/ASS 标签，
+     0.25s 周期时间观察者在 `contentOverlayView` 上渲染。
+4. 未引入 VLCKit/libmpv：核对了开源现状（ffmpeg-kit 已归档，其续作仅
+   源码；VLCKit 可播 MKV/AVI/ASS 但体积与 LGPL 义务成本高）。当前
+   AVFoundation 覆盖的容器已可用且体验补齐；MKV/AVI 等仍需第三方库，
+   作为后续单独立项评估（见 TODO「媒体容器扩展」）。
+
+原因：真机反馈三类问题（弹窗定位、导入图片打不开、播放太简陋）；
+前两项是缺陷，第三项优先用系统框架把体验补齐，避免为格式覆盖引入
+几十 MB 依赖与新的构建链风险。

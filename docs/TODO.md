@@ -389,6 +389,10 @@
 - [x] 图片预取 + 底部缩略图条
 - [x] Hex 查找（文本/十六进制，流式扫描 + 下一处）；只读大文本「在文件中查找…」
 - [x] 办公文档「跳转到页…」（FFOffice.scrollToPage/pageCount）
+- [x] 相册导入补全扩展名（按 UTType 推断，避免无后缀图片打不开）
+- [x] 无扩展名图片用 CGImageSource 内容识别兜底（FFPreviewRouter）
+- [x] 媒体播放器升级：同目录播放列表（上一集/下一集/自动续播）、断点续播、
+      外挂字幕 SRT/VTT/ASS（原生渲染，无需第三方库）
 - [ ] 网络位置客户端：WebDAV 客户端（连接/浏览/下载/上传）
 - [ ] SMB / SFTP 客户端（需 vendored libsmb2 / libssh2，单独一批）
 - [ ] 大文件 / 重复文件查找
