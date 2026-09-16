@@ -311,19 +311,24 @@ static void testTrash(void)
     [fm removeItemAtPath:file error:nil];
     CHECK(([service moveToTrash:@[file] firstError:NULL] == 0), @"trash-missing-source-skipped");
 
-    NSString *second = [sandbox stringByAppendingPathComponent:@"again.txt"];
-    [@"x" writeToFile:second atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [service moveToTrash:@[second] firstError:NULL];
-    [@"y" writeToFile:second atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [service moveToTrash:@[second] firstError:NULL];
-    FFTrashEntry *newest = [service entries].firstObject;
-    NSString *target = nil;
+    // 恢复时的重名保护：目标名已被占用时保留两者，不覆盖现有文件。
+    NSString *dup = [sandbox stringByAppendingPathComponent:@"dup.txt"];
+    [@"old" writeToFile:dup atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [service moveToTrash:@[dup] firstError:NULL];
+    [@"new" writeToFile:dup atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    FFTrashEntry *dupEntry = [service entries].firstObject;
+    NSString *restoredDup = nil;
     error = nil;
-    CHECK(([service restoreEntry:newest restoredPath:&target error:&error]), @"trash-restore-collision-ok");
-    CHECK(([target.lastPathComponent hasPrefix:@"again"]), @"trash-collision-name-kept");
-    CHECK((![target isEqualToString:second] && [fm fileExistsAtPath:second]),
-        @"trash-collision-did-not-overwrite");
-    CHECK(([fm fileExistsAtPath:target]), @"trash-collision-restored-file-exists");
+    CHECK(([service restoreEntry:dupEntry restoredPath:&restoredDup error:&error]),
+        @"trash-restore-collision-ok");
+    CHECK((![restoredDup isEqualToString:dup]), @"trash-collision-name-changed");
+    CHECK(([restoredDup.lastPathComponent hasPrefix:@"dup"]), @"trash-collision-name-kept");
+    NSString *existingContent = [NSString stringWithContentsOfFile:dup
+        encoding:NSUTF8StringEncoding error:nil];
+    NSString *restoredContent = [NSString stringWithContentsOfFile:restoredDup
+        encoding:NSUTF8StringEncoding error:nil];
+    CHECK(([existingContent isEqualToString:@"new"]), @"trash-collision-did-not-overwrite");
+    CHECK(([restoredContent isEqualToString:@"old"]), @"trash-collision-restored-content");
 
     NSUInteger beforeEmpty = [service itemCount];
     error = nil;
