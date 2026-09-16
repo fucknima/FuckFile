@@ -1,6 +1,7 @@
 #import "FFViewerRegistry.h"
 
 #import "FFImageViewerViewController.h"
+#import "FFViewerActions.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFPdfReaderViewController.h"
@@ -30,8 +31,16 @@
 #pragma mark - Media
 
 @interface FFMediaPlayerViewController : AVPlayerViewController
+@property(nonatomic, copy) NSString *filePath;
 @end
 @implementation FFMediaPlayerViewController
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    if (self.filePath.length)
+        self.navigationItem.rightBarButtonItem = [FFViewerActions actionsItemForPath:self.filePath
+            title:nil icon:nil presenter:self allowTrash:YES];
+}
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
@@ -150,6 +159,7 @@
 - (UIViewController *)mediaViewerAtPath:(NSString *)path
 {
     FFMediaPlayerViewController *player = [FFMediaPlayerViewController new];
+    player.filePath = path;
     player.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:path]];
     return player;
 }

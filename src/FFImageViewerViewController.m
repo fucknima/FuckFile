@@ -4,7 +4,45 @@
 #import "FFFileAssociationService.h"
 #import "FFFileInfoViewController.h"
 #import "FFLogger.h"
+#import "FFThumbnailService.h"
 #import "FFTrashService.h"
+
+#pragma mark - Thumbnail strip cell
+
+static NSString * const FFImageStripCellID = @"FFImageStripCell";
+
+@interface FFImageStripCell : UICollectionViewCell
+@property(nonatomic, strong) UIImageView *thumbView;
+- (void)setCurrent:(BOOL)current;
+@end
+
+@implementation FFImageStripCell
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        _thumbView = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
+        _thumbView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+            UIViewAutoresizingFlexibleHeight;
+        _thumbView.contentMode = UIViewContentModeScaleAspectFill;
+        _thumbView.clipsToBounds = YES;
+        _thumbView.layer.cornerRadius = 5;
+        _thumbView.backgroundColor = UIColor.secondarySystemBackgroundColor;
+        [self.contentView addSubview:_thumbView];
+        self.contentView.layer.cornerRadius = 5;
+        self.contentView.layer.masksToBounds = YES;
+    }
+    return self;
+}
+
+- (void)setCurrent:(BOOL)current
+{
+    self.contentView.layer.borderWidth = current ? 2 : 0;
+    self.contentView.layer.borderColor = UIColor.systemBlueColor.CGColor;
+}
+
+@end
 
 #pragma mark - Zoom view
 
@@ -99,7 +137,8 @@
 
 #pragma mark - Viewer
 
-@interface FFImageViewerViewController () <UIGestureRecognizerDelegate>
+@interface FFImageViewerViewController () <UIGestureRecognizerDelegate, UICollectionViewDataSource,
+                                            UICollectionViewDelegate>
 @property(nonatomic, copy) NSString *currentPath;
 @property(nonatomic, copy) NSArray<NSString *> *imagePaths;
 @property(nonatomic) NSUInteger index;
@@ -107,6 +146,8 @@
 @property(nonatomic, strong) FFImageZoomView *zoomView;
 @property(nonatomic, strong) UILabel *errorLabel;
 @property(nonatomic, strong) UIToolbar *toolbar;
+@property(nonatomic, strong) UICollectionView *strip;
+@property(nonatomic, strong) NSCache<NSString *, UIImage *> *imageCache;
 @end
 
 @implementation FFImageViewerViewController
@@ -144,6 +185,24 @@
     self.toolbar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.toolbar];
 
+    UICollectionViewFlowLayout *stripLayout = [[UICollectionViewFlowLayout alloc] init];
+    stripLayout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
+    stripLayout.itemSize = CGSizeMake(56, 56);
+    stripLayout.minimumLineSpacing = 6;
+    stripLayout.sectionInset = UIEdgeInsetsMake(0, 10, 0, 10);
+    self.strip = [[UICollectionView alloc] initWithFrame:CGRectZero
+        collectionViewLayout:stripLayout];
+    self.strip.dataSource = self;
+    self.strip.delegate = self;
+    self.strip.backgroundColor = UIColor.clearColor;
+    self.strip.showsHorizontalScrollIndicator = NO;
+    self.strip.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.strip registerClass:FFImageStripCell.class forCellWithReuseIdentifier:FFImageStripCellID];
+    [self.view addSubview:self.strip];
+
+    self.imageCache = [[NSCache alloc] init];
+    self.imageCache.countLimit = 12;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.zoomView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.zoomView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -154,6 +213,10 @@
         [self.toolbar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.toolbar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.toolbar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [self.strip.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.strip.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.strip.bottomAnchor constraintEqualToAnchor:self.toolbar.topAnchor constant:-6],
+        [self.strip.heightAnchor constraintEqualToConstant:64],
     ]];
 
     self.navigationItem.rightBarButtonItems = @[ [self moreItem], [self shareItem] ];
@@ -198,6 +261,7 @@
 {
     BOOL multi = self.imagePaths.count > 1;
     self.toolbar.hidden = !multi;
+    self.strip.hidden = !multi;
     if (!multi) {
         [self.toolbar setItems:@[] animated:NO];
         return;
@@ -269,17 +333,96 @@
     self.title = path.lastPathComponent;
     self.loadGeneration += 1;
     NSUInteger generation = self.loadGeneration;
+    [self updateToolbar];
+    [self updateStripSelection];
+
+    UIImage *cached = [self.imageCache objectForKey:path];
+    if (cached) {
+        self.errorLabel.hidden = YES;
+        [self.zoomView setImage:cached];
+        [self preloadNeighbours];
+        return;
+    }
+
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         UIImage *image = [UIImage imageWithContentsOfFile:path];
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf.loadGeneration) return;
+            if (image) [strongSelf.imageCache setObject:image forKey:path];
             strongSelf.errorLabel.hidden = image != nil;
             [strongSelf.zoomView setImage:image];
-            [strongSelf updateToolbar];
+            [strongSelf preloadNeighbours];
         });
     });
+}
+
+// 相邻图片预取，连续切换不再每张都等磁盘解码。
+- (void)preloadNeighbours
+{
+    if (self.imagePaths.count < 2) return;
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    if (self.index > 0) [candidates addObject:self.imagePaths[self.index - 1]];
+    if (self.index + 1 < self.imagePaths.count) [candidates addObject:self.imagePaths[self.index + 1]];
+    NSCache<NSString *, UIImage *> *cache = self.imageCache;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        for (NSString *path in candidates) {
+            if ([cache objectForKey:path]) continue;
+            UIImage *image = [UIImage imageWithContentsOfFile:path];
+            if (image) [cache setObject:image forKey:path];
+        }
+    });
+}
+
+#pragma mark - Thumbnail strip
+
+- (void)updateStripSelection
+{
+    if (self.strip.hidden || !self.imagePaths.count) return;
+    NSIndexPath *indexPath = [NSIndexPath indexPathForItem:(NSInteger)self.index inSection:0];
+    [self.strip selectItemAtIndexPath:indexPath animated:NO
+        scrollPosition:UICollectionViewScrollPositionCenteredHorizontally];
+    [self.strip reloadData];
+    [self.strip selectItemAtIndexPath:indexPath animated:NO
+        scrollPosition:UICollectionViewScrollPositionCenteredHorizontally];
+}
+
+- (NSInteger)collectionView:(__unused UICollectionView *)collectionView
+     numberOfItemsInSection:(__unused NSInteger)section
+{
+    return (NSInteger)self.imagePaths.count;
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView
+                  cellForItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    FFImageStripCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:FFImageStripCellID
+        forIndexPath:indexPath];
+    NSUInteger index = (NSUInteger)indexPath.item;
+    cell.thumbView.image = nil;
+    [cell setCurrent:index == self.index];
+    if (index >= self.imagePaths.count) return cell;
+    NSString *path = self.imagePaths[index];
+    UIImage *cached = [self.imageCache objectForKey:path];
+    if (cached) {
+        cell.thumbView.image = cached;
+        return cell;
+    }
+    __weak FFImageStripCell *weakCell = cell;
+    [FFThumbnailService.sharedService thumbnailForPath:path size:CGSizeMake(56, 56)
+        completion:^(UIImage *image) {
+            typeof(weakCell) strongCell = weakCell;
+            if (strongCell && image) strongCell.thumbView.image = image;
+        }];
+    return cell;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    didSelectItemAtIndexPath:(NSIndexPath *)indexPath
+{
+    (void)collectionView;
+    [self showImageAtIndex:(NSUInteger)indexPath.item];
 }
 
 - (void)showPrevious
@@ -363,9 +506,11 @@
         [self presentError:error.localizedDescription ?: @"无法移到回收站"];
         return;
     }
+    [self.imageCache removeObjectForKey:path];
     NSMutableArray<NSString *> *remaining = [self.imagePaths mutableCopy];
     [remaining removeObject:path];
     self.imagePaths = remaining;
+    [self.strip reloadData];
     if (!remaining.count) {
         [self.navigationController popViewControllerAnimated:YES];
         return;

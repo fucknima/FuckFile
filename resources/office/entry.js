@@ -939,7 +939,13 @@ function installViewerGestures() {
 
 function boot() {
   try {
-    window.FFOffice = { open: openDocumentForNative, captureState, fit: fitToWidth };
+    window.FFOffice = {
+      open: openDocumentForNative,
+      captureState,
+      fit: fitToWidth,
+      scrollToPage,
+      pageCount: () => pageSections().length,
+    };
     window.addEventListener('ffofficezoom', (event) => {
       const detail = event?.detail;
       if (!detail || !Number.isFinite(Number(detail.zoom))) return;

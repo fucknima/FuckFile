@@ -1,6 +1,7 @@
 #import "FFWebViewerViewController.h"
 
 #import "FFLogger.h"
+#import "FFViewerActions.h"
 
 @interface FFWebViewerViewController () <WKNavigationDelegate, WKUIDelegate>
 @property(nonatomic, copy) NSString *filePath;
@@ -35,6 +36,8 @@
         UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
+    self.navigationItem.rightBarButtonItem = [FFViewerActions actionsItemForPath:self.filePath
+        title:nil icon:nil presenter:self allowTrash:YES];
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
     [self.view addSubview:self.webView];
 

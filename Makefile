@@ -76,6 +76,9 @@ FuckFile_FILES = \
 	src/FFBookmarksViewController.m \
 	third_party/minizip/unzip.c \
 	third_party/minizip/ioapi.c \
+	src/FFSQLiteRowEditorViewController.m \
+	src/FFDirectoryPickerViewController.m \
+	src/FFViewerActions.m \
 	src/FFImageViewerViewController.m \
 	src/FFViewerRegistry.m \
 	src/FFFileAssociationService.m \

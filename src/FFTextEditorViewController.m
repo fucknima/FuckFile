@@ -1,4 +1,5 @@
 #import "FFTextEditorViewController.h"
+#import "FFViewerActions.h"
 #import "FFLogger.h"
 #import "FFPathPolicy.h"
 #import "FFTextCodec.h"
@@ -44,6 +45,8 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 @property(nonatomic) BOOL changed;
 @property(nonatomic) BOOL loaded;
 @property(nonatomic) BOOL readOnlyMode;       // >8MB 只读
+@property(nonatomic) unsigned long long previewOffset;  // 只读预览窗口起点
+@property(nonatomic, strong) UIBarButtonItem *moreMenuItem;
 @property(nonatomic) BOOL lightHighlightMode; // 2-8MB 禁高亮
 
 @property(nonatomic) FFTextEncoding encoding;
@@ -215,7 +218,9 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     UIBarButtonItem *menu = [[UIBarButtonItem alloc] initWithTitle:@"⋯"
         style:UIBarButtonItemStylePlain target:nil action:nil];
     menu.menu = [self buildMoreMenu];
-    self.navigationItem.rightBarButtonItems = @[save, menu];
+    self.moreMenuItem = menu;
+    UIBarButtonItem *share = [FFViewerActions shareItemForPath:self.filePath presenter:self];
+    self.navigationItem.rightBarButtonItems = @[save, menu, share];
 
     UIBarButtonItem *back = [[UIBarButtonItem alloc] initWithTitle:@"返回"
         style:UIBarButtonItemStylePlain target:self action:@selector(backTapped)];
@@ -230,7 +235,15 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)loadFile
 {
+    [self loadPreviewFromOffset:0];
+}
+
+// 只读大文件预览窗口：从 offset 起读 1 MB（必要时向后微调避开
+// UTF-8 续字节），解码失败就顺延最多 3 个字节再试。
+- (void)loadPreviewFromOffset:(unsigned long long)offset
+{
     NSString *path = self.filePath;
+    unsigned long long requestedOffset = offset;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         unsigned long long fileSize = 0;
@@ -240,34 +253,134 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
         BOOL tooBig = fileSize > FFEditorEditableLimitBytes;
         BOOL light = !tooBig && fileSize > FFEditorHighlightLimitBytes;
-
-        NSData *data = nil;
-        NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
-        if (handle) {
-            data = tooBig ? [handle readDataOfLength:FFEditorPreviewBytes]
-                          : [handle readDataToEndOfFile];
-            [handle closeFile];
-        }
+        unsigned long long start = tooBig ? MIN(requestedOffset, fileSize) : 0;
 
         FFTextEncoding encoding = FFTextEncodingUTF8;
         BOOL bom = NO;
         FFLineEnding lineEnding = FFLineEndingLF;
-        NSString *text = data ? [FFTextCodec decodeData:data encoding:&encoding
-                                                    bom:&bom lineEnding:&lineEnding] : nil;
+        NSData *data = nil;
+        NSString *text = nil;
+        NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+        if (handle) {
+            if (tooBig) {
+                for (NSUInteger nudge = 0; nudge < 4 && !text; nudge++) {
+                    unsigned long long position = MIN(start + nudge, fileSize);
+                    [handle seekToFileOffset:position];
+                    data = [handle readDataOfLength:FFEditorPreviewBytes];
+                    text = data ? [FFTextCodec decodeData:data encoding:&encoding
+                                                      bom:&bom lineEnding:&lineEnding] : nil;
+                    if (text) start = position;
+                }
+            } else {
+                data = [handle readDataToEndOfFile];
+                text = data ? [FFTextCodec decodeData:data encoding:&encoding
+                                                  bom:&bom lineEnding:&lineEnding] : nil;
+            }
+            [handle closeFile];
+        }
+
         if (tooBig && text) {
+            // 丢掉窗口开头的半行，视觉上从完整一行开始。
+            NSRange firstNewline = [text rangeOfString:@"\n"];
+            if (firstNewline.location != NSNotFound && firstNewline.location < 4096)
+                text = [text substringFromIndex:NSMaxRange(firstNewline)];
             text = [text stringByAppendingFormat:
-                @"\n\n… 文件较大（%@），已超过编辑上限 %@，仅显示前 %@ 只读预览。",
+                @"\n\n… 文件较大（%@），已超过编辑上限 %@，只读预览%@。",
                 [NSByteCountFormatter stringFromByteCount:(long long)fileSize
                     countStyle:NSByteCountFormatterCountStyleFile],
                 [NSByteCountFormatter stringFromByteCount:FFEditorEditableLimitBytes
                     countStyle:NSByteCountFormatterCountStyleFile],
-                [NSByteCountFormatter stringFromByteCount:FFEditorPreviewBytes
-                    countStyle:NSByteCountFormatterCountStyleFile]];
+                start > 0
+                    ? [NSString stringWithFormat:@"自偏移 0x%llX 起", start]
+                    : [NSString stringWithFormat:@"前 %@", [NSByteCountFormatter
+                        stringFromByteCount:FFEditorPreviewBytes
+                        countStyle:NSByteCountFormatterCountStyleFile]]];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!weakSelf) return;
-            [weakSelf applyLoadedText:text encoding:encoding bom:bom
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.previewOffset = start;
+            [strongSelf applyLoadedText:text encoding:encoding bom:bom
                 lineEnding:lineEnding tooBig:tooBig light:light];
+        });
+    });
+}
+
+// 只读模式下的全文件查找：流式扫描，跳到第一处匹配附近的窗口。
+- (void)fileFindTapped
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"在文件中查找"
+        message:@"只读预览不会整读文件；命中后会跳到该位置附近的窗口。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"查找" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *query = alert.textFields.firstObject.text ?: @"";
+            [weakSelf findInFile:query];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)findInFile:(NSString *)query
+{
+    NSData *needle = [query dataUsingEncoding:NSUTF8StringEncoding];
+    if (!needle.length) {
+        [self flash:@"请输入查找内容"];
+        return;
+    }
+    NSString *path = self.filePath;
+    unsigned long long fileSize = 0;
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+    fileSize = [attrs[NSFileSize] unsignedLongLongValue];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        const size_t chunk = 256 * 1024;
+        const size_t needleLength = needle.length;
+        uint8_t *buffer = malloc(chunk + MAX(needleLength, (size_t)1));
+        unsigned long long matchOffset = ULLONG_MAX;
+        int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0 && buffer) {
+            unsigned long long offset = 0;
+            size_t carry = 0;
+            const uint8_t *needleBytes = needle.bytes;
+            while (offset < fileSize) {
+                ssize_t count = pread(fd, buffer + carry, chunk, (off_t)offset);
+                if (count <= 0) break;
+                size_t total = carry + (size_t)count;
+                for (size_t index = 0; index + needleLength <= total; index++) {
+                    if (memcmp(buffer + index, needleBytes, needleLength) == 0) {
+                        matchOffset = offset - carry + index;
+                        break;
+                    }
+                }
+                if (matchOffset != ULLONG_MAX) break;
+                if (needleLength > 1) {
+                    carry = MIN(needleLength - 1, total);
+                    memmove(buffer, buffer + total - carry, carry);
+                } else {
+                    carry = 0;
+                }
+                offset += (unsigned long long)count;
+            }
+            close(fd);
+        }
+        free(buffer);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (matchOffset == ULLONG_MAX) {
+                [strongSelf flash:@"未找到匹配内容"];
+                return;
+            }
+            unsigned long long start = matchOffset > 4096 ? matchOffset - 4096 : 0;
+            [strongSelf loadPreviewFromOffset:start];
+            [strongSelf flash:[NSString stringWithFormat:@"已跳到偏移 0x%llX 附近",
+                matchOffset]];
         });
     });
 }
@@ -284,6 +397,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
     self.hasBOM = bom;
     self.lineEnding = lineEnding;
 
+    self.moreMenuItem.menu = [self buildMoreMenu];
     if (text == nil) {
         self.editorView.text = @"（该文件不是有效文本或无法按支持的编码解码。）";
         self.editorView.editorIsEditable = NO;
@@ -518,6 +632,10 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [widthActions addObject:action];
     }
 
+    UIAction *fileFindAction = [UIAction actionWithTitle:@"在文件中查找…"
+        image:[UIImage systemImageNamed:@"text.magnifyingglass"]
+        identifier:@"filefind" handler:^(__unused UIAction *a) { [weakSelf fileFindTapped]; }];
+
     UIAction *findAction = [UIAction actionWithTitle:@"查找与替换"
         image:[UIImage systemImageNamed:@"magnifyingglass"]
         identifier:@"find" handler:^(__unused UIAction *a) { [self showFindBar]; }];
@@ -549,8 +667,12 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         [UIMenu menuWithTitle:@"Tab / 空格宽度" children:widthActions],
     ]];
 
+    // 只读大文件无法整读，查找与替换条只覆盖预览窗口；补一个全文件查找入口。
+    NSMutableArray<UIAction *> *tools = [NSMutableArray arrayWithObjects:findAction, gotoAction, nil];
+    if (self.readOnlyMode) [tools insertObject:fileFindAction atIndex:0];
     return [UIMenu menuWithTitle:@"" children:@[
-        findAction, gotoAction,
+        [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
+                      children:tools],
         [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
                       children:@[wrapAction, invisibleAction]],
         [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline

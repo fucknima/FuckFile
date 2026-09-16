@@ -841,3 +841,46 @@ Treemap 或删除建议，只做只读统计与缓存清理。
 
 约束：不改变自动重命名、冲突系统与既有查看器（Office/PDF/Hex/SQLite/
 Archive/Mach-O/媒体/Web/plist/文本）的交互；PDF 等未受影响。
+
+## ADR-023
+
+日期：2026-09-16
+
+决定：
+
+**落地查看器/编辑器建议清单（6 项），并为 SQLite 与解压引入写路径。**
+
+1. 存储页导航栏修正：左键回到系统返回按钮，「重新扫描」移到右键
+   （ADR-022 里占用左键是错的）。
+2. SQLite 记录编辑（事务）：`FFSQLiteService` 增加只写连接
+   （`initEditableWithDatabasePath:`，SQLITE_OPEN_READWRITE）、
+   `tableHasRowID:` 与 `applyStatementsInTransaction:changedRows:error:`
+   （BEGIN IMMEDIATE → 语句 → COMMIT，任一步失败 ROLLBACK）。普通表浏览
+   带上 `rowid`，行点按进入 `FFSQLiteRowEditorViewController`（Fork
+   cells：改值 / 设为 NULL / 只提交变更列）；SQL 控制台对非
+   SELECT/PRAGMA/WITH/EXPLAIN 语句弹确认后走同一事务入口。视图与
+   WITHOUT ROWID 表保持只读。
+3. 解压到指定目录：新增 `FFDirectoryPickerViewController`（模态目录选择，
+   隐藏文件与内部目录不可见），归档浏览器「全部解压 / 提取所选」先询问
+   目标（压缩包旁边 / 上次目录 / 选择文件夹），最后一次选择持久化并
+   以 `name (解压)` 建目录避免与已有目录合并。
+4. 查看器导航栏统一：新增 `FFViewerActions`（分享 / 文件信息 /
+   移到回收站，UIAction 块实现，避免 target 生命周期问题）；文本、plist、
+   Hex、SQLite、Web、媒体、Mach-O 查看器接入；已有 ⋯ 菜单的查看器只补
+   分享项；编辑器类不带「移到回收站」以免与未保存修改冲突。
+5. 图片浏览器：相邻图片预取（NSCache，切图不再每张等解码）+ 底部缩略图条
+   （UICollectionView + FFThumbnailService，选中项高亮并居中），删除后
+   缓存与缩略图条同步。
+6. 大文件查找：Hex 编辑器新增「查找」（文本或十六进制字节，256 KB 分块
+   流式扫描 + 重叠边界，最多 500 处，命中后跳页并可「下一处」）；只读
+   文本预览新增「在文件中查找…」（流式扫描后把预览窗口移到命中偏移
+   附近，必要时按 UTF-8 边界微调），并暴露 `FFOffice.scrollToPage` /
+   `pageCount` 支持办公文档原生「跳转到页…」。
+
+原因：上一轮建议清单要求把查看器体验补齐；SQLite 是唯一只读编辑器，
+解压只能落在压缩包旁边，查看器动作分散，图片切图重复解码，大文件
+无法查找。全部实现都复用既有服务（TaskManager/ThumbnailService/
+ImportService/PathPolicy），未引入新的事实来源。
+
+约束：SQLite 写路径只在用户显式操作时打开（行编辑器/SQL 控制台），
+浏览连接保持只读；删除仍走回收站；不使用 sleep/retry 掩盖错误。

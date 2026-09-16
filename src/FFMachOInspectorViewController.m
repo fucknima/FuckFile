@@ -1,4 +1,5 @@
 #import "FFMachOInspectorViewController.h"
+#import "FFViewerActions.h"
 
 #import <libkern/OSByteOrder.h>
 #import <mach-o/fat.h>
@@ -320,6 +321,8 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
     if (self) {
         _filePath = [path copy];
         self.title = path.lastPathComponent;
+    self.navigationItem.rightBarButtonItem = [FFViewerActions actionsItemForPath:path
+        title:nil icon:nil presenter:self allowTrash:YES];
     }
     return self;
 }

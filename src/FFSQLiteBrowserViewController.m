@@ -1,6 +1,8 @@
 #import "FFSQLiteBrowserViewController.h"
 
 #import "FFSQLiteService.h"
+#import "FFSQLiteRowEditorViewController.h"
+#import "FFViewerActions.h"
 #import "FFLogger.h"
 
 static const NSUInteger kSQLitePageRows = 200;
@@ -47,7 +49,10 @@ static const NSUInteger kSQLitePageRows = 200;
 #pragma mark - Private: table/view data browser
 
 @interface FFSQLiteDataViewController : UITableViewController
-- (instancetype)initWithService:(FFSQLiteService *)service objectName:(NSString *)name isView:(BOOL)isView;
+- (instancetype)initWithService:(FFSQLiteService *)service
+                     objectName:(NSString *)name
+                         isView:(BOOL)isView
+                   databasePath:(NSString *)databasePath;
 @end
 
 @implementation FFSQLiteDataViewController
@@ -62,15 +67,22 @@ static const NSUInteger kSQLitePageRows = 200;
     UILabel *_status;
     UIBarButtonItem *_nextItem;
     UIBarButtonItem *_prevItem;
+    NSString *_databasePath;
+    BOOL _rowEditing;
+    FFSQLiteService *_editableService;
 }
 
-- (instancetype)initWithService:(FFSQLiteService *)service objectName:(NSString *)name isView:(BOOL)isView
+- (instancetype)initWithService:(FFSQLiteService *)service
+                     objectName:(NSString *)name
+                         isView:(BOOL)isView
+                   databasePath:(NSString *)databasePath
 {
     self = [super initWithStyle:UITableViewStylePlain];
     if (self) {
         _service = service;
         _objectName = [name copy];
         _isView = isView;
+        _databasePath = [databasePath copy];
         _rows = [NSMutableArray array];
         _totalRows = -1;
         self.title = name;
@@ -87,8 +99,9 @@ static const NSUInteger kSQLitePageRows = 200;
         style:UIBarButtonItemStylePlain target:self action:@selector(showSchema)];
 
     if (_isView) {
-        // 视图没有分页：仅保留结构入口。
-        self.navigationItem.rightBarButtonItem = schema;
+        // 视图没有分页：仅保留结构与分享入口。
+        UIBarButtonItem *share = [FFViewerActions shareItemForPath:_service.databasePath presenter:self];
+        self.navigationItem.rightBarButtonItems = @[schema, share];
     } else {
         _nextItem = [[UIBarButtonItem alloc] initWithTitle:@"下一页"
             style:UIBarButtonItemStylePlain target:self action:@selector(nextPage)];
@@ -98,7 +111,8 @@ static const NSUInteger kSQLitePageRows = 200;
         _prevItem.enabled = NO;
         UIBarButtonItem *csv = [[UIBarButtonItem alloc] initWithTitle:@"CSV"
             style:UIBarButtonItemStylePlain target:self action:@selector(exportCSV)];
-        self.navigationItem.rightBarButtonItems = @[schema, csv, _nextItem, _prevItem];
+        UIBarButtonItem *share = [FFViewerActions shareItemForPath:_service.databasePath presenter:self];
+        self.navigationItem.rightBarButtonItems = @[schema, csv, _nextItem, _prevItem, share];
 
         UILabel *status = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 0, 30)];
         status.font = [UIFont systemFontOfSize:11];
@@ -111,8 +125,10 @@ static const NSUInteger kSQLitePageRows = 200;
 
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             long long count = [_service rowCountForTable:_objectName];
+            BOOL rowEditing = !_isView && [_service tableHasRowID:_objectName];
             dispatch_async(dispatch_get_main_queue(), ^{
                 _totalRows = count;
+                _rowEditing = rowEditing;
                 [self loadOffset:0];
             });
         });
@@ -122,7 +138,11 @@ static const NSUInteger kSQLitePageRows = 200;
 - (void)loadOffset:(NSUInteger)offset
 {
     NSString *quoted = [_objectName stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
-    NSString *sql = [NSString stringWithFormat:@"SELECT * FROM \"%@\"", quoted];
+    // rowid 只在可编辑的普通表浏览里带上：行编辑需要稳定行标识，
+    // 展示时该列会被隐藏。
+    NSString *sql = _rowEditing
+        ? [NSString stringWithFormat:@"SELECT rowid AS \"__ff_rowid\", * FROM \"%@\"", quoted]
+        : [NSString stringWithFormat:@"SELECT * FROM \"%@\"", quoted];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSArray<NSString *> *columns = nil;
@@ -146,12 +166,21 @@ static const NSUInteger kSQLitePageRows = 200;
     });
 }
 
+- (NSArray<NSString *> *)displayColumns
+{
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    for (NSString *column in _columns)
+        if (![column isEqualToString:@"__ff_rowid"]) [result addObject:column];
+    return result;
+}
+
 - (void)updateStatus
 {
     if (_status)
-        _status.text = [NSString stringWithFormat:@"共 %lld 行 · 显示第 %lu–%lu 行",
+        _status.text = [NSString stringWithFormat:@"共 %lld 行 · 显示第 %lu–%lu 行%@",
             _totalRows, (unsigned long)_offset + 1,
-            (unsigned long)(_offset + _rows.count)];
+            (unsigned long)(_offset + _rows.count),
+            _rowEditing ? @" · 点按行可编辑" : @""];
     _prevItem.enabled = _offset > 0;
     _nextItem.enabled = _rows.count == kSQLitePageRows &&
         (_totalRows < 0 || (unsigned long long)_offset + kSQLitePageRows <
@@ -271,7 +300,7 @@ static const NSUInteger kSQLitePageRows = 200;
         forIndexPath:indexPath];
     NSDictionary<NSString *, NSString *> *row = _rows[(NSUInteger)indexPath.row];
     NSMutableString *line = [NSMutableString string];
-    for (NSString *column in _columns) {
+    for (NSString *column in [self displayColumns]) {
         if (line.length) [line appendString:@" | "];
         [line appendFormat:@"%@=%@", column, row[column] ?: @""];
     }
@@ -280,6 +309,39 @@ static const NSUInteger kSQLitePageRows = 200;
     cell.textLabel.numberOfLines = 3;
     cell.accessoryType = UITableViewCellAccessoryNone;
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (!_rowEditing || (NSUInteger)indexPath.row >= _rows.count) return;
+    NSDictionary<NSString *, NSString *> *row = _rows[(NSUInteger)indexPath.row];
+    NSString *rowID = row[@"__ff_rowid"];
+    if (!rowID.length) return;
+    if (!_editableService) {
+        NSError *error = nil;
+        _editableService = [[FFSQLiteService alloc]
+            initEditableWithDatabasePath:_databasePath error:&error];
+        if (!_editableService) {
+            [self flash:[NSString stringWithFormat:@"无法以可写方式打开：%@",
+                error.localizedDescription ?: @"未知错误"]];
+            return;
+        }
+    }
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    for (NSString *column in [self displayColumns]) values[column] = row[column] ?: @"";
+    __weak typeof(self) weakSelf = self;
+    FFSQLiteRowEditorViewController *editor = [[FFSQLiteRowEditorViewController alloc]
+        initWithService:_editableService
+                  table:_objectName
+                  rowID:rowID.longLongValue
+                columns:[self displayColumns]
+                 values:values
+             completion:^(BOOL saved) {
+                 __strong typeof(weakSelf) strongSelf = weakSelf;
+                 if (saved && strongSelf) [strongSelf loadOffset:strongSelf->_offset];
+             }];
+    [self.navigationController pushViewController:editor animated:YES];
 }
 
 - (void)flash:(NSString *)message
@@ -301,15 +363,18 @@ static const NSUInteger kSQLitePageRows = 200;
 @implementation FFSQLiteQueryViewController
 {
     __weak FFSQLiteService *_service;
+    NSString *_databasePath;
+    FFSQLiteService *_editableService;
     UITextView *_editor;
     UIBarButtonItem *_runItem;
 }
 
-- (instancetype)initWithService:(FFSQLiteService *)service
+- (instancetype)initWithService:(FFSQLiteService *)service databasePath:(NSString *)databasePath
 {
     self = [super init];
     if (self) {
         _service = service;
+        _databasePath = [databasePath copy];
         self.title = @"SQL 查询";
     }
     return self;
@@ -338,9 +403,27 @@ static const NSUInteger kSQLitePageRows = 200;
     _runItem.enabled = textView.text.length > 0;
 }
 
+- (BOOL)statementLooksReadOnly:(NSString *)sql
+{
+    NSString *trimmed = [sql stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet].lowercaseString;
+    for (NSString *prefix in @[@"select", @"pragma", @"with", @"explain", @"values"])
+        if ([trimmed hasPrefix:prefix]) return YES;
+    return NO;
+}
+
 - (void)runQuery
 {
     NSString *sql = _editor.text.copy;
+    if (![self statementLooksReadOnly:sql]) {
+        [self confirmWrite:sql];
+        return;
+    }
+    [self executeReadOnly:sql];
+}
+
+- (void)executeReadOnly:(NSString *)sql
+{
     _runItem.enabled = NO;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -358,10 +441,60 @@ static const NSUInteger kSQLitePageRows = 200;
                 return;
             }
             if (!columns || !rows) {
-                [strongSelf flash:@"语句没有返回结果集（当前只支持 SELECT 查询）"];
+                [strongSelf flash:@"语句没有返回结果集"];
                 return;
             }
             [strongSelf presentResults:rows columns:columns];
+        });
+    });
+}
+
+// 写入语句（INSERT/UPDATE/DELETE/DDL…）需显式确认，并在一个事务里执行。
+- (void)confirmWrite:(NSString *)sql
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"执行写入语句"
+        message:@"该语句会修改数据库，将在事务中执行（失败自动回滚）。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"执行"
+        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+            [weakSelf executeWrite:sql];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)executeWrite:(NSString *)sql
+{
+    if (!_editableService) {
+        NSError *error = nil;
+        _editableService = [[FFSQLiteService alloc]
+            initEditableWithDatabasePath:_databasePath error:&error];
+        if (!_editableService) {
+            [self flash:[NSString stringWithFormat:@"无法以可写方式打开：%@",
+                error.localizedDescription ?: @"未知错误"]];
+            return;
+        }
+    }
+    _runItem.enabled = NO;
+    __weak typeof(self) weakSelf = self;
+    FFSQLiteService *service = _editableService;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        NSInteger changed = 0;
+        BOOL ok = [service applyStatementsInTransaction:@[sql] changedRows:&changed error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_runItem.enabled = YES;
+            if (!ok) {
+                [strongSelf flash:[NSString stringWithFormat:@"执行失败：%@",
+                    error.localizedDescription ?: @"未知错误"]];
+                return;
+            }
+            FFLogTag(@"SQLite", @"write committed changed=%ld", (long)changed);
+            [strongSelf flash:[NSString stringWithFormat:@"已提交事务，影响 %ld 行",
+                (long)changed]];
         });
     });
 }
@@ -400,6 +533,39 @@ static const NSUInteger kSQLitePageRows = 200;
 - (void)closePresented
 {
     [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (!_rowEditing || (NSUInteger)indexPath.row >= _rows.count) return;
+    NSDictionary<NSString *, NSString *> *row = _rows[(NSUInteger)indexPath.row];
+    NSString *rowID = row[@"__ff_rowid"];
+    if (!rowID.length) return;
+    if (!_editableService) {
+        NSError *error = nil;
+        _editableService = [[FFSQLiteService alloc]
+            initEditableWithDatabasePath:_databasePath error:&error];
+        if (!_editableService) {
+            [self flash:[NSString stringWithFormat:@"无法以可写方式打开：%@",
+                error.localizedDescription ?: @"未知错误"]];
+            return;
+        }
+    }
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    for (NSString *column in [self displayColumns]) values[column] = row[column] ?: @"";
+    __weak typeof(self) weakSelf = self;
+    FFSQLiteRowEditorViewController *editor = [[FFSQLiteRowEditorViewController alloc]
+        initWithService:_editableService
+                  table:_objectName
+                  rowID:rowID.longLongValue
+                columns:[self displayColumns]
+                 values:values
+             completion:^(BOOL saved) {
+                 __strong typeof(weakSelf) strongSelf = weakSelf;
+                 if (saved && strongSelf) [strongSelf loadOffset:strongSelf->_offset];
+             }];
+    [self.navigationController pushViewController:editor animated:YES];
 }
 
 - (void)flash:(NSString *)message
@@ -528,8 +694,8 @@ static const NSUInteger kSQLitePageRows = 200;
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 3) {
-        FFSQLiteQueryViewController *query =
-            [[FFSQLiteQueryViewController alloc] initWithService:self.service];
+        FFSQLiteQueryViewController *query = [[FFSQLiteQueryViewController alloc]
+            initWithService:self.service databasePath:self.service.databasePath];
         [self.navigationController pushViewController:query animated:YES];
         return;
     }
@@ -538,7 +704,7 @@ static const NSUInteger kSQLitePageRows = 200;
     if ((NSUInteger)indexPath.row >= list.count) return;
     FFSQLiteDataViewController *data = [[FFSQLiteDataViewController alloc]
         initWithService:self.service objectName:list[(NSUInteger)indexPath.row]
-                  isView:isView];
+                  isView:isView databasePath:self.service.databasePath];
     [self.navigationController pushViewController:data animated:YES];
 }
 

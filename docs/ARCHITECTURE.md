@@ -22,6 +22,9 @@ UI 不直接负责具体文件系统操作。
 | Viewer 注册表 | `FFViewerRegistry`（viewer ID/显示名/图标/可用状态/open 分发的唯一来源） |
 | 文件关联 | `FFFileAssociationService`（内置默认表在代码中 + NSUserDefaults 用户覆盖，最长后缀优先匹配） |
 | 文件系统访问底座 | 仅 App 沙盒（`FFStorageEnvironment`），无任何跨容器访问 |
+| 查看器动作 | `FFViewerActions`（分享/文件信息/移到回收站，查看器统一入口） |
+| 目录选择 | `FFDirectoryPickerViewController`（解压目标、模态目录树） |
+| SQLite 写路径 | `FFSQLiteRowEditorViewController` + `applyStatementsInTransaction:`（BEGIN IMMEDIATE/COMMIT/ROLLBACK） |
 | 路径导航 | `FFPathBreadcrumbView`（导航栏下方单行面包屑；跳转复用导航栈/正常 push，ADR-013） |
 | 文件属性页 | `FFFileInfoViewController`（inset grouped；替代 fullDetail Alert） |
 | 元数据服务 | `FFFileMetadataService`（xattr/递归统计/SHA-256/MIME；仅属性页后台调用，禁止进入目录扫描主路径） |

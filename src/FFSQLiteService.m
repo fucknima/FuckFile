@@ -24,6 +24,12 @@ static NSError *FFSQLiteError(int code, NSString *message)
         userInfo:@{NSLocalizedDescriptionKey: friendly}];
 }
 
+@interface FFSQLiteService ()
+- (instancetype)initWithDatabasePath:(NSString *)path
+                            readOnly:(BOOL)readOnly
+                               error:(NSError **)error;
+@end
+
 @implementation FFSQLiteService
 {
     sqlite3 *_db;
@@ -31,11 +37,23 @@ static NSError *FFSQLiteError(int code, NSString *message)
 
 - (instancetype)initWithDatabasePath:(NSString *)path error:(NSError **)error
 {
+    return [self initWithDatabasePath:path readOnly:YES error:error];
+}
+
+- (instancetype)initEditableWithDatabasePath:(NSString *)path error:(NSError **)error
+{
+    return [self initWithDatabasePath:path readOnly:NO error:error];
+}
+
+- (instancetype)initWithDatabasePath:(NSString *)path readOnly:(BOOL)readOnly error:(NSError **)error
+{
     self = [super init];
     if (!self) return nil;
     _db = NULL;
-    int rc = sqlite3_open_v2(path.fileSystemRepresentation, &_db,
-        SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+    _editable = !readOnly;
+    _databasePath = [path copy];
+    int flags = SQLITE_OPEN_NOMUTEX | (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE);
+    int rc = sqlite3_open_v2(path.fileSystemRepresentation, &_db, flags, NULL);
     if (rc != SQLITE_OK) {
         if (error)
             *error = FFSQLiteError(rc,
@@ -46,6 +64,51 @@ static NSError *FFSQLiteError(int code, NSString *message)
     }
     // WAL 数据库以只读打开时依赖 -wal/-shm 可访问；同容器内通常成立。
     return self;
+}
+
+- (BOOL)tableHasRowID:(NSString *)table
+{
+    NSString *schema = [self schemaSQLForObject:table];
+    if (!schema.length) return NO;
+    return [schema rangeOfString:@"WITHOUT ROWID" options:NSCaseInsensitiveSearch].location
+        == NSNotFound;
+}
+
+- (BOOL)applyStatementsInTransaction:(NSArray<NSString *> *)statements
+                         changedRows:(NSInteger *)changedRows
+                               error:(NSError **)error
+{
+    if (!_editable) {
+        if (error) *error = FFSQLiteError(SQLITE_READONLY, @"数据库以只读方式打开");
+        return NO;
+    }
+    int rc = sqlite3_exec(_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if (rc != SQLITE_OK) {
+        if (error) *error = FFSQLiteError(rc,
+            [NSString stringWithUTF8String:sqlite3_errmsg(_db)]);
+        return NO;
+    }
+    NSInteger affected = 0;
+    for (NSString *statement in statements) {
+        if (!statement.length) continue;
+        rc = sqlite3_exec(_db, statement.UTF8String, NULL, NULL, NULL);
+        if (rc != SQLITE_OK) {
+            NSString *message = [NSString stringWithUTF8String:sqlite3_errmsg(_db)];
+            sqlite3_exec(_db, "ROLLBACK", NULL, NULL, NULL);
+            if (error) *error = FFSQLiteError(rc, message);
+            return NO;
+        }
+        affected += (NSInteger)sqlite3_changes(_db);
+    }
+    rc = sqlite3_exec(_db, "COMMIT", NULL, NULL, NULL);
+    if (rc != SQLITE_OK) {
+        NSString *message = [NSString stringWithUTF8String:sqlite3_errmsg(_db)];
+        sqlite3_exec(_db, "ROLLBACK", NULL, NULL, NULL);
+        if (error) *error = FFSQLiteError(rc, message);
+        return NO;
+    }
+    if (changedRows) *changedRows = affected;
+    return YES;
 }
 
 - (void)dealloc

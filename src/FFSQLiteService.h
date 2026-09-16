@@ -14,6 +14,22 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable instancetype)initWithDatabasePath:(NSString *)path error:(NSError **)error;
 - (void)close;
 
+// Read-write connection used by the record editor and the SQL console's
+// write mode. Browsing stays on the read-only connection.
+- (nullable instancetype)initEditableWithDatabasePath:(NSString *)path error:(NSError **)error;
+@property(nonatomic, readonly) BOOL editable;
+@property(nonatomic, copy, readonly) NSString *databasePath;
+
+// NO for WITHOUT ROWID tables (row editing has no stable identity there).
+- (BOOL)tableHasRowID:(NSString *)table;
+
+// Executes the statements inside BEGIN IMMEDIATE … COMMIT with automatic
+// ROLLBACK on any failure. changedRows receives sqlite3_changes of the last
+// statement that modified rows.
+- (BOOL)applyStatementsInTransaction:(NSArray<NSString *> *)statements
+                         changedRows:(NSInteger *)changedRows
+                               error:(NSError **)error;
+
 - (NSDictionary<NSString *, NSString *> *)databaseInfo; // page size / encoding / counts
 - (NSArray<NSString *> *)tableNames;   // user tables only (no sqlite_*)
 - (NSArray<NSString *> *)viewNames;

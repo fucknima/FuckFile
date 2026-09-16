@@ -323,6 +323,29 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     [self captureRuntimeStateWithCompletion:nil];
 }
 
+- (void)promptJumpToPage
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"跳转到页"
+        message:@"输入页码；文档未渲染分页时仅能滚动到可定位的位置。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.keyboardType = UIKeyboardTypeNumberPad;
+        field.placeholder = @"页码";
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"跳转" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSInteger page = alert.textFields.firstObject.text.integerValue;
+            if (page < 1) return;
+            NSString *script = [NSString stringWithFormat:
+                @"window.FFOffice && window.FFOffice.scrollToPage ? window.FFOffice.scrollToPage(%ld) : null;",
+                (long)(page - 1)];
+            [weakSelf.webView evaluateJavaScript:script completionHandler:nil];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)captureRuntimeStateWithCompletion:(void (^ _Nullable)(void))completion
 {
     if (!self.documentRendered || !self.webView) {
@@ -523,6 +546,11 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
     UIAction *fit = [UIAction actionWithTitle:@"适应宽度"
         image:[UIImage systemImageNamed:@"arrow.left.and.right"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf fitDocumentToWidth]; }];
+    UIAction *jump = [UIAction actionWithTitle:@"跳转到页…"
+        image:[UIImage systemImageNamed:@"number"]
+        identifier:@"office.jump" handler:^(__unused UIAction *action) {
+            [weakSelf promptJumpToPage];
+        }];
     UIAction *reload = [UIAction actionWithTitle:@"重新载入"
         image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:nil
         handler:^(__unused UIAction *action) { [weakSelf reloadManually]; }];
@@ -531,7 +559,7 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
         handler:^(__unused UIAction *action) { [weakSelf openQuickLook]; }];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-        menu:[UIMenu menuWithTitle:@"" children:@[share, pdf, fit, reload, system]]];
+        menu:[UIMenu menuWithTitle:@"" children:@[jump, share, pdf, fit, reload, system]]];
 }
 
 - (void)shareFile

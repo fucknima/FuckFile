@@ -1,4 +1,7 @@
 #import "FFHexEditorViewController.h"
+#import "FFViewerActions.h"
+
+#import <string.h>
 
 #import "FFPathPolicy.h"
 #import "FFLogger.h"
@@ -30,6 +33,8 @@ static const NSUInteger kPageSize = 64 * 1024;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *patches;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *originals;
 @property(nonatomic, strong) NSData *pageCache; // current 64 KiB page
+@property(nonatomic, strong) NSArray<NSNumber *> *searchMatches;
+@property(nonatomic) NSUInteger searchIndex;
 @property(nonatomic) unsigned long long cachedPageIndex;
 @end
 
@@ -79,7 +84,10 @@ static const NSUInteger kPageSize = 64 * 1024;
     UIBarButtonItem *save = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemSave target:self
                              action:@selector(saveTapped)];
-    self.navigationItem.rightBarButtonItems = @[save, checksum, jump, discard];
+    UIBarButtonItem *find = [[UIBarButtonItem alloc] initWithTitle:@"查找"
+        style:UIBarButtonItemStylePlain target:self action:@selector(findTapped)];
+    UIBarButtonItem *share = [FFViewerActions shareItemForPath:self.filePath presenter:self];
+    self.navigationItem.rightBarButtonItems = @[save, checksum, jump, find, share, discard];
     [self updateBarState];
 
     UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 0, 36)];
@@ -354,6 +362,137 @@ static const NSUInteger kPageSize = 64 * 1024;
             [weakSelf jumpToOffset:target];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - Search
+
+// 十六进制输入判定：以 0x 开头或含空格的纯十六进制串；否则按 UTF-8 文本。
+static NSData *FFHexSearchNeedle(NSString *query)
+{
+    NSString *trimmed = [query stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length) return nil;
+    NSString *lower = trimmed.lowercaseString;
+    BOOL hexish = [lower hasPrefix:@"0x"] || [trimmed containsString:@" "];
+    if (hexish) {
+        NSString *compact = [[trimmed componentsSeparatedByCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsJoinedByString:@""];
+        if ([compact.lowercaseString hasPrefix:@"0x"])
+            compact = [compact substringFromIndex:2];
+        NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+            @"0123456789abcdefABCDEF"];
+        if (compact.length && compact.length % 2 == 0 &&
+            [compact rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound) {
+            NSMutableData *data = [NSMutableData data];
+            for (NSUInteger index = 0; index + 1 < compact.length; index += 2) {
+                unsigned int byte = 0;
+                if (![[NSScanner scannerWithString:
+                    [compact substringWithRange:NSMakeRange(index, 2)]] scanHexInt:&byte])
+                    return nil;
+                uint8_t value = (uint8_t)byte;
+                [data appendBytes:&value length:1];
+            }
+            if (data.length) return data;
+        }
+    }
+    NSData *utf8 = [trimmed dataUsingEncoding:NSUTF8StringEncoding];
+    return utf8.length ? utf8 : nil;
+}
+
+- (void)findTapped
+{
+    BOOL hasMatches = self.searchMatches.count > 0;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"查找"
+        message:hasMatches
+            ? [NSString stringWithFormat:@"已找到 %lu 处，当前第 %lu 处",
+                (unsigned long)self.searchMatches.count, (unsigned long)(self.searchIndex + 1)]
+            : @"输入文本，或十六进制字节（如 1F 8B / 0x1F8B）"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = hasMatches ? @"新关键词" : @"查找内容";
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    if (hasMatches) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"下一处" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [weakSelf showNextMatch]; }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"查找" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            [weakSelf beginSearchWithQuery:alert.textFields.firstObject.text ?: @""];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)beginSearchWithQuery:(NSString *)query
+{
+    NSData *needle = FFHexSearchNeedle(query);
+    if (!needle.length) {
+        [self flash:@"请输入查找内容"];
+        return;
+    }
+    NSString *path = self.filePath;
+    unsigned long long fileSize = self.fileSize;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        const size_t chunk = 256 * 1024;
+        const size_t needleLength = needle.length;
+        uint8_t *buffer = malloc(chunk + MAX(needleLength, (size_t)1));
+        NSMutableArray<NSNumber *> *matches = [NSMutableArray array];
+        int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0 && buffer) {
+            unsigned long long offset = 0;
+            size_t carry = 0;
+            const uint8_t *needleBytes = needle.bytes;
+            while (matches.count < 500 && offset < fileSize) {
+                ssize_t count = pread(fd, buffer + carry, chunk, (off_t)offset);
+                if (count <= 0) break;
+                size_t total = carry + (size_t)count;
+                for (size_t index = 0; index + needleLength <= total; index++) {
+                    if (memcmp(buffer + index, needleBytes, needleLength) == 0) {
+                        [matches addObject:@(offset - carry + index)];
+                        if (matches.count >= 500) break;
+                    }
+                }
+                if (needleLength > 1) {
+                    carry = MIN(needleLength - 1, total);
+                    memmove(buffer, buffer + total - carry, carry);
+                } else {
+                    carry = 0;
+                }
+                offset += (unsigned long long)count;
+            }
+            close(fd);
+        }
+        free(buffer);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = self;
+            if (!strongSelf) return;
+            strongSelf.searchMatches = matches;
+            strongSelf.searchIndex = 0;
+            if (!matches.count) {
+                [strongSelf flash:@"未找到匹配内容"];
+                return;
+            }
+            [strongSelf jumpToOffset:matches.firstObject.unsignedLongLongValue];
+            [strongSelf flash:[NSString stringWithFormat:@"第 1 / %lu 处，偏移 0x%llX",
+                (unsigned long)matches.count,
+                matches.firstObject.unsignedLongLongValue]];
+        });
+    });
+}
+
+- (void)showNextMatch
+{
+    if (!self.searchMatches.count) return;
+    self.searchIndex = (self.searchIndex + 1) % self.searchMatches.count;
+    unsigned long long offset = self.searchMatches[self.searchIndex].unsignedLongLongValue;
+    [self jumpToOffset:offset];
+    [self flash:[NSString stringWithFormat:@"第 %lu / %lu 处，偏移 0x%llX",
+        (unsigned long)(self.searchIndex + 1),
+        (unsigned long)self.searchMatches.count, offset]];
 }
 
 - (void)jumpToOffset:(unsigned long long)target

@@ -2,6 +2,8 @@
 
 #import "FFArchiveService.h"
 #import "FFZipExtract.h"
+#import "FFDirectoryPickerViewController.h"
+#import "FFStorageEnvironment.h"
 #import "FFPreviewRouter.h"
 #import "FFBrowserViewController.h"   // FFEntry
 #import "FFFileTask.h"
@@ -30,6 +32,20 @@
 @property(nonatomic, strong) UIBarButtonItem *moreItem;
 @property(nonatomic, copy) NSString *normalTitle;
 @end
+
+#pragma mark - Helpers
+
+static NSString * const kFFArchiveLastExtractDirectoryKey = @"FFArchiveLastExtractDirectory";
+
+static NSString *FFArchiveUniqueDirectory(NSString *parent, NSString *base)
+{
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *candidate = [parent stringByAppendingPathComponent:base];
+    for (NSUInteger index = 2; index < 1000 && [manager fileExistsAtPath:candidate]; index++)
+        candidate = [parent stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@ %lu", base, (unsigned long)index]];
+    return candidate;
+}
 
 @implementation FFArchiveBrowserViewController
 
@@ -443,7 +459,7 @@
     [self presentViewController:activity animated:YES completion:nil];
 }
 
-// 提取所选（编辑模式下勾选的条目，含文件夹递归）。
+// 提取所选（编辑模式下勾选的条目，含文件夹递归）。先询问目标目录。
 - (void)extractSelected
 {
     NSArray<NSIndexPath *> *selected = self.tableView.indexPathsForSelectedRows;
@@ -457,8 +473,23 @@
     }
 
     NSString *stem = self.archivePath.lastPathComponent.stringByDeletingPathExtension;
-    NSString *destination = [self extractionRootForStem:stem.length ? stem : @"archive"];
+    if (!stem.length) stem = @"archive";
+    __weak typeof(self) weakSelf = self;
+    [self promptExtractDestinationForStem:stem completion:^(NSString *directory) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *destination = directory.length
+            ? FFArchiveUniqueDirectory(directory, [stem stringByAppendingString:@" (解压)"])
+            : [strongSelf extractionRootForStem:stem];
+        [strongSelf runExtractSelected:paths directoryPaths:directoryPaths
+                           destination:destination];
+    }];
+}
 
+- (void)runExtractSelected:(NSArray<NSString *> *)paths
+            directoryPaths:(NSSet<NSString *> *)directoryPaths
+               destination:(NSString *)destination
+{
     UIAlertController *wait = [UIAlertController alertControllerWithTitle:nil
         message:[NSString stringWithFormat:@"正在提取 %lu 项…", (unsigned long)paths.count]
         preferredStyle:UIAlertControllerStyleAlert];
@@ -535,6 +566,59 @@
     [self presentViewController:wait animated:YES completion:nil];
 }
 
+// 解压目标：压缩包旁边（默认）/ 上次使用过的目录 / 选择文件夹。
+- (void)promptExtractDestinationForStem:(NSString *)stem
+                             completion:(void (^)(NSString *directory))completion
+{
+    (void)stem;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *lastDirectory = [defaults stringForKey:kFFArchiveLastExtractDirectoryKey];
+    BOOL lastUsable = lastDirectory.length &&
+        [NSFileManager.defaultManager fileExistsAtPath:lastDirectory];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"解压到"
+        message:@"默认与压缩包放在同一目录" preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"压缩包旁边（默认）"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            completion(nil);
+        }]];
+    if (lastUsable) {
+        [sheet addAction:[UIAlertAction actionWithTitle:
+            [NSString stringWithFormat:@"上次：%@", lastDirectory.lastPathComponent]
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                completion(lastDirectory);
+            }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"选择文件夹…"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [weakSelf presentDirectoryPickerWithCompletion:completion];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentDirectoryPickerWithCompletion:(void (^)(NSString *directory))completion
+{
+    __weak typeof(self) weakSelf = self;
+    FFDirectoryPickerViewController *picker = [[FFDirectoryPickerViewController alloc]
+        initWithRootPath:FFStorageRootPath() completion:^(NSString *path) {
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (path.length)
+                [NSUserDefaults.standardUserDefaults setObject:path
+                    forKey:kFFArchiveLastExtractDirectoryKey];
+            if (strongSelf) (void)strongSelf;
+            completion(path);
+        }];
+    UINavigationController *nav = [[UINavigationController alloc]
+        initWithRootViewController:picker];
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
 // Directory entry → all file entries below it.
 - (NSArray<NSString *> *)childFilesOfDirectory:(NSString *)directoryPath
 {
@@ -554,15 +638,21 @@
 - (void)extractAll
 {
     NSString *stem = [FFArchiveService archiveStemForPath:self.archivePath];
-
-    FFFileTask *task = [FFFileTask new];
-    task.kind = FFFileTaskKindExtract;
-    task.displayName = [NSString stringWithFormat:@"解压 %@", stem];
-    task.sources = @[self.archivePath];
-    task.destination = [self extractionRootForStem:stem];
-    [[FFFileTaskManager sharedManager] enqueueTask:task];
-    [FFPreviewRouter toastOnNav:self.navigationController
-        message:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+    __weak typeof(self) weakSelf = self;
+    [self promptExtractDestinationForStem:stem completion:^(NSString *directory) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        FFFileTask *task = [FFFileTask new];
+        task.kind = FFFileTaskKindExtract;
+        task.displayName = [NSString stringWithFormat:@"解压 %@", stem];
+        task.sources = @[strongSelf.archivePath];
+        task.destination = directory.length
+            ? FFArchiveUniqueDirectory(directory, [stem stringByAppendingString:@" (解压)"])
+            : [strongSelf extractionRootForStem:stem];
+        [[FFFileTaskManager sharedManager] enqueueTask:task];
+        [FFPreviewRouter toastOnNav:strongSelf.navigationController
+            message:[NSString stringWithFormat:@"已加入任务队列：%@", task.displayName]];
+    }];
 }
 
 - (NSString *)extractionRootForStem:(NSString *)stem

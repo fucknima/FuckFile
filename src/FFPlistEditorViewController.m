@@ -1,4 +1,5 @@
 #import "FFPlistEditorViewController.h"
+#import "FFViewerActions.h"
 #import "FFPlistDocument.h"
 #import "FFPlistValueEditorViewController.h"
 #import "FFLogger.h"
@@ -357,7 +358,8 @@ typedef NS_ENUM(NSInteger, FFPlistNewValueType) {
         target:self action:@selector(saveTapped)];
     self.addButton = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:nil action:nil];
-    self.navigationItem.rightBarButtonItems = @[self.saveButton, self.addButton];
+    UIBarButtonItem *share = [FFViewerActions shareItemForPath:self.document.filePath presenter:self];
+    self.navigationItem.rightBarButtonItems = @[self.saveButton, self.addButton, share];
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"返回" style:UIBarButtonItemStylePlain
         target:self action:@selector(backTapped)];
