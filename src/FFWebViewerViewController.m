@@ -2,7 +2,7 @@
 
 #import "FFLogger.h"
 
-@interface FFWebViewerViewController () <WKNavigationDelegate>
+@interface FFWebViewerViewController () <WKNavigationDelegate, WKUIDelegate>
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -34,6 +34,7 @@
     self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
         UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
     [self.view addSubview:self.webView];
 
@@ -62,6 +63,7 @@
 {
     [NSNotificationCenter.defaultCenter removeObserver:self];
     self.webView.navigationDelegate = nil;
+    self.webView.UIDelegate = nil;
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -273,6 +275,78 @@
         message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - WKUIDelegate
+
+// Local pages routinely use target="_blank" / window.open. Without this the
+// navigation is dropped and taps appear to do nothing.
+- (nullable WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(__unused WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(__unused WKWindowFeatures *)windowFeatures
+{
+    if (navigationAction.targetFrame == nil && navigationAction.request.URL)
+        [webView loadRequest:navigationAction.request];
+    return nil;
+}
+
+- (void)webView:(__unused WKWebView *)webView
+    runJavaScriptAlertPanelWithMessage:(NSString *)message
+                      initiatedByFrame:(__unused WKFrameInfo *)frame
+                     completionHandler:(void (^)(void))completionHandler
+{
+    if (!self.viewIfLoaded.window || self.presentedViewController) {
+        completionHandler();
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { completionHandler(); }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)webView:(__unused WKWebView *)webView
+    runJavaScriptConfirmPanelWithMessage:(NSString *)message
+                        initiatedByFrame:(__unused WKFrameInfo *)frame
+                       completionHandler:(void (^)(BOOL result))completionHandler
+{
+    if (!self.viewIfLoaded.window || self.presentedViewController) {
+        completionHandler(NO);
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel
+        handler:^(__unused UIAlertAction *action) { completionHandler(NO); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { completionHandler(YES); }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)webView:(__unused WKWebView *)webView
+    runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+                              defaultText:(nullable NSString *)defaultText
+                         initiatedByFrame:(__unused WKFrameInfo *)frame
+                        completionHandler:(void (^)(NSString * _Nullable result))completionHandler
+{
+    if (!self.viewIfLoaded.window || self.presentedViewController) {
+        completionHandler(nil);
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+        message:prompt preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = defaultText;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel
+        handler:^(__unused UIAlertAction *action) { completionHandler(nil); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            completionHandler(alert.textFields.firstObject.text);
+        }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 

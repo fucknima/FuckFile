@@ -830,6 +830,9 @@ Treemap 或删除建议，只做只读统计与缓存清理。
    列出，选「图片浏览器」开 zip 这类组合只会静默失败。
 4. 打开失败不再静默：`FFViewerRegistry openPath:` 在查看器无法为具体文件
    构建 VC 时 toast「该文件无法用所选查看器打开」；选择器沿用该反馈。
+5. Web Viewer 补 `WKUIDelegate`：`target="_blank"` / `window.open` 在当前
+   WebView 打开而不是被系统静默丢弃；`alert/confirm/prompt` 转成原生
+   弹窗（无 UI 可展示时立即回调，避免页面脚本永久挂起）。
 
 原因：真实反馈图暴露 iOS 26 bar button 自定义视图的渲染问题；另外查看器
 体系此前只有「打开成功」路径，能力不匹配时既无过滤也无反馈，属于交互
