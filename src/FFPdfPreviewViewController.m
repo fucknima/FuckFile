@@ -77,8 +77,6 @@ static void FFAppendPDFOutlineItems(PDFOutline *node, NSInteger level,
 @end
 
 @interface FFPdfPreviewViewController () <PDFViewDelegate, UITextFieldDelegate>
-// Implemented by FFPdfReaderViewController, the only concrete subclass
-// (it presents the PDFKit thumbnail grid).
 - (void)showThumbnails;
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) PDFView *pdfView;
@@ -350,6 +348,12 @@ static void FFAppendPDFOutlineItems(PDFOutline *node, NSInteger level,
             [weakSelf.pdfView goToPage:[weakSelf.document pageAtIndex:page - 1]];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// FFPdfReaderViewController (the only concrete subclass) overrides this and
+// presents the PDFKit thumbnail grid; the base keeps a no-op for its menu.
+- (void)showThumbnails
+{
 }
 
 - (void)showOutline
