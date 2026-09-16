@@ -6,7 +6,7 @@
 
 // Browser search semantics:
 //   1) current-folder entries are matched immediately from the browser's
-//      already-decorated FFEntry objects (name/displayName/containerIdentifier),
+//      already-decorated FFEntry objects (name/displayName/kind),
 //      so visible folders can never disappear from search;
 //   2) FFSearchService then recursively searches descendants under currentPath,
 //      so files inside Imported (and other subfolders) are found as well;
@@ -78,8 +78,7 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
     NSMutableArray<FFEntry *> *matches = [NSMutableArray array];
     for (FFEntry *entry in entries) {
         BOOL matched = FFLocalSearchMatches(entry.displayName, query) ||
-            FFLocalSearchMatches(entry.name, query) ||
-            FFLocalSearchMatches(entry.containerIdentifier, query);
+            FFLocalSearchMatches(entry.name, query);
         if (!matched) continue;
         NSString *key = entry.path.stringByStandardizingPath ?: entry.path;
         if (key.length && [seen containsObject:key]) continue;

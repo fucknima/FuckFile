@@ -1,22 +1,22 @@
 # FuckFile — iOS 文件管理器
 
-基于 MHA（MobileHouseArrest 身份信任）容器访问技术的 iOS 26.6 文件管理器。
-面向高级用户：浏览、管理、编辑、预览其他 App 的沙盒容器与系统数据。
+一个普通沙盒文件管理器：只管理 App 自己 Documents 目录里的文件，通过 Files、
+AirDrop、分享面板导入导出。不包含任何跨容器访问、身份伪装或私有安装能力。
 
 工程为 Objective-C（theos 构建），CI 通过 GitHub Actions 远程编译 unsigned IPA，
-使用轻松签（Esign）注入 `com.apple.mobile.MobileHouseArrest` 身份后安装。
+用任意签名工具重签即可安装（bundle id `com.fucknima.fuckfile`，无需注入系统身份）。
 
 ## 能力
 
-- 设备存储虚拟根：App Data（含 FuckFile 自身沙盒；范围为 App Data，其他容器类已从 MCM 扫描移除）
-- LaunchServices 数据库全量扫描发现第三方 App（iOS 26 隐藏枚举的替代方案）
-- App 显示名解析（iTunesMetadata + 静态表 + LS workspace）
-- 列表/网格浏览、面包屑导航、排序（名称/大小/时间/类型 + 升降序）、类型筛选、当前目录搜索
-- 多选批量：复制/移动/分享/更多（压缩）/删除
-- 文本编辑、结构化 plist 编辑、图片/音视频预览、十六进制查看、SQLite 只读浏览、
-  Quick Look 兜底、ZIP 包内浏览与解压（zip/ipa 等 zip 容器家族）
-- ZIP 压缩（store/deflate 自适应）、SHA-256、目录递归大小
-- 运行日志页（分享/清空/手动重扫描）
+- 浏览 App 沙盒（Documents）：列表/网格、面包屑、排序（名称/大小/时间/类型）、
+  类型筛选、当前目录搜索
+- 多选批量：复制/移动/分享/压缩/删除
+- 导入：Files「打开方式」、分享面板（App Group 或 localhost 直传，不依赖跨容器权限）
+- 文本编辑、结构化 plist 编辑、图片/音视频预览、十六进制查看、SQLite 只读浏览、PDF 阅读
+- Office 预览（doc/docx/ppt/xlsx 等，离线运行时；保真度限制见 docs/TODO.md）
+- ZIP 包内浏览、解压、压缩（store/deflate 自适应）、SHA-256、目录递归大小
+- 局域网文件共享（浏览器 + WebDAV，仅 App 沙盒内容）
+- 运行日志页（分享、清空）
 
 ## 构建
 
@@ -24,7 +24,7 @@
 # GitHub Actions: build-unsigned-ipa workflow（theos，macOS runner）
 ```
 
-签名安装：轻松签 → 保持 bundle id `com.apple.mobile.MobileHouseArrest`。
+安装：用任意签名工具重签 IPA。
 
 ## 文档
 
@@ -37,5 +37,4 @@
 
 ## 免责声明
 
-本工具用于安全研究与自身设备管理。访问其他 App 的沙盒数据涉及
-隐私与合规风险，请仅在自己有权访问的设备上使用。
+本工具只访问自己沙盒内的文件，导入的外部文件需要用户显式授权。

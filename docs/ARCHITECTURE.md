@@ -17,11 +17,11 @@ UI 不直接负责具体文件系统操作。
 | FileOperationService | `FFCopyEngine`（复制引擎）+ NSFileManager 调用点（rename/delete 待收敛） |
 | External Import | `FFImportService` + `FFSharedInboxService` + `FuckFileShare.appex` |
 | ArchiveService | `FFZipExtract`（解压）/ `FFZipCreate`（压缩）/ `FFArchiveService`（包内列表与单条目提取） |
-| Logger | `FFLogger`（模块 tag：Browser/MCM/LSDiscovery/PlistEditor/Viewer/Preview/SQLite/Archive/HexEditor/Web/IPA 等） |
+| Logger | `FFLogger`（模块 tag：Browser/PlistEditor/Viewer/Preview/SQLite/Archive/HexEditor/Web/IPA 等） |
 | Preview 路由 | `FFPreviewRouter`（文件关联 → Viewer Registry → 内容检测 fallback；Browser/Search/Favorites/Recents 共用同一入口） |
 | Viewer 注册表 | `FFViewerRegistry`（viewer ID/显示名/图标/可用状态/open 分发的唯一来源） |
 | 文件关联 | `FFFileAssociationService`（内置默认表在代码中 + NSUserDefaults 用户覆盖，最长后缀优先匹配） |
-| 文件系统访问底座 | `MCMManager`（MHA 身份容器访问）+ `FFLSDiscovery`（LaunchServices 扫描） |
+| 文件系统访问底座 | 仅 App 沙盒（`FFStorageEnvironment`），无任何跨容器访问 |
 | 路径导航 | `FFPathBreadcrumbView`（导航栏下方单行面包屑；跳转复用导航栈/正常 push，ADR-013） |
 | 文件属性页 | `FFFileInfoViewController`（inset grouped；替代 fullDetail Alert） |
 | 元数据服务 | `FFFileMetadataService`（xattr/递归统计/SHA-256/MIME；仅属性页后台调用，禁止进入目录扫描主路径） |
@@ -51,7 +51,7 @@ provider 回调存活期间立即持久化          │
         │                              │
         └─ Extension Data（默认兜底）    │
              │                         │
-     MCM class-4 Extension Data        │
+     loopback bridge (FFLocalShareBridge) │
              │                         │
        FFSharedInboxService            │
              └────────────┬────────────┘
@@ -69,9 +69,9 @@ provider 回调存活期间立即持久化          │
 
 1. `FuckFileShare.appex` 与 LCSign 的 share-services 结构对齐：`NSExtensionActivationSupportsFileWithMaxCount=25`，接收 `NSExtensionItem` / `NSItemProvider`，实际文件在 provider completion 内立即复制，禁止只保存临时 URL 留给主 App。
 2. Share Extension 写入以 `.partial-UUID` 目录开始，`payload + metadata.plist` 完整后 rename 为 `UUID.ffshare`；主 App 只消费完整条目。
-3. App Group 是可选快速桥梁，不作为正确性的唯一前提。若重签工具未授予 App Group，Extension 写入自身 `Documents/FuckFileShareInbox`；主 App 以 `com.apple.mobile.MobileHouseArrest` 身份通过 MCM class 4（Extension Data）取得该容器。
+3. App Group 是快速桥梁；重签工具未授予 App Group 时，Extension 通过 `FFLocalShareBridge` 的 localhost 通道把文件直传给主 App（不依赖任何跨容器访问）。
 4. 主 App 在启动、`applicationDidBecomeActive:` 与 share wake URL 到达时调用 `FFSharedInboxService`；成功导入后才删除共享条目，失败保留以便诊断/重试。
-5. `FFImportService` 对自己的沙盒或已有 MCM lease 的稳定路径直接流式复制；其他外部 URL 使用 security scope + `NSFileCoordinator`，且真实读取发生在 coordinator accessor 内。
+5. `FFImportService` 对自己沙盒内的稳定路径直接流式复制；其他外部 URL 使用 security scope + `NSFileCoordinator`，且真实读取发生在 coordinator accessor 内。
 6. 最终落盘统一采用同目录 staging + rename；同名使用 `name (2).ext`，不静默覆盖，不使用 sleep/retry 掩盖权限问题。
 7. Files 配置按已验证的 LCSign 模型固定：`UIFileSharingEnabled=YES`、`UISupportsDocumentBrowser=YES`、`LSSupportsOpeningDocumentsInPlace=NO`；Document Open 优先获得 App 自己 Inbox 中的稳定副本，Share Sheet 由 Share Extension 负责。
 
@@ -114,21 +114,19 @@ provider 回调存活期间立即持久化          │
 | plist | 属性表编辑器 | `FFPlistEditorViewController`（复用） |
 | text | 文本编辑器 | `FFTextEditorViewController`（复用；脚本仅按文本打开，不执行） |
 | sqlite | SQLite3 编辑器 | `FFSQLiteService` + `FFSQLiteBrowserViewController`（系统 sqlite3 只读：库信息/表/视图/索引/schema、分页浏览、SQL 查询） |
-| installer | IPA 安装器 | `FFIPaInstallerViewController`（解析 Payload/*.app Info.plist 与图标；安装受运行环境限制并如实反馈） |
 | archive | ZIP 浏览器 | `FFArchiveBrowserViewController` + minizip 后端（包内目录树/单文件预览/选中提取/全部解压）；TAR/GZ/7z/RAR/XZ/BZ2 无后端时明确提示暂不支持 |
 | hex | 十六进制编辑器 | `FFHexEditorViewController`（open/pread 分页 64KB，OFFSET/HEX/ASCII，偏移跳转，字节修改与保存/取消，CRC32/SHA-256 校验和） |
 | media | 媒体播放器 | Registry 内联 AVPlayerViewController |
 | pdf | PDF 阅读器 | `FFPdfPreviewViewController`（复用；图片浏览器为 UIScrollView 缩放 + 双击，PhotoScroller 模式） |
 
 明确排除：终端（无任何脚本执行能力）、DEB 专用逻辑（`.deb` 不注册关联、
-不进 ZIP 浏览器、不交安装器）。
+不进 ZIP 浏览器）、IPA 安装（仅做包内信息与图标展示）。
 
 ## 第三方组件
 
 - minizip（third_party/minizip，zlib License）：ZIP 列表/提取/全量解压的解析后端
   （ADR-011）；条目数/体积上限、文件名消毒、符号链接拒绝在库之上实现。
-- SQLite 编辑器支持 CSV 导出；IPA 安装器含 TrollStore 检测（applestore://）
-  与 LSApplicationWorkspace 私有通道探测。
+- SQLite 编辑器支持 CSV 导出；IPA 仅解析包内 Info.plist 与图标。
 
 ## Core Models
 

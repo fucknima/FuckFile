@@ -221,10 +221,7 @@
 
     NSString *token = nil;
     FFFileIconStyle *style = nil;
-    if (entry.isAppContainer) {
-        token = @"app-container";
-        style = [self styleWithColor:UIColor.systemIndigoColor symbol:@"cube.fill" label:nil square:YES];
-    } else if (entry.isSymlink) {
+    if (entry.isSymlink) {
         token = @"symlink";
         style = [self styleWithColor:UIColor.systemTealColor symbol:@"link" label:nil square:YES];
     } else if (entry.isDirectory && !packageDirectory) {

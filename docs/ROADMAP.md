@@ -42,7 +42,7 @@
 - Viewer Registry + 文件关联系统（2026-08-22 并入）：
   - 统一查看器注册表与设置页管理（支持的查看器 / 文件关联）
   - Quick Look、Web Viewer、Hex 编辑器、SQLite3 编辑器、
-    ZIP 包内浏览器、IPA 安装器
+    ZIP 包内浏览器、IPA 包信息读取
   - 用户覆盖关联 + 内置默认关联，最长后缀优先匹配
   - 统一内容探测 FFContentProbe / 统一文本编解码 FFTextCodec（ADR-017）
   - 正式代码编辑器：Runestone + Tree-sitter（语法高亮/查找替换/编码保持）

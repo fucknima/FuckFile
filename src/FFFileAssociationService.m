@@ -6,7 +6,7 @@ NSString * const FFFileAssociationsDidChangeNotification =
 // Built-in defaults. Keys are lowercase suffixes without the leading dot;
 // compound keys like "tar.gz" participate in longest-suffix matching.
 // .deb deliberately has no entry anywhere (no dedicated viewer, not an
-// archive, never routed to installer/zip).
+// archive, never routed to zip).
 static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
 {
     static NSDictionary<NSString *, NSString *> *table;
@@ -34,7 +34,7 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             @"html": @"web", @"htm": @"web", @"url": @"web", @"webloc": @"web",
             @"hex": @"hex", @"dat": @"hex",
             @"dylib": @"macho", @"so": @"macho",
-            @"ipa": @"installer",
+            @"ipa": @"archive",
             @"zip": @"archive", @"tar": @"archive", @"tar.gz": @"archive",
             @"tgz": @"archive", @"tar.bz2": @"archive", @"tbz": @"archive",
             @"tbz2": @"archive", @"tar.xz": @"archive", @"txz": @"archive",
@@ -142,6 +142,14 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
             if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSString.class])
                 return;
             NSString *extension = [(NSString *)key lowercaseString];
+            // The IPA installer viewer was removed (ADR-019); .ipa files are
+            // ZIP containers, so stale overrides fall back to the archive
+            // browser instead of pointing at a missing viewer.
+            if ([value isEqualToString:@"installer"]) {
+                migrated[key] = @"archive";
+                changed = YES;
+                return;
+            }
             if ([value isEqualToString:@"office"]) {
                 if (FFIsSpreadsheetFamily(extension)) migrated[key] = @"spreadsheet";
                 else if (FFIsDocxFamily(extension) || FFIsOfficeDocumentFamily(extension))

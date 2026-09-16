@@ -6,8 +6,6 @@
 #import "FFArchiveCreate.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
-#import "FFSystemAccessManager.h"
-#import "FFAppDataVirtualPath.h"
 
 #import <errno.h>
 #import <sys/stat.h>
@@ -408,52 +406,9 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
         FFLogTag(@"Tasks", @"persist write FAIL error=%@", writeError);
 }
 
-#pragma mark - Execution gates
-
-- (BOOL)taskRequiresSystemAccess:(FFFileTask *)task
-{
-    if (FFPathRequiresSystemAccess(task.destination)) return YES;
-    for (NSString *source in task.sources)
-        if (FFPathRequiresSystemAccess(source)) return YES;
-    return NO;
-}
-
-- (BOOL)prepareVirtualPathsForTask:(FFFileTask *)task
-{
-    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithArray:task.sources ?: @[]];
-    if (task.destination.length) [paths addObject:task.destination];
-    for (NSString *path in paths) {
-        NSError *error = nil;
-        if (!FFAppDataEnsureLogicalPathMaterialized(path, &error)) {
-            task.error = error ?: [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:452
-                userInfo:@{NSLocalizedDescriptionKey:@"无法恢复 App Data 会话访问。"}];
-            FFLogTag(@"Tasks", @"virtual path rehydrate FAIL path=%@ error=%@",
-                path, task.error.localizedDescription ?: @"(nil)");
-            return NO;
-        }
-    }
-    return YES;
-}
-
 - (void)executeTask:(FFFileTask *)task
 {
     if (task.cancelled || task.state == FFFileTaskStateCancelled) return;
-
-    if ([self taskRequiresSystemAccess:task] && !FFSystemAccessManager.sharedManager.ready) {
-        task.state = FFFileTaskStateFailed;
-        task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:451
-            userInfo:@{NSLocalizedDescriptionKey:
-                @"该任务需要高级系统访问。请先在设置中启用并成功加载高级系统访问，然后重试。"}];
-        FFLogTag(@"Tasks", @"blocked by system access gate name=%@", task.displayName);
-        [self notifyChange];
-        return;
-    }
-
-    if (![self prepareVirtualPathsForTask:task]) {
-        task.state = FFFileTaskStateFailed;
-        [self notifyChange];
-        return;
-    }
 
     task.state = FFFileTaskStateRunning;
     [self notifyChange];
@@ -756,8 +711,7 @@ static NSString *FFFallbackExtractDestination(FFFileTask *task)
     NSArray<NSString *> *entries = nil;
     BOOL ok = runExtract(initialDestination, &entries, &error);
 
-    if (!ok && !task.cancelled && FFPathRequiresSystemAccess(initialDestination) &&
-        FFExtractErrorIsWriteAccessFailure(error)) {
+    if (!ok && !task.cancelled && FFExtractErrorIsWriteAccessFailure(error)) {
         NSString *fallback = FFFallbackExtractDestination(task);
         if (fallback.length) {
             FFLogTag(@"Tasks", @"extract destination denied; retry archive=%@ from=%@ to=%@ error=%@",

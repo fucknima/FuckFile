@@ -128,6 +128,22 @@ jobs:
           grep -q 'FFResolvedPathIsInsideRoot' src/FFSearchService.m
           grep -q 'if (!showResult)' src/FFAppDelegate.m
 
+          # No sandbox-escape / container-access stack may come back.
+          for removed in \
+            src/MCMManager.m src/MCMBridge.m src/FFSystemAccessManager.m \
+            src/FFAppDataRegistry.m src/FFAppDataLeaseManager.m \
+            src/FFAppDataScanCoordinator.m src/FFAppDataVirtualPath.m \
+            src/FFAppDataVirtualBrowser.m src/FFAppNames.m src/FFAppNameCatalog.h \
+            src/FFOnlineAppNameResolver.m src/FFLSDiscovery.m src/FFLSStoreInventory.m \
+            src/FFStorageCleaner.m src/FFStorageCleanerViewController.m \
+            src/FFIPaInstallerViewController.m MCMIdentifiers.example.plist; do
+            test ! -e "$removed" || { echo "ERROR: removed exploit file present: $removed" >&2; exit 1; }
+          done
+          ! grep -rq 'MobileHouseArrest' Makefile Info.plist ShareExtension Info.plist src FuckFile.entitlements ShareExtension/FuckFileShare.entitlements
+          ! grep -rEq 'MCMManager|MCMBridge|FFSystemAccessManager|FFAppDataRegistry|FFAppDataVirtualPath|FFStorageCleaner|FFIPaInstallerViewController' src
+          ! grep -q '@"ipa": @"installer"' src/FFFileAssociationService.m
+          grep -q '@"ipa": @"archive"' src/FFFileAssociationService.m
+
           # Quick Look is preserve-first: unchanged previews must not refresh on
           # every foreground transition. It remains only a manual Office fallback.
           grep -q 'UIApplicationDidEnterBackgroundNotification' src/FFQuickLookViewController.m
@@ -261,7 +277,7 @@ jobs:
 
           cp Info.plist "$APP/Info.plist"
           cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.apple.mobile.MobileHouseArrest" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.fucknima.fuckfile" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_BUILD/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
@@ -319,8 +335,8 @@ jobs:
 
           codesign -d --entitlements :- "$APP" > /tmp/app-entitlements.plist 2>/dev/null
           codesign -d --entitlements :- "$EXT" > /tmp/share-entitlements.plist 2>/dev/null
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/app-entitlements.plist | grep -Fx 'group.com.apple.mobile.MobileHouseArrest'
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/share-entitlements.plist | grep -Fx 'group.com.apple.mobile.MobileHouseArrest'
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/app-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/share-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
 
           rm -rf Payload "$IPA_NAME"
           mkdir -p Payload

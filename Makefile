@@ -30,16 +30,6 @@ FuckFile_FILES = \
 	src/FFAppDelegate.m \
 	src/FFRootTabBarController.m \
 	src/FFAppDelegate+ShareWakeDedup.m \
-	src/FFSystemAccessManager.m \
-	src/FFAppDataScanCoordinator.m \
-	src/FFAppDataScanCoordinator+StructuralInventory.m \
-	src/FFAppDataScanCoordinator+MobileGestaltRefresh.m \
-	src/FFAppDataScanToast.m \
-	src/FFAppDataRegistry.m \
-	src/FFOnlineAppNameResolver.m \
-	src/FFAppDataLeaseManager.m \
-	src/FFAppDataVirtualPath.m \
-	src/FFAppDataVirtualBrowser.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFBrowserViewController.m \
@@ -51,8 +41,6 @@ FuckFile_FILES = \
 	src/FFFileIconProvider.m \
 	src/FFLogViewController.m \
 	src/FFSettingsViewController.m \
-	src/FFStorageCleaner.m \
-	src/FFStorageCleanerViewController.m \
 	src/FFWebDAVServer.m \
 	src/FFWebDAVSettingsViewController.m \
 	src/FFCopyEngine.m \
@@ -61,10 +49,6 @@ FuckFile_FILES = \
 	src/FFImportService.m \
 	src/FFSharedInboxService.m \
 	src/FFLocalShareBridgeServer.m \
-	src/MCMManager+ExtensionData.m \
-	src/MCMManager+MobileGestaltLink.m \
-	src/MCMManager+DiagnosticsPlacement.m \
-	src/FFAppNames.m \
 	src/FFZipExtract.m \
 	src/FFZipCreate.m \
 	src/FFArchiveCreate.m \
@@ -91,10 +75,6 @@ FuckFile_FILES = \
 	src/FFSearchService.m \
 	src/FFBookmarksService.m \
 	src/FFBookmarksViewController.m \
-	src/MCMBridge.m \
-	src/MCMManager.m \
-	src/FFLSDiscovery.m \
-	src/FFLSStoreInventory.m \
 	third_party/minizip/unzip.c \
 	third_party/minizip/ioapi.c \
 	src/FFViewerRegistry.m \
@@ -109,7 +89,6 @@ FuckFile_FILES = \
 	src/FFLibArchiveBackend.m \
 	src/FFArchiveBrowserViewController.m \
 	src/FFArchiveBrowserViewController+Encrypted.m \
-	src/FFIPaInstallerViewController.m \
 	src/FFSupportedViewersViewController.m \
 	src/FFFileAssociationsViewController.m \
 	src/FFPathBreadcrumbView.m \

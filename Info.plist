@@ -62,7 +62,7 @@
 	<key>CFBundleExecutable</key>
 	<string>FuckFile</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.apple.mobile.MobileHouseArrest</string>
+	<string>com.fucknima.fuckfile</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -83,10 +83,6 @@
 				<string>fuckfile-import</string>
 			</array>
 		</dict>
-	</array>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>applestore</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

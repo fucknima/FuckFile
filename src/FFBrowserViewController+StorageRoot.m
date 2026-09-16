@@ -37,22 +37,6 @@ static BOOL FFStoragePathIsInsideRoot(NSString *path, NSString *root)
         [candidate hasPrefix:[base stringByAppendingString:@"/"]];
 }
 
-static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
-{
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSFileManager *fm = NSFileManager.defaultManager;
-        NSString *root = FFStorageRootPath();
-        NSString *legacyRoot = [root stringByAppendingPathComponent:@"Device Storage"];
-        for (NSString *name in @[@"LSIdentifierCache.plist", @"LSGroupCache.plist"]) {
-            [fm removeItemAtPath:[root stringByAppendingPathComponent:name] error:nil];
-            [fm removeItemAtPath:[legacyRoot stringByAppendingPathComponent:name] error:nil];
-        }
-        if ([fm contentsOfDirectoryAtPath:legacyRoot error:nil].count == 0)
-            [fm removeItemAtPath:legacyRoot error:nil];
-    });
-}
-
 @implementation FFBrowserViewController (StorageRoot)
 
 + (void)load
@@ -84,7 +68,6 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     // Documents/Device Storage prefix. Canonicalize at the browser boundary so
     // every caller lands on the flattened Documents tree while the UI stays localized.
     NSString *root = FFStorageRootPath().stringByStandardizingPath;
-    FFCleanupLegacyGeneratedCachesAtStorageRoot();
     NSString *canonical = FFCanonicalStoragePath(path ?: @"");
     FFBrowserViewController *browser = [self ff_storage_initWithPath:canonical];
     if (browser && [canonical.stringByStandardizingPath isEqualToString:root])
@@ -125,9 +108,9 @@ static void FFCleanupLegacyGeneratedCachesAtStorageRoot(void)
     if (![parent isEqualToString:FFStorageRootPath().stringByStandardizingPath])
         return loaded;
 
-    // The app-visible 文件 root is backed by the Documents directory. Generated metadata from older or
-    // current builds must never masquerade as user files even when “show hidden”
-    // is enabled. AppData/MobileGestalt are deliberately NOT filtered here.
+    // The app-visible 文件 root is backed by the Documents directory. Generated
+    // metadata from older or current builds must never masquerade as user files
+    // even when “show hidden” is enabled.
     NSMutableArray<FFEntry *> *visible = [NSMutableArray arrayWithCapacity:loaded.count];
     for (FFEntry *entry in loaded) {
         if (FFIsInternalStorageEntry(parent, entry.name)) continue;

@@ -2,7 +2,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// 展示用路径缩略：只显示最后 2~3 层（"AppData › 微信 › Documents"），
+// 展示用路径缩略：只显示最后 2~3 层，
 // 绝不展示完整 /private/var/... 链路；完整路径只在文件信息页/复制路径出现。
 FOUNDATION_EXPORT NSString *FFAbbreviatedDisplayPath(NSString *path);
 

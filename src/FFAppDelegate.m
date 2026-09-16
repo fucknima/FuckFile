@@ -5,10 +5,7 @@
 #import "FFSharedInboxService.h"
 #import "FFShareBridge.h"
 #import "FFLocalShareBridge.h"
-#import "FFSystemAccessManager.h"
 #import "FFStorageEnvironment.h"
-#import "FFOnlineAppNameResolver.h"
-#import "MCMManager.h"
 #import "FFLogger.h"
 
 static const NSTimeInterval kFFImportDedupTTL = 5.0;
@@ -56,17 +53,8 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
     FFLog(@"device=%@ iOS=%@ build=%@ bundle=%@ log=%@", UIDevice.currentDevice.model,
         UIDevice.currentDevice.systemVersion, [NSProcessInfo processInfo].operatingSystemVersionString,
         NSBundle.mainBundle.bundleIdentifier ?: @"nil", FFLogPath());
-    FFLog(@"required MCM identity=com.apple.mobile.MobileHouseArrest match=%d",
-        [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"]);
-
-    // Network-assisted App-name lookup is opt-in. Existing explicit choices are
-    // preserved; only installs that have never stored a preference default off.
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if ([defaults objectForKey:FFOnlineAppNameResolutionEnabledKey] == nil)
-        [defaults setBool:NO forKey:FFOnlineAppNameResolutionEnabledKey];
 
     FFStorageRootPath();
-    if (!FFSystemAccessManager.sharedManager.enabled) FFPrepareStorageRootForNormalMode();
 
     NSURL *incoming = launchOptions[UIApplicationLaunchOptionsURLKey];
     self.shareStreamInProgress = [self isShareStreamURL:incoming];
@@ -77,16 +65,6 @@ static const NSTimeInterval kFFShareTokenDedupTTL = 60.0;
     self.window.rootViewController = shell;
     shell.view.backgroundColor = UIColor.systemBackgroundColor;
     [self.window makeKeyAndVisible];
-
-    __weak typeof(self) weakSelf = self;
-    [FFSystemAccessManager.sharedManager loadIfEnabledWithCompletion:^(BOOL loaded) {
-        if (!loaded) return;
-        if (!weakSelf.shareStreamInProgress) [weakSelf processSharedInboxShowingResult:NO];
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"FFProbeFinished" object:nil];
-        UINavigationController *nav = [weakSelf activeNavigationController];
-        if ([nav.topViewController isKindOfClass:FFBrowserViewController.class])
-            [(FFBrowserViewController *)nav.topViewController reloadEntries];
-    }];
 
     if (!self.shareStreamInProgress) [self processSharedInboxShowingResult:NO];
     if (incoming) {

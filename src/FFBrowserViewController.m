@@ -4,9 +4,7 @@
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
 #import "FFFileOperationService.h"
-#import "MCMManager.h"
 #import "FFLogger.h"
-#import "FFAppNames.h"
 #import "FFZipExtract.h"
 #import "FFArchiveService.h"
 #import "FFArchiveCreateOptionsViewController.h"
@@ -122,7 +120,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
         _currentPath = [path copy];
         _showHiddenFiles = [NSUserDefaults.standardUserDefaults
             boolForKey:@"FFSettingsShowHiddenFiles"];
-        self.title = path.lastPathComponent.length ? path.lastPathComponent : @"设备存储";
+        self.title = path.lastPathComponent.length ? path.lastPathComponent : @"文件";
         _sortMode = FFSortModeName;
     }
     return self;
@@ -219,28 +217,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 strongSelf.pendingAutoReload = NO;
                 if (strongSelf.hasLoaded) [strongSelf reloadEntries];
-            });
-        }];
-
-    // Reload once the background MCM scan has finished.
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"FFProbeFinished"
-        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-            typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [strongSelf reloadEntries];
-            });
-        }];
-
-    // Reload when the background LaunchServices confirmation pass installs
-    // new MCM App Data links (iOS 26 third-party app discovery).
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFMCMAppLinksUpdatedNotification
-        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-            typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            if (![strongSelf.currentPath hasPrefix:MCMVirtualRoot()]) return;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [strongSelf reloadEntries];
             });
         }];
 
@@ -751,15 +727,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     if (self.loading) return;
     self.loading = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // MHA is the only channel: every link in the MCM folders was
-        // activated at startup, so its token already covers the target.
-        // No per-directory extension consumption is needed.
-        NSString *linkTarget = [self symlinkTargetOfPath:self.currentPath];
-        if (linkTarget.length) {
-            BOOL mhaCovered = [[MCMManager sharedManager] hasActiveLeaseForPath:linkTarget];
-            FFLogTag(@"Browser", @"target=%@ mha-lease-covered=%d",
-                     linkTarget, mhaCovered);
-        }
         NSArray<FFEntry *> *loaded = [self loadDirectoryContents];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.entries = loaded;
@@ -869,19 +836,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     }
 }
 
-- (NSString *)symlinkTargetOfPath:(NSString *)path
-{
-    struct stat status = {0};
-    if (lstat(path.fileSystemRepresentation, &status) != 0 || !S_ISLNK(status.st_mode))
-        return nil;
-    char target[PATH_MAX] = {0};
-    ssize_t length = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-    if (length <= 0) return nil;
-    target[length] = '\0';
-    return [NSString stringWithUTF8String:target];
-}
-
-
 - (NSArray<FFEntry *> *)loadDirectoryContents
 {
     NSMutableArray<FFEntry *> *result = [NSMutableArray array];
@@ -944,31 +898,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             item.isDirectory = S_ISDIR(status.st_mode);
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
         }
-        // Resolve container UUIDs to readable app names via the MCM metadata
-        // plist so directories show app names, not UUIDs. App Store installs
-        // carry the localized display name in iTunesMetadata.plist; prefer
-        // it over the bundle-identifier lookup.
         item.displayName = item.name;
-        if (!item.isSymlink && item.isDirectory) {
-            NSString *metadataPath = [path stringByAppendingPathComponent:
-                @".com.apple.mobile_container_manager.metadata.plist"];
-            NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
-            NSString *identifier = [metadata[@"MCMMetadataIdentifier"]
-                isKindOfClass:NSString.class] ? metadata[@"MCMMetadataIdentifier"] : nil;
-            if (identifier.length) {
-                NSString *itemName = FFAppContainerItemName(path);
-                item.displayName = itemName ?: FFAppDisplayName(identifier);
-                item.containerIdentifier = identifier;
-                item.isAppContainer = YES;
-                // Only log actual container roots (UUID-shaped names).
-                if (FFIsUUIDShapedName(name))
-                    FFLogTag(@"Browser", @"metadata resolved %@ -> %@ (%@)",
-                        name, item.displayName, identifier);
-            } else if (FFIsUUIDShapedName(name)) {
-                FFLogTag(@"Browser", @"metadata MISSING/unreadable for %@",
-                    path.lastPathComponent);
-            }
-        }
         [result addObject:item];
     }
     closedir(directory);
@@ -1013,29 +943,6 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 - (void)decorateEntries:(NSArray<FFEntry *> *)entries
 {
     for (FFEntry *item in entries) {
-        // Bundle-id links in the MCM folders read better as app names.
-        // The link target is the real container root: its iTunesMetadata
-        // carries the localized App Store display name (e.g. 中国移动).
-        if (item.isSymlink && item.name.pathExtension.length &&
-            [item.name containsString:@"."] && ![item.name hasPrefix:@"."]) {
-            NSString *itemName = item.linkTarget.length
-                ? FFAppContainerItemName(item.linkTarget) : nil;
-            item.displayName = itemName ?: FFAppDisplayName(item.name);
-            item.isAppContainer = YES;
-            item.containerIdentifier = item.name;
-        }
-        // App Data 容器行：Primary=App 显示名，Secondary="标识符 · 时间"
-        // （与普通目录的信息层级不同）。
-        if (item.isAppContainer) {
-            NSString *identifier = item.containerIdentifier.length
-                ? item.containerIdentifier : item.name;
-            NSString *time = item.modificationDate ?
-                [self formatDate:item.modificationDate] : nil;
-            item.detail = [NSString stringWithFormat:@"%@%@%@",
-                identifier, time ? @" · " : @"",
-                time ?: @""];
-            continue;
-        }
         // 列表只展示当前决策需要的信息（ADR-013）。xattr / 权限 /
         // 链接完整目标等慢数据一律推迟到 FFFileInfoViewController。
         NSString *primary;
@@ -1151,7 +1058,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 {
     FFEntry *entry = [FFEntry new];
     entry.name = self.currentPath.lastPathComponent.length ?
-        self.currentPath.lastPathComponent : MCMVirtualRoot();
+        self.currentPath.lastPathComponent : @"文件";
     entry.path = self.currentPath;
     entry.isDirectory = YES;
     entry.isSymlink = NO;
@@ -1600,8 +1507,6 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     if (item.isDirectory) return [self symbolImage:@"folder.fill" tint:nil];
     if (item.isSymlink) return [self symbolImage:@"link" tint:nil];
-    // App 数据容器（AppData 下）：与普通蓝色文件夹区分开的容器语义图标。
-    if (item.isAppContainer) return [self symbolImage:@"cube" tint:nil];
     NSString *ext = item.name.pathExtension.lowercaseString;
     static NSDictionary<NSString *, NSString *> *map;
     static dispatch_once_t onceToken;
@@ -1784,11 +1689,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 #pragma mark - Breadcrumb
 
 // 显示规则：只展示"返回上级"层级链，当前目录不重复展示（导航标题已经
-// 告诉用户在哪）。MCM 虚拟根之下从 Device Storage 起显示；其他路径最多
-// 显示最后 2 个祖先级。绝不展示完整 /private/var/... 链路。
+// 告诉用户在哪）。文件根之下展示 "文件"；其他路径最多显示最后 2 个祖先级。
 - (void)updateBreadcrumbVisibility
 {
-    NSString *root = MCMVirtualRoot();
+    NSString *root = FFStorageRootPath().stringByStandardizingPath;
     BOOL atRoot = [self.currentPath isEqualToString:root];
     self.breadcrumbHeightConstraint.constant = atRoot ? 0 : 32;
     self.breadcrumbView.hidden = atRoot;
@@ -1798,7 +1702,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
     NSString *base = [self.currentPath hasPrefix:root] ? root : nil;
     if (base) {
-        [names addObject:@"Device Storage"];
+        [names addObject:@"文件"];
         [paths addObject:base];
         NSString *relative = [self.currentPath substringFromIndex:base.length];
         for (NSString *component in [relative pathComponents])
@@ -1811,8 +1715,6 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         if (names.count > 1) {
             [names removeLastObject];
             [paths removeLastObject];
-        } else {
-            // 当前目录就是根下第一层：只保留 "Device Storage ＞"。
         }
     } else {
         NSArray<NSString *> *components = self.currentPath.pathComponents;
@@ -2115,11 +2017,6 @@ static NSString *FFFilterTitle(FFFilterMode mode)
             })];
             [section3 addObject:descriptor(@"解压", @"shippingbox", NO, ^{
                 [weakSelf extractEntry:item];
-            })];
-        }
-        if ([ext isEqualToString:@"ipa"]) {
-            [section3 addObject:descriptor(@"安装", @"arrow.down.app", NO, ^{
-                [weakSelf openWithViewer:item viewerID:@"installer"];
             })];
         }
         [section4 addObject:descriptor(@"用其他查看器打开",
@@ -2651,10 +2548,7 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     NSString *stem = [FFArchiveService archiveStemForPath:item.path];
     NSString *sibling = [self.currentPath stringByAppendingPathComponent:
         [stem stringByAppendingString:@" (解压)"]];
-    NSString *documents = NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *extractedRoot = [[documents stringByAppendingPathComponent:@"Device Storage"]
-        stringByAppendingPathComponent:@"Extracted"];
+    NSString *extractedRoot = [FFStorageRootPath() stringByAppendingPathComponent:@"Extracted"];
     NSString *fallbackDestination = [extractedRoot stringByAppendingPathComponent:
         [stem stringByAppendingFormat:@"-%@",
             [[[NSUUID UUID] UUIDString] substringToIndex:8]]];

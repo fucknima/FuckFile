@@ -3,8 +3,6 @@
 #import "FFImportService.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
-#import "FFSystemAccessManager.h"
-#import "MCMManager+ExtensionData.h"
 
 NSNotificationName const FFSharedInboxDidImportNotification =
     @"FFSharedInboxDidImportNotification";
@@ -35,31 +33,15 @@ static const NSTimeInterval kFFShareStreamRecoveryDelay = 180.0;
 {
     NSMutableOrderedSet<NSString *> *roots = [NSMutableOrderedSet orderedSet];
 
+    // App Group is the only file-based bridge. When the signer does not grant
+    // the group entitlement, the share extension uses the loopback bridge in
+    // FFLocalShareBridge instead.
     NSString *groupInbox = [self appGroupInboxPath];
     if (groupInbox.length) {
         [roots addObject:groupInbox];
         FFLogTag(@"ShareInbox", @"bridge app-group=%@", groupInbox);
     } else {
         FFLogTag(@"ShareInbox", @"app-group unavailable");
-    }
-
-    if (FFSystemAccessManager.sharedManager.enabled &&
-        FFSystemAccessManager.sharedManager.loadedThisSession) {
-        NSString *mcmError = nil;
-        NSString *extensionRoot = [[MCMManager sharedManager]
-            extensionContainerPathForIdentifier:FFShareExtensionBundleIdentifier
-            error:&mcmError];
-        if (extensionRoot.length) {
-            NSString *extensionInbox = [[extensionRoot stringByAppendingPathComponent:@"Documents"]
-                stringByAppendingPathComponent:FFShareInboxDirectoryName];
-            [roots addObject:extensionInbox];
-            FFLogTag(@"ShareInbox", @"bridge extension-data=%@", extensionInbox);
-        } else {
-            FFLogTag(@"ShareInbox", @"class-4 bridge unavailable detail=%@",
-                mcmError ?: @"(nil)");
-        }
-    } else {
-        FFLogTag(@"ShareInbox", @"class-4 bridge skipped (advanced access disabled/not loaded)");
     }
 
     return roots.array;

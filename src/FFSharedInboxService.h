@@ -6,10 +6,9 @@ FOUNDATION_EXPORT NSNotificationName const FFSharedInboxDidImportNotification;
 
 @interface FFSharedInboxService : NSObject
 
-// Consumes both bridges:
-// 1) LCSign-style App Group when the final signature grants it;
-// 2) extension-local Documents via MobileHouseArrest class-4 Extension Data.
-// The second path makes sharing survive signers that strip App Group entitlements.
+// Consumes the App Group inbox when the signer grants the shared container.
+// When the group is unavailable the share extension streams files over the
+// loopback bridge instead (FFLocalShareBridge).
 + (void)processPendingWithCompletion:(void (^ _Nullable)(NSUInteger imported,
     NSArray<NSString *> *destinations, NSArray<NSError *> *errors))completion;
 

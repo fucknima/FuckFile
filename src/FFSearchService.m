@@ -1,10 +1,6 @@
 #import "FFSearchService.h"
 #import "FFLogger.h"
 #import "FFStorageEnvironment.h"
-#import "FFSystemAccessManager.h"
-#import "FFAppNames.h"
-#import "FFAppDataRegistry.h"
-#import "FFAppDataVirtualPath.h"
 
 #import <dirent.h>
 #import <errno.h>
@@ -137,21 +133,6 @@ static BOOL FFResolvedPathIsInsideRoot(NSString *path, NSString *root)
     self.completionStatus = FFSearchCompletionStatusCancelled;
 }
 
-- (NSString *)displayNameForEntryName:(NSString *)name path:(NSString *)child parent:(NSString *)parent
-{
-    if ([parent.stringByStandardizingPath isEqualToString:FFAppDataVirtualPath().stringByStandardizingPath]) {
-        NSString *registered = [FFAppDataRegistry.sharedRegistry displayNameForIdentifier:name];
-        if (registered.length) return registered;
-
-        NSString *real = FFResolvedPath(child);
-        if (real.length) {
-            NSString *metadataName = FFAppContainerItemName(real);
-            if (metadataName.length) return metadataName;
-        }
-    }
-    return FFAppDisplayName(name);
-}
-
 - (void)markPartialWithMessage:(NSString *)message
 {
     if (self.completionStatus == FFSearchCompletionStatusCompleted)
@@ -167,12 +148,6 @@ static BOOL FFResolvedPathIsInsideRoot(NSString *path, NSString *root)
         self.truncatedByDepth = YES;
         [self markPartialWithMessage:nil];
         return NO;
-    }
-
-    BOOL advancedReady = FFSystemAccessManager.sharedManager.ready;
-    if (advancedReady && FFAppDataIsVirtualRootPath(path)) {
-        [FFAppDataRegistry.sharedRegistry prepareVirtualRootAndMigrateLegacyLinks];
-        FFAppDataMaterializeKnownForTraversal(4);
     }
 
     // The visible root may itself be a managed symlink. Resolve it once, but
@@ -219,19 +194,16 @@ static BOOL FFResolvedPathIsInsideRoot(NSString *path, NSString *root)
         if (FFIsInternalStorageEntry(path, name)) continue;
 
         NSString *child = [path stringByAppendingPathComponent:name];
-        if (!advancedReady && FFPathRequiresSystemAccess(child)) continue;
 
         struct stat status = {0};
         if (lstat(child.fileSystemRepresentation, &status) != 0) continue;
         BOOL isSymlink = S_ISLNK(status.st_mode);
         BOOL isDirectory = S_ISDIR(status.st_mode);
-        NSString *displayName = [self displayNameForEntryName:name path:child parent:path];
-        BOOL matches = FFSearchTextMatches(name, needle) ||
-            FFSearchTextMatches(displayName, needle);
+        BOOL matches = FFSearchTextMatches(name, needle);
         if (matches) {
             FFFoundItem *item = [FFFoundItem new];
             item.name = name;
-            item.displayName = displayName;
+            item.displayName = name;
             item.path = child;
             item.isDirectory = isDirectory;
             item.size = S_ISREG(status.st_mode) ? (unsigned long long)status.st_size : 0;
@@ -275,7 +247,6 @@ static BOOL FFResolvedPathIsInsideRoot(NSString *path, NSString *root)
             subtreeComplete = NO;
             break;
         }
-        if (!FFSystemAccessManager.sharedManager.ready && FFPathRequiresSystemAccess(sub)) continue;
         BOOL childComplete = [self searchFor:needle underPath:sub depth:depth + 1
                                   generation:generation batch:batch];
         if (!childComplete) subtreeComplete = NO;

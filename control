@@ -1,8 +1,8 @@
-Package: com.fuckfile.containers
+Package: com.fucknima.fuckfile
 Name: FuckFile
 Version: 1.1.3
 Architecture: iphoneos-arm64
-Description: Jailed container file manager (MCM identity bypass) - unsigned IPA from GitHub Actions
+Description: Sandboxed iOS file manager - unsigned IPA from GitHub Actions
 Maintainer: fucknima
 Author: fucknima
 Section: Utilities

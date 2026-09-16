@@ -22,7 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)documentsRoot;
 
 // Resolves the parent path and final name of `path` for a mutation. The parent
-// itself is opened with O_NOFOLLOW immediately before the mutation; AppData
+// itself is opened with O_NOFOLLOW immediately before the mutation; virtual
 // intermediate links are followed by the kernel only when the active MHA lease
 // covers their target. Returns nil and sets *errorMessage on failure.
 + (NSString * _Nullable)resolveParentForMutation:(NSString *)path

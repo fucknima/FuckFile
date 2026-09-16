@@ -172,7 +172,7 @@ static id FFPlistDeepMutableCopy(id object)
         return NO;
     }
 
-    // Read-back verification protects the live AppData use case from reporting a
+    // Read-back verification protects live edits from reporting a
     // successful save when the replacement was truncated or immediately invalid.
     NSError *verifyReadError = nil;
     NSData *verifyData = [NSData dataWithContentsOfFile:target

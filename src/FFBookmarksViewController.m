@@ -2,7 +2,6 @@
 #import "FFBookmarksService.h"
 #import "FFBrowserViewController.h"
 #import "FFStorageEnvironment.h"
-#import "FFSystemAccessManager.h"
 #import "FFFileMetadataService.h"
 
 @interface FFBookmarksViewController ()
@@ -104,19 +103,16 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell"];
 
     FFBookmark *bookmark = self.items[indexPath.row];
-    BOOL gated = FFPathRequiresSystemAccess(bookmark.path) && !FFSystemAccessManager.sharedManager.ready;
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = bookmark.name.length ? bookmark.name : bookmark.path.lastPathComponent;
     config.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     config.textProperties.adjustsFontForContentSizeCategory = YES;
-    config.secondaryText = gated
-        ? @"需要高级系统访问"
-        : FFAbbreviatedDisplayPath(bookmark.path);
+    config.secondaryText = FFAbbreviatedDisplayPath(bookmark.path);
     config.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     config.secondaryTextProperties.adjustsFontForContentSizeCategory = YES;
     config.secondaryTextProperties.numberOfLines = 1;
-    config.secondaryTextProperties.color = gated ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor;
-    config.image = [UIImage systemImageNamed:gated ? @"lock" : (bookmark.isDirectory ? @"folder" : @"doc")];
+    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    config.image = [UIImage systemImageNamed:bookmark.isDirectory ? @"folder" : @"doc"];
     cell.contentConfiguration = config;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
@@ -126,14 +122,6 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFBookmark *bookmark = self.items[indexPath.row];
-    if (FFPathRequiresSystemAccess(bookmark.path) && !FFSystemAccessManager.sharedManager.ready) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"需要高级系统访问"
-            message:@"该收藏或最近记录位于 App Data。请先在设置中启用并成功加载高级系统访问。"
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
 
     __weak typeof(self) weakSelf = self;
     FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:FFStorageRootPath()];

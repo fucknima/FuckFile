@@ -13,7 +13,6 @@
 #import "FFMachOInspectorViewController.h"
 #import "FFSQLiteBrowserViewController.h"
 #import "FFArchiveBrowserViewController.h"
-#import "FFIPaInstallerViewController.h"
 #import "FFPreviewRouter.h"
 #import "FFLogger.h"
 
@@ -162,7 +161,6 @@
             @[@"plist", @"属性表编辑器", @"list.bullet.rectangle", @"结构化编辑 plist（XML/二进制）"],
             @[@"text", @"文本编辑器", @"doc.plaintext", @"txt/log/md/json/xml/源码等文本；脚本仅按文本打开，不执行"],
             @[@"sqlite", @"SQLite3 编辑器", @"cylinder.split.1x2", @"sqlite/sqlite3/sqlitedb/db：表、视图、索引、分页浏览与 SQL 查询（只读）"],
-            @[@"installer", @"IPA 安装器", @"arrow.down.app", @"解析 IPA 应用信息；能否安装取决于运行环境权限"],
             @[@"archive", @"压缩包浏览器", @"archivebox", @"ZIP/IPA、7Z、RAR/RAR5、TAR、TGZ/TBZ/TXZ、GZ/BZ2/XZ 包内浏览与安全提取"],
             @[@"hex", @"十六进制编辑器", @"waveform.path.ecg", @"分页式 OFFSET/HEX/ASCII 查看，支持字节修改、保存与取消"],
             @[@"macho", @"Mach-O 检查器", @"cpu", @"架构切片、Load Commands、段/节、动态库、UUID、签名、Entitlements 与加密信息"],
@@ -225,7 +223,6 @@
     if ([viewerID isEqualToString:@"hex"]) return [[FFHexEditorViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"macho"]) return [[FFMachOInspectorViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"archive"]) return [[FFArchiveBrowserViewController alloc] initWithArchivePath:path];
-    if ([viewerID isEqualToString:@"installer"]) return [[FFIPaInstallerViewController alloc] initWithIpaPath:path];
     return nil;
 }
 - (UIViewController *)imageViewerAtPath:(NSString *)path title:(NSString *)title

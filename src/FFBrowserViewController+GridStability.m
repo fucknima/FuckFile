@@ -153,7 +153,6 @@ static NSArray<FFEntry *> *FFCurrentGridEntries(FFBrowserViewController *browser
 
 static NSString *FFGridDetail(FFBrowserViewController *browser, FFEntry *item)
 {
-    if (item.isAppContainer) return @"App 数据";
     if (item.isDirectory) return @"文件夹";
     if (item.isSymlink) return @"符号链接";
     return [browser formatSize:item.size] ?: @"";

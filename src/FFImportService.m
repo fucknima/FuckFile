@@ -1,7 +1,6 @@
 #import "FFImportService.h"
 #import "FFCopyEngine.h"
 #import "FFLogger.h"
-#import "MCMManager.h"
 
 #import <errno.h>
 
@@ -75,9 +74,10 @@ static BOOL FFImportPathInsideRoot(NSString *path, NSString *root)
     NSString *staging = [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@".ffimport-%@", NSUUID.UUID.UUIDString]];
 
+    // Files already inside this app's container can be copied directly; any
+    // other source goes through the security-scoped / coordinated path.
     NSString *home = NSHomeDirectory();
-    BOOL stableLocalSource = FFImportPathInsideRoot(url.path, home) ||
-        [[MCMManager sharedManager] hasActiveLeaseForPath:url.path];
+    BOOL stableLocalSource = FFImportPathInsideRoot(url.path, home);
 
     __block BOOL copied = NO;
     __block NSError *copyError = nil;

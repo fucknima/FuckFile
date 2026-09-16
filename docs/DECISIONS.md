@@ -1,3 +1,7 @@
+> **2026-09-14（ADR-019）**：跨容器访问、MHA/MCM 身份、App Data、
+> 在线 App 名解析、LaunchServices 扫描、存储清理与 IPA 安装器已全部移除。
+> 本文件中这些能力的历史 ADR 仅作记录，不代表当前产品行为。
+
 # Architecture Decision Records
 
 ## ADR-001
@@ -688,3 +692,37 @@ QuickLook→Hex）。
 
 约束：不恢复任何 .ips 专用分支；后续若重新需要，应以「真实样本验证过的
 完整解析器」为准重新立项。
+
+## ADR-019
+
+日期：2026-09-14
+
+决定：
+
+**移除全部跨容器访问 / 私有身份能力，FuckFile 回归普通沙盒文件管理器。**
+
+删除的代码与能力：
+
+- `MCMManager`、`MCMBridge`、`MCMManager+ExtensionData/MobileGestaltLink/DiagnosticsPlacement`
+- `FFSystemAccessManager`（高级系统访问开关与能力探测）
+- App Data 体系：`FFAppDataRegistry`、`FFAppDataLeaseManager`、`FFAppDataScanCoordinator`
+  （含 StructuralInventory / MobileGestaltRefresh）、`FFAppDataScanToast`、
+  `FFAppDataVirtualPath`、`FFAppDataVirtualBrowser`
+- `FFAppNames`、`FFAppNameCatalog`、`FFOnlineAppNameResolver`（App 名解析与在线补全）
+- `FFLSDiscovery`、`FFLSStoreInventory`（LaunchServices csstore 扫描）
+- `FFStorageCleaner` / `FFStorageCleanerViewController`（第三方容器 Caches/tmp 清理）
+- `FFIPaInstallerViewController`（LSApplicationWorkspace 私有安装 API）；
+  `.ipa` 关联改为 ZIP 浏览器，`FFIPAMetadataService` 仅保留图标与元数据读取
+- Share Extension 的 MHA class-4 取件路径与私有打开 API；保留 App Group 与
+  `FFLocalShareBridge` localhost 直传
+- 构建身份伪装：bundle id 改回 `com.fucknima.fuckfile`，App Group 改为
+  `group.com.fucknima.fuckfile`；CI 不再覆写 `CFBundleIdentifier` 为系统身份
+
+`FFStorageEnvironment` 收敛为沙盒最小面：Documents 根、Imported、诊断目录、
+遗留路径规范化与一次性迁移（迁移时删除 AppData/MobileGestalt/容器符号链接等旧产物）。
+
+原因：设备系统更新后原 MHA/MCM 身份信任链路失效，跨容器能力无法再工作；
+保留相关代码只会带来死路径、误报与合规风险。产品定位改为普通文件管理器。
+
+约束：不得重新引入任何跨沙盒访问、身份伪装、私有安装 API 或系统容器枚举；
+CI 的 Review regression guards 会拒绝这些文件/符号重新出现。
