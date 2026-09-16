@@ -28,6 +28,11 @@ extern NSString * const FFFileAssociationsDidChangeNotification;
 // override if present, otherwise built-in default, otherwise nil.
 - (nullable NSString *)effectiveViewerIDForExtension:(NSString *)extension;
 
+// Built-in default viewer for one extension key, ignoring user overrides.
+// Used by the viewer picker to decide which viewers belong to an extension
+// family (compound keys like "tar.gz" match longest-first).
++ (nullable NSString *)builtinViewerIDForExtension:(NSString *)extension;
+
 // The extension's source: YES = stored override / custom entry,
 // NO = built-in default, NO when unknown.
 - (BOOL)hasOverrideForExtension:(NSString *)extension;

@@ -1,5 +1,6 @@
 #import "FFViewerRegistry.h"
 
+#import "FFImageViewerViewController.h"
 #import "FFPlistEditorViewController.h"
 #import "FFTextEditorViewController.h"
 #import "FFPdfReaderViewController.h"
@@ -14,7 +15,6 @@
 #import "FFPreviewRouter.h"
 #import "FFLogger.h"
 
-#import <objc/runtime.h>
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 
@@ -25,86 +25,6 @@
 @property(nonatomic, copy, readwrite) NSString *summary;
 @end
 @implementation FFViewerInfo
-@end
-
-#pragma mark - Image
-
-@interface FFImageZoomView : UIView <UIScrollViewDelegate>
-@property(nonatomic, strong) UIImageView *imageView;
-- (instancetype)initWithImage:(UIImage *)image;
-@end
-
-@implementation FFImageZoomView
-- (instancetype)initWithImage:(UIImage *)image
-{
-    self = [super init];
-    if (self) {
-        UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:self.bounds];
-        scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        scrollView.backgroundColor = UIColor.systemBackgroundColor;
-        scrollView.delegate = self;
-        scrollView.minimumZoomScale = 1.0;
-        scrollView.maximumZoomScale = 8.0;
-        [self addSubview:scrollView];
-
-        _imageView = [[UIImageView alloc] initWithImage:image];
-        _imageView.contentMode = UIViewContentModeScaleAspectFit;
-        _imageView.frame = scrollView.bounds;
-        _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        _imageView.userInteractionEnabled = YES;
-        [scrollView addSubview:_imageView];
-
-        UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(doubleTapped:)];
-        doubleTap.numberOfTapsRequired = 2;
-        [_imageView addGestureRecognizer:doubleTap];
-    }
-    return self;
-}
-- (void)layoutSubviews
-{
-    [super layoutSubviews];
-    UIScrollView *scrollView = (UIScrollView *)self.subviews.firstObject;
-    if (scrollView && self.imageView.image) {
-        CGSize bounds = scrollView.bounds.size, image = self.imageView.image.size;
-        if (bounds.width > 0 && bounds.height > 0 && image.width > 0 && image.height > 0) {
-            CGFloat scale = MIN(bounds.width / image.width, bounds.height / image.height);
-            self.imageView.frame = CGRectMake(0, 0, image.width * scale, image.height * scale);
-            scrollView.contentSize = self.imageView.frame.size;
-        }
-    }
-}
-- (UIView *)viewForZoomingInScrollView:(__unused UIScrollView *)scrollView { return self.imageView; }
-- (void)doubleTapped:(UITapGestureRecognizer *)gesture
-{
-    UIScrollView *scrollView = (UIScrollView *)gesture.view.superview;
-    if (scrollView.zoomScale > scrollView.minimumZoomScale + 0.01) {
-        [scrollView setZoomScale:scrollView.minimumZoomScale animated:YES];
-        return;
-    }
-    CGPoint center = [gesture locationInView:gesture.view];
-    CGFloat target = MIN(scrollView.maximumZoomScale, 3.0);
-    CGRect rect = CGRectMake(center.x - scrollView.bounds.size.width / target / 2,
-                             center.y - scrollView.bounds.size.height / target / 2,
-                             scrollView.bounds.size.width / target,
-                             scrollView.bounds.size.height / target);
-    [scrollView zoomToRect:rect animated:YES];
-}
-@end
-
-@interface FFFileShareTarget : NSObject
-@property(nonatomic, copy) NSURL *fileURL;
-@property(nonatomic, weak) UINavigationController *nav;
-- (void)share:(UIBarButtonItem *)sender;
-@end
-@implementation FFFileShareTarget
-- (void)share:(UIBarButtonItem *)sender
-{
-    if (!self.fileURL) return;
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[self.fileURL] applicationActivities:nil];
-    activity.popoverPresentationController.barButtonItem = sender;
-    UIViewController *presenter = self.nav.topViewController;
-    if (presenter) [presenter presentViewController:activity animated:YES completion:nil];
-}
 @end
 
 #pragma mark - Media
@@ -150,7 +70,7 @@
     self = [super init];
     if (self) {
         NSArray *specs = @[
-            @[@"image", @"图片浏览器", @"photo", @"PNG/JPG/GIF/HEIC/WEBP/BMP/TIFF/ICO/CAR"],
+            @[@"image", @"图片浏览器", @"photo", @"PNG/JPG/GIF/HEIC/WEBP/BMP/TIFF/ICO/CAR 等；缩放、左右切换、分享、删除、文件信息"],
             @[@"quicklook", @"快速查看", @"square.on.square.intersection.dashed", @"系统 Quick Look：仅作为无专用查看器格式与失败场景的手动兜底"],
             @[@"office-document", @"Office 阅读器", @"doc.text.magnifyingglass", @"离线查看 DOC/DOCX/PPT/PPTX/RTF/ODF/iWork/WPS 等办公文档；不上传文件"],
             @[@"spreadsheet", @"电子表格", @"tablecells", @"Univer + SheetJS 离线查看 XLS/XLSX/XLSB/XLSM/CSV/TSV/ODS 等，不上传文件"],
@@ -198,7 +118,13 @@
     }
     self.currentNav = nav;
     UIViewController *viewer = [self viewControllerForViewerID:viewerID path:path title:title];
-    if (!viewer) { FFLogTag(@"Viewer", @"build FAILED viewer=%@ path=%@", viewerID, path); return NO; }
+    if (!viewer) {
+        // A viewer can pass the availability check yet fail to build for this
+        // file (e.g. an undecodable image). Never fail silently.
+        FFLogTag(@"Viewer", @"build FAILED viewer=%@ path=%@", viewerID, path);
+        [FFPreviewRouter toastOnNav:nav message:@"该文件无法用所选查看器打开"];
+        return NO;
+    }
     viewer.title = title.length ? title : path.lastPathComponent;
     [nav pushViewController:viewer animated:YES];
     FFLogTag(@"Viewer", @"open viewer=%@ path=%@", viewerID, path);
@@ -206,7 +132,7 @@
 }
 - (nullable UIViewController *)viewControllerForViewerID:(NSString *)viewerID path:(NSString *)path title:(NSString *)title
 {
-    if ([viewerID isEqualToString:@"image"]) return [self imageViewerAtPath:path title:title];
+    if ([viewerID isEqualToString:@"image"]) return [[FFImageViewerViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"media"]) return [self mediaViewerAtPath:path];
     if ([viewerID isEqualToString:@"plist"]) return [[FFPlistEditorViewController alloc] initWithPath:path];
     if ([viewerID isEqualToString:@"text"]) return [[FFTextEditorViewController alloc] initWithPath:path];
@@ -220,22 +146,6 @@
     if ([viewerID isEqualToString:@"macho"]) return [[FFMachOInspectorViewController alloc] initWithFilePath:path];
     if ([viewerID isEqualToString:@"archive"]) return [[FFArchiveBrowserViewController alloc] initWithArchivePath:path];
     return nil;
-}
-- (UIViewController *)imageViewerAtPath:(NSString *)path title:(NSString *)title
-{
-    UIImage *image = [UIImage imageWithContentsOfFile:path];
-    if (!image) return nil;
-    UIViewController *viewer = [UIViewController new];
-    FFImageZoomView *zoomView = [[FFImageZoomView alloc] initWithImage:image];
-    zoomView.frame = viewer.view.bounds;
-    zoomView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [viewer.view addSubview:zoomView];
-    FFFileShareTarget *target = [FFFileShareTarget new];
-    target.fileURL = [NSURL fileURLWithPath:path]; target.nav = self.currentNav;
-    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:target action:@selector(share:)];
-    objc_setAssociatedObject(share, "shareTarget", target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    viewer.navigationItem.rightBarButtonItem = share;
-    return viewer;
 }
 - (UIViewController *)mediaViewerAtPath:(NSString *)path
 {

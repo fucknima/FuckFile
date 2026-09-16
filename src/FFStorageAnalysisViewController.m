@@ -100,7 +100,7 @@ static unsigned long long FFStorageDirectorySize(NSString *path)
 @property(nonatomic) NSUInteger scannedFiles;
 @property(nonatomic) BOOL scanning;
 @property NSUInteger scanGeneration;
-@property(nonatomic, weak) UIActivityIndicatorView *spinner;
+@property(nonatomic, strong) UIBarButtonItem *rescanItem;
 @end
 
 @implementation FFStorageAnalysisViewController
@@ -115,15 +115,12 @@ static unsigned long long FFStorageDirectorySize(NSString *path)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    spinner.hidesWhenStopped = YES;
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithCustomView:spinner];
-    self.spinner = spinner;
-    UIBarButtonItem *rescan = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描"
+    // 扫描状态只由一个按钮表达（标题在「重新扫描/扫描中…」间切换）。
+    // 不要用 UIActivityIndicatorView 做 bar button 的自定义视图：iOS 26
+    // 会给它套一层玻璃胶囊，停止后仍显示一个灰色圆斑。
+    self.rescanItem = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描"
         style:UIBarButtonItemStylePlain target:self action:@selector(rescan)];
-    self.navigationItem.leftBarButtonItem = rescan;
+    self.navigationItem.leftBarButtonItem = self.rescanItem;
     self.categoryBytes = @[];
     [self refreshDeviceSpace];
     [self startScan];
@@ -175,7 +172,8 @@ static unsigned long long FFStorageDirectorySize(NSString *path)
     NSUInteger generation = self.scanGeneration;
     self.scanning = YES;
     self.scannedFiles = 0;
-    [self.spinner startAnimating];
+    self.rescanItem.enabled = NO;
+    self.rescanItem.title = @"扫描中…";
     [self.tableView reloadData];
 
     NSString *root = FFStorageRootPath();
@@ -256,7 +254,8 @@ static unsigned long long FFStorageDirectorySize(NSString *path)
             strongSelf.trashBytes = trash;
             strongSelf.cacheBytes = cacheBytes;
             strongSelf.categoryBytes = categoryResult;
-            [strongSelf.spinner stopAnimating];
+            strongSelf.rescanItem.enabled = YES;
+            strongSelf.rescanItem.title = @"重新扫描";
             [strongSelf.tableView reloadData];
             FFLogTag(@"Storage", @"scan done files=%lu appData=%llu cache=%llu trash=%llu",
                 (unsigned long)files, appData, cacheBytes, trash);

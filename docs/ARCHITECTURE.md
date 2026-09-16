@@ -112,7 +112,7 @@ provider 回调存活期间立即持久化          │
 
 | viewer ID | 名称 | 实现 |
 |---|---|---|
-| image | 图片浏览器 | Registry 内联 UIImageView + 分享 |
+| image | 图片浏览器 | `FFImageViewerViewController`（缩放、目录内左右切换、分享、文件信息、移到回收站） |
 | quicklook | 快速查看 | `FFQuickLookViewController`（系统 QLPreviewController，fallback 预览） |
 | web | Web Viewer | `FFWebViewerViewController`（WKWebView；本地 HTML read-access 根限定在文件所在目录；解析 .url/.webloc） |
 | plist | 属性表编辑器 | `FFPlistEditorViewController`（复用） |

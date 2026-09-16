@@ -212,6 +212,21 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
     return result ?: @"";
 }
 
++ (nullable NSString *)builtinViewerIDForExtension:(NSString *)extension
+{
+    NSString *key = [self normalizedExtension:extension ?: @""];
+    if (!key.length) return nil;
+    NSDictionary<NSString *, NSString *> *defaults = FFDefaultAssociations();
+    NSArray<NSString *> *parts = [key componentsSeparatedByString:@"."];
+    for (NSUInteger start = 0; start < parts.count; start++) {
+        NSString *suffix = [[parts subarrayWithRange:
+            NSMakeRange(start, parts.count - start)] componentsJoinedByString:@"."];
+        NSString *viewer = defaults[suffix];
+        if (viewer.length) return viewer;
+    }
+    return nil;
+}
+
 - (NSDictionary<NSString *, NSString *> *)overrides
 {
     id stored = [NSUserDefaults.standardUserDefaults dictionaryForKey:kFFAssociationOverridesKey];

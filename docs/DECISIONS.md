@@ -807,3 +807,34 @@ Service（SearchService/ImportService/TaskManager/ThumbnailService）为
 
 约束：网络位置客户端（WebDAV/SMB/SFTP）不在本批；存储分析不做按目录的
 Treemap 或删除建议，只做只读统计与缓存清理。
+
+## ADR-022
+
+日期：2026-09-16
+
+决定：
+
+**查看器交互一轮 + 存储页导航栏修正。**
+
+1. 存储空间页不再用 `UIActivityIndicatorView` 当 bar button 自定义视图：
+   iOS 26 会给自定义视图套玻璃胶囊，停止后留下灰色圆斑。改为扫描状态由
+   左键标题表达（「重新扫描」/「扫描中…」并禁用），扫描完成恢复。
+2. 图片浏览器独立为 `FFImageViewerViewController`（原 Registry 内联实现）：
+   目录内图片列表（内置默认关联为 image 的扩展名，复用
+   `FFFileAssociationService builtinViewerIDForExtension:`），捏合/双击缩放，
+   左右滑动或底栏箭头切换，计数「n / N」，分享、文件信息、移到回收站；
+   放大状态下滑动只平移不切图；删除后自动落到相邻图片，删空则返回。
+3. 查看器选择器（FFViewerPickerViewController）只列出与当前扩展名家族
+   相关的查看器：通用兜底（快速查看/Hex/文本）+ 内置默认所属查看器 +
+   当前生效关联；未知扩展名只显示通用兜底。原因：此前 13 个查看器全量
+   列出，选「图片浏览器」开 zip 这类组合只会静默失败。
+4. 打开失败不再静默：`FFViewerRegistry openPath:` 在查看器无法为具体文件
+   构建 VC 时 toast「该文件无法用所选查看器打开」；选择器沿用该反馈。
+
+原因：真实反馈图暴露 iOS 26 bar button 自定义视图的渲染问题；另外查看器
+体系此前只有「打开成功」路径，能力不匹配时既无过滤也无反馈，属于交互
+死胡同。修改集中在 Registry/Picker/ImageViewer，不动关联服务语义与
+其他查看器行为。
+
+约束：不改变自动重命名、冲突系统与既有查看器（Office/PDF/Hex/SQLite/
+Archive/Mach-O/媒体/Web/plist/文本）的交互；PDF 等未受影响。

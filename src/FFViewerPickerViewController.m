@@ -8,6 +8,7 @@
 @interface FFViewerPickerViewController ()
 @property(nonatomic, strong) FFEntry *item;
 @property(nonatomic, copy) NSString *extension;
+@property(nonatomic, copy) NSArray<FFViewerInfo *> *viewers;
 @end
 
 @implementation FFViewerPickerViewController
@@ -40,6 +41,26 @@
     [NSNotificationCenter.defaultCenter addObserver:self
         selector:@selector(tableReload)
         name:FFFileAssociationsDidChangeNotification object:nil];
+    [self reloadViewers];
+}
+
+// 只列出与该扩展名家族相关的查看器：通用兜底（快速查看/Hex/文本）、
+// 内置默认所属查看器，以及当前生效的关联（用户可能显式改过）。
+// 否则选择「图片浏览器」打开 zip 这类组合只会静默失败。
+- (void)reloadViewers
+{
+    FFFileAssociationService *associations = [FFFileAssociationService sharedService];
+    NSString *effective = [associations effectiveViewerIDForExtension:self.extension];
+    NSString *builtin = [FFFileAssociationService builtinViewerIDForExtension:self.extension];
+    NSSet<NSString *> *generic = [NSSet setWithArray:@[@"quicklook", @"hex", @"text"]];
+    NSMutableArray<FFViewerInfo *> *result = [NSMutableArray array];
+    for (FFViewerInfo *viewer in [FFViewerRegistry sharedRegistry].allViewers) {
+        if ([generic containsObject:viewer.viewerID] ||
+            (builtin.length && [viewer.viewerID isEqualToString:builtin]) ||
+            (effective.length && [viewer.viewerID isEqualToString:effective]))
+            [result addObject:viewer];
+    }
+    self.viewers = result;
 }
 
 - (void)dealloc
@@ -49,6 +70,7 @@
 
 - (void)tableReload
 {
+    [self reloadViewers];
     [self.tableView reloadData];
 }
 
@@ -57,7 +79,7 @@
 - (NSInteger)tableView:(__unused UITableView *)tableView
     numberOfRowsInSection:(__unused NSInteger)section
 {
-    return (NSInteger)[[FFViewerRegistry sharedRegistry] allViewers].count;
+    return (NSInteger)self.viewers.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -65,8 +87,7 @@
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Viewer"
         forIndexPath:indexPath];
-    FFViewerInfo *viewer =
-        [[FFViewerRegistry sharedRegistry] allViewers][(NSUInteger)indexPath.row];
+    FFViewerInfo *viewer = self.viewers[(NSUInteger)indexPath.row];
     NSString *current = [[FFFileAssociationService sharedService]
         effectiveViewerIDForExtension:self.extension];
     BOOL isDefault = current.length > 0 && [current isEqualToString:viewer.viewerID];
@@ -91,15 +112,15 @@
 - (NSString *)tableView:(__unused UITableView *)tableView
     titleForFooterInSection:(__unused NSInteger)section
 {
-    return self.item ? @"选择后设为该类型的默认关联并立即打开。"
-                     : @"选择后立即生效；扩展名覆盖项可在「文件关联」列表中删除恢复默认。";
+    return self.item ? @"只显示可打开此类型的查看器；选择后设为默认关联并立即打开。"
+                     : @"只显示可打开此类型的查看器；选择后立即生效，覆盖项可在「文件关联」列表中删除恢复默认。";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FFViewerInfo *viewer =
-        [[FFViewerRegistry sharedRegistry] allViewers][(NSUInteger)indexPath.row];
+    if ((NSUInteger)indexPath.row >= self.viewers.count) return;
+    FFViewerInfo *viewer = self.viewers[(NSUInteger)indexPath.row];
     if (!viewer) return;
 
     FFFileAssociationService *service = [FFFileAssociationService sharedService];
