@@ -731,3 +731,33 @@ CI 的 Review regression guards 会拒绝这些文件/符号重新出现。
 UIApplication best-effort 链）保留。Apple 文档明确 `NSExtensionContext.open` 只支持
 Today 与 iMessage 扩展点，分享扩展用公开 API 无法打开宿主 App；移除该链会直接
 破坏「从其他 App 分享文件到 FuckFile」。它不是沙盒逃逸，只是平台限制的绕过。
+
+## ADR-020
+
+日期：2026-09-16
+
+决定：
+
+**删除旧 Word 阅读器（`FFDocxViewerViewController`）及其独立 docx runtime，
+并清理确定性的死代码。**
+
+1. `.docx/.docm/.dotx/.dotm` 统一由 `office-document` 查看器负责（Build 852 起
+   已是默认关联，旧 docx 只能从「用其他查看器打开」进入，属重复实现）。
+   删除内容：`src/FFDocxViewerViewController.{h,m}`、`resources/docx/`、
+   `scripts/prepare_docx_runtime.sh`、Makefile 的 DOCX runtime 检查与
+   `.docx-runtime/DocxAssets` 资源目录、CI 的 DocxAssets 打包校验。
+   `FFOfficeDocumentViewController` 内部本就通过 reamkit/docx-preview 渲染
+   DOCX，能力是旧查看器的超集（含阅读位置持久化、搜索、导出 PDF）。
+2. 删除 3 个仅剩注释的兼容 translation unit：`FFAppDelegate+ShareWakeDedup.m`、
+   `FFFileTaskManager+Persistence.m`、`FFFileTaskManager+Responsiveness.m`。
+3. 删除 PDF 死代码：`FFPDFThumbnailPanelController`（基类从不实例化）与基类
+   `showThumbnails`；缩略图唯一实现为 `FFPDFThumbnailGridController`
+   （由 `FFPdfReaderViewController` 覆写 `showThumbnails` 调用）。
+4. 关联服务加固：`FFFileAssociationService` 读取 override 时校验 viewer ID
+   是否存在，已删除 viewer 的陈旧 override 自动回退内置默认，不再让用户
+   打开时看到「未知查看器」。修复 ADR 移除 viewer 时的通用问题。
+5. `.gitignore` 移除 `.docx-runtime/`、补上此前遗漏的 `.office-runtime/`。
+
+约束：CI 增加防回潮 guard，禁止 `FFDocxViewerViewController`、`DocxAssets`、
+`resources/docx` 重新进入构建。office-document / spreadsheet / 其余查看器
+（含 Mach-O 检查器、IPA 元数据、PDF 阅读器）全部保留。

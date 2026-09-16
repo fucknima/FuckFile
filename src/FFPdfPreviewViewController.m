@@ -76,50 +76,10 @@ static void FFAppendPDFOutlineItems(PDFOutline *node, NSInteger level,
 }
 @end
 
-@interface FFPDFThumbnailPanelController : UIViewController
-@property(nonatomic, weak) PDFView *pdfView;
-@property(nonatomic, strong) PDFThumbnailView *thumbnailView;
-- (instancetype)initWithPDFView:(PDFView *)pdfView;
-@end
-
-@implementation FFPDFThumbnailPanelController
-- (instancetype)initWithPDFView:(PDFView *)pdfView
-{
-    self = [super init];
-    if (self) {
-        _pdfView = pdfView;
-        self.title = @"页面缩略图";
-    }
-    return self;
-}
-- (void)viewDidLoad
-{
-    [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
-    PDFThumbnailView *thumb = [PDFThumbnailView new];
-    thumb.translatesAutoresizingMaskIntoConstraints = NO;
-    thumb.PDFView = self.pdfView;
-    thumb.layoutMode = PDFThumbnailLayoutModeVertical;
-    thumb.thumbnailSize = CGSizeMake(92, 124);
-    thumb.backgroundColor = UIColor.systemGroupedBackgroundColor;
-    [self.view addSubview:thumb];
-    self.thumbnailView = thumb;
-    [NSLayoutConstraint activateConstraints:@[
-        [thumb.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [thumb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [thumb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [thumb.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    ]];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
-}
-- (void)done
-{
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-@end
-
 @interface FFPdfPreviewViewController () <PDFViewDelegate, UITextFieldDelegate>
+// Implemented by FFPdfReaderViewController, the only concrete subclass
+// (it presents the PDFKit thumbnail grid).
+- (void)showThumbnails;
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) PDFView *pdfView;
 @property(nonatomic, strong) PDFDocument *document;
@@ -390,28 +350,6 @@ static void FFAppendPDFOutlineItems(PDFOutline *node, NSInteger level,
             [weakSelf.pdfView goToPage:[weakSelf.document pageAtIndex:page - 1]];
         }]];
     [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)showThumbnails
-{
-    if (!self.document) return;
-    FFPDFThumbnailPanelController *panel =
-        [[FFPDFThumbnailPanelController alloc] initWithPDFView:self.pdfView];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:panel];
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        nav.modalPresentationStyle = UIModalPresentationPopover;
-        nav.preferredContentSize = CGSizeMake(320, 620);
-        nav.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
-    } else {
-        nav.modalPresentationStyle = UIModalPresentationPageSheet;
-        if (@available(iOS 15.0, *)) {
-            nav.sheetPresentationController.detents = @[
-                UISheetPresentationControllerDetent.mediumDetent,
-                UISheetPresentationControllerDetent.largeDetent,
-            ];
-        }
-    }
-    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)showOutline

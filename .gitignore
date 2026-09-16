@@ -3,5 +3,5 @@
 *.ipa
 Payload/
 build/
-.docx-runtime/
 .univer-runtime/
+.office-runtime/

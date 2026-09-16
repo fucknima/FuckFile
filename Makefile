@@ -12,12 +12,8 @@ APPEX_NAME = FuckFileShare
 # incremental builds reuse the generated assets and do not reinstall npm deps.
 # Every runtime is fail-closed: a missing JS bundle must fail the build instead
 # of producing an IPA whose viewer opens to a blank page.
-DOCX_RUNTIME_READY := $(shell bash scripts/prepare_docx_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
 UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
 OFFICE_RUNTIME_READY := $(shell bash scripts/prepare_office_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
-ifeq ($(DOCX_RUNTIME_READY),no)
-$(error Failed to prepare offline DOCX runtime; run scripts/prepare_docx_runtime.sh for details)
-endif
 ifeq ($(UNIVER_RUNTIME_READY),no)
 $(error Failed to prepare offline Univer spreadsheet runtime; run scripts/prepare_univer_runtime.sh for details)
 endif
@@ -29,7 +25,6 @@ FuckFile_FILES = \
 	src/main.m \
 	src/FFAppDelegate.m \
 	src/FFRootTabBarController.m \
-	src/FFAppDelegate+ShareWakeDedup.m \
 	src/FFStorageEnvironment.m \
 	src/FFLogger.m \
 	src/FFBrowserViewController.m \
@@ -61,7 +56,6 @@ FuckFile_FILES = \
 	src/FFPdfReaderViewController.m \
 	src/FFPDFThumbnailGridController.m \
 	src/FFPreviewRouter.m \
-	src/FFDocxViewerViewController.m \
 	src/FFSpreadsheetViewController.m \
 	src/FFOfficeDocumentViewController.m \
 	src/FFViewerStateStore.m \
@@ -73,8 +67,6 @@ FuckFile_FILES = \
 	src/FFIPAMetadataService.m \
 	src/FFFileTask.m \
 	src/FFFileTaskManager.m \
-	src/FFFileTaskManager+Persistence.m \
-	src/FFFileTaskManager+Responsiveness.m \
 	src/FFTasksViewController.m \
 	src/FFSearchService.m \
 	src/FFBookmarksService.m \
@@ -148,7 +140,7 @@ FuckFile_FILES = \
 	third_party/tree-sitter-languages/sql/src/scanner.c
 
 FuckFile_FILES += $(shell find third_party/runestone/0.5.2 -name "*.swift" | sort)
-FuckFile_RESOURCE_DIRS = .docx-runtime/DocxAssets .univer-runtime/bundle .office-runtime/bundle
+FuckFile_RESOURCE_DIRS = .univer-runtime/bundle .office-runtime/bundle
 
 # Keep third-party/noisy warnings scoped down, but do not globally suppress
 # diagnostics that can hide ABI, bounds, initialization, or format bugs.

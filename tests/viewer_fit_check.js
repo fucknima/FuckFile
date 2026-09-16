@@ -205,39 +205,7 @@ function testOfficeAutoFit() {
     'office: resize anchors the centre, got ' + view.scrollLeft + ',' + view.scrollTop);
 }
 
-function testDocxFit() {
-  const view = makeElement();
-  view.clientWidth = 390;
-  const doc = makeElement();
-  const page = makeElement();
-  page.rectWidth = 794;
-  page.rectHeight = 1123;
-  doc.queryNode = page;
-  const zoomLabel = makeElement();
-
-  setupDom({
-    viewport: view,
-    doc,
-    state: makeElement(),
-    search: makeElement(),
-    count: makeElement(),
-    minus: makeElement(),
-    plus: makeElement(),
-    zoom: zoomLabel,
-    prev: makeElement(),
-    next: makeElement(),
-  });
-  loadScript('resources/docx/docx-host.js');
-
-  global.window.FFDocx.fitToWidth();
-  check(zoomLabel.textContent === '48%',
-    'docx: fit-to-width picks 48%, got ' + zoomLabel.textContent);
-  check(doc.style.zoom === '0.48',
-    'docx: fit-to-width applies the zoom, got ' + doc.style.zoom);
-}
-
 testOfficeAutoFit();
-testDocxFit();
 
 if (failures) {
   console.error(failures + ' viewer fit check(s) failed');

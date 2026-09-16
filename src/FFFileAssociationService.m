@@ -1,4 +1,5 @@
 #import "FFFileAssociationService.h"
+#import "FFViewerRegistry.h"
 
 NSString * const FFFileAssociationsDidChangeNotification =
     @"FFFileAssociationsDidChange";
@@ -45,8 +46,8 @@ static NSDictionary<NSString *, NSString *> *FFDefaultAssociations(void)
             // default route for Office formats; it remains a manual fallback.
             // The .docx family shares the unified office-document viewer so
             // fixed-layout zoom, search, page jump and selection behave the
-            // same as .doc/.ppt/…; the older docx viewer stays registered as a
-            // manual option.
+            // same as .doc/.ppt/… (the legacy docx viewer was removed,
+            // ADR-020).
             @"docx": @"office-document", @"docm": @"office-document",
             @"dotx": @"office-document", @"dotm": @"office-document",
             @"xls": @"spreadsheet", @"xlsx": @"spreadsheet", @"xlsm": @"spreadsheet",
@@ -233,8 +234,11 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
         if ([lower characterAtIndex:i] != '.') continue;
         NSString *suffix = [lower substringFromIndex:i + 1];
         if (!suffix.length) continue;
+        // Stale overrides can point at a viewer that no longer exists (e.g.
+        // the removed docx viewer). Unknown IDs fall through to the default
+        // instead of surfacing "未知查看器" on open.
         NSString *override = self.overrides[suffix];
-        if (override.length) return override;
+        if (override.length && [FFViewerRegistry.sharedRegistry viewerForID:override]) return override;
         NSString *builtin = FFDefaultAssociations()[suffix];
         if (builtin.length) return builtin;
     }
@@ -245,7 +249,9 @@ static BOOL FFIsOfficeDocumentFamily(NSString *extension)
 {
     NSString *key = [FFFileAssociationService normalizedExtension:extension];
     if (!key.length) return nil;
-    return self.overrides[key] ?: FFDefaultAssociations()[key];
+    NSString *override = self.overrides[key];
+    if (override.length && [FFViewerRegistry.sharedRegistry viewerForID:override]) return override;
+    return FFDefaultAssociations()[key];
 }
 
 - (BOOL)hasOverrideForExtension:(NSString *)extension

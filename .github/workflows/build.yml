@@ -155,6 +155,16 @@ jobs:
           ! grep -q '@"ipa": @"installer"' src/FFFileAssociationService.m
           grep -q '@"ipa": @"archive"' src/FFFileAssociationService.m
 
+          # The legacy Word reader and its runtime were removed: the unified
+          # office-document viewer is the only DOCX path (ADR-020).
+          for removed in \
+            src/FFDocxViewerViewController.m src/FFDocxViewerViewController.h \
+            scripts/prepare_docx_runtime.sh resources/docx/docx-host.js; do
+            test ! -e "$removed" || { echo "ERROR: removed docx asset present: $removed" >&2; exit 1; }
+          done
+          ! grep -q 'FFDocxViewerViewController' Makefile src
+          ! grep -q 'DocxAssets' Makefile .github/workflows/build.yml
+
           # Quick Look is preserve-first: unchanged previews must not refresh on
           # every foreground transition. It remains only a manual Office fallback.
           grep -q 'UIApplicationDidEnterBackgroundNotification' src/FFQuickLookViewController.m
@@ -165,9 +175,6 @@ jobs:
 
           # App-owned WebKit viewers recover only after the source changes or
           # WebContent is actually reclaimed; normal background return is lossless.
-          grep -q 'webViewWebContentProcessDidTerminate' src/FFDocxViewerViewController.m
-          grep -q 'sourceChangedSinceBackground' src/FFDocxViewerViewController.m
-          grep -q 'pendingFailureMessage' src/FFDocxViewerViewController.m
           grep -q 'webViewWebContentProcessDidTerminate' src/FFSpreadsheetViewController.m
           grep -q 'sourceChangedSinceBackground' src/FFSpreadsheetViewController.m
           grep -q 'pendingFailureMessage' src/FFSpreadsheetViewController.m
@@ -195,8 +202,7 @@ jobs:
           # Office/Word previews must open fit-to-width like Quick Look (no
           # horizontal clipping) and stop refitting once the user zooms.
           grep -q 'FFOfficeLayout' resources/office/fixed-layout.js
-          grep -q 'fitToWidth' resources/docx/docx-host.js
-          grep -q 'fitDocumentToWidth' src/FFDocxViewerViewController.m
+          grep -q 'fitDocumentToWidth' src/FFOfficeDocumentViewController.m
           grep -q 'FFOffice.fit' src/FFOfficeDocumentViewController.m
           grep -q 'NSURLErrorCancelled' src/FFOfficeDocumentViewController.m
           grep -q 'ff-search-input' resources/office/index.html
@@ -267,8 +273,6 @@ jobs:
           # Do not repeat the Build 810 failure mode: a green native build is
           # insufficient if a JS viewer runtime was never copied into the app.
           for file in \
-            "$APP/DocxAssets/index.html" \
-            "$APP/DocxAssets/docx-host.js" \
             "$APP/UniverAssets/index.html" \
             "$APP/UniverAssets/univer-host.js" \
             "$APP/UniverAssets/xlsx.full.min.js" \
@@ -357,7 +361,6 @@ jobs:
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/office-host.js'
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/UniverAssets/univer-host.js'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/DocxAssets/docx-host.js'
           echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
       - name: Upload build ${{ env.BUILD_NUMBER }}
