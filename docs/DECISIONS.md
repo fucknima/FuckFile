@@ -713,7 +713,7 @@ QuickLook→Hex）。
 - `FFStorageCleaner` / `FFStorageCleanerViewController`（第三方容器 Caches/tmp 清理）
 - `FFIPaInstallerViewController`（LSApplicationWorkspace 私有安装 API）；
   `.ipa` 关联改为 ZIP 浏览器，`FFIPAMetadataService` 仅保留图标与元数据读取
-- Share Extension 的 MHA class-4 取件路径与私有打开 API；保留 App Group 与
+- Share Extension 的 MHA class-4 取件路径；保留 App Group 与
   `FFLocalShareBridge` localhost 直传
 - 构建身份伪装：bundle id 改回 `com.fucknima.fuckfile`，App Group 改为
   `group.com.fucknima.fuckfile`；CI 不再覆写 `CFBundleIdentifier` 为系统身份
@@ -726,3 +726,8 @@ QuickLook→Hex）。
 
 约束：不得重新引入任何跨沙盒访问、身份伪装、私有安装 API 或系统容器枚举；
 CI 的 Review regression guards 会拒绝这些文件/符号重新出现。
+
+例外（2026-09-16 修正）：分享扩展唤醒宿主 App 的私有调用（LSApplicationWorkspace /
+UIApplication best-effort 链）保留。Apple 文档明确 `NSExtensionContext.open` 只支持
+Today 与 iMessage 扩展点，分享扩展用公开 API 无法打开宿主 App；移除该链会直接
+破坏「从其他 App 分享文件到 FuckFile」。它不是沙盒逃逸，只是平台限制的绕过。

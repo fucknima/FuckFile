@@ -317,13 +317,102 @@ static NSString *FFShareSafeName(NSString *name)
 
 #pragma mark - Containing-app handoff
 
-- (void)openWakeURL:(NSURL *)url
+// Share extensions cannot open their containing app with public API: Apple's
+// NSExtensionContext.open only supports the Today and iMessage extension
+// points, so the system ignores the documented call here. The handoff is the
+// point of this extension, therefore the LaunchServices/UIApplication
+// best-effort paths are kept; the public call stays as the last resort.
+static void FFEnsureLaunchServicesLoaded(void)
 {
-    if (!url) return;
-    // Public, extension-safe path: ask the system to open the containing app.
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *handle = dlopen(
+            "/System/Library/Frameworks/CoreServices.framework/CoreServices",
+            RTLD_LAZY | RTLD_LOCAL);
+        if (!handle) {
+            handle = dlopen(
+                "/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices",
+                RTLD_LAZY | RTLD_LOCAL);
+        }
+        NSLog(@"[FuckFileShare] LaunchServices dlopen=%s", handle ? "OK" : "FAIL");
+    });
+}
+
+- (BOOL)openWakeURLViaLaunchServices:(NSURL *)url
+{
+    FFEnsureLaunchServicesLoaded();
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return NO;
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSelector);
+    if (!workspace) return NO;
+
+    NSError *error = nil;
+    SEL openSelector = NSSelectorFromString(@"openURL:withOptions:error:");
+    if ([workspace respondsToSelector:openSelector]) {
+        BOOL opened = ((BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend)(
+            workspace, openSelector, url, @{}, &error);
+        NSLog(@"[FuckFileShare] wake LS openURL result=%d error=%@", opened,
+            error.localizedDescription ?: @"(nil)");
+        if (opened) return YES;
+    }
+
+    error = nil;
+    SEL sensitiveSelector = NSSelectorFromString(@"openSensitiveURL:withOptions:error:");
+    if ([workspace respondsToSelector:sensitiveSelector]) {
+        BOOL opened = ((BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend)(
+            workspace, sensitiveSelector, url, @{}, &error);
+        if (opened) return YES;
+    }
+
+    SEL simpleSelector = NSSelectorFromString(@"openURL:");
+    if ([workspace respondsToSelector:simpleSelector])
+        return ((BOOL (*)(id, SEL, NSURL *))objc_msgSend)(workspace, simpleSelector, url);
+    return NO;
+}
+
+- (BOOL)openWakeURLViaUIApplication:(NSURL *)url
+{
+    Class applicationClass = NSClassFromString(@"UIApplication");
+    SEL openSelector = NSSelectorFromString(@"openURL:options:completionHandler:");
+    if (!applicationClass || !openSelector) return NO;
+
+    UIResponder *responder = self;
+    while (responder) {
+        if ([responder isKindOfClass:applicationClass] &&
+            [responder respondsToSelector:openSelector]) {
+            ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
+                responder, openSelector, url, @{}, ^(BOOL success) {
+                    NSLog(@"[FuckFileShare] wake UIApplication responder=%d", success);
+                });
+            return YES;
+        }
+        responder = responder.nextResponder;
+    }
+
+    SEL sharedSelector = NSSelectorFromString(@"sharedApplication");
+    if ([applicationClass respondsToSelector:sharedSelector]) {
+        id application = ((id (*)(id, SEL))objc_msgSend)(applicationClass, sharedSelector);
+        if (application && [application respondsToSelector:openSelector]) {
+            ((void (*)(id, SEL, NSURL *, NSDictionary *, id))objc_msgSend)(
+                application, openSelector, url, @{}, ^(BOOL success) {
+                    NSLog(@"[FuckFileShare] wake UIApplication shared=%d", success);
+                });
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)openWakeURL:(NSURL *)url
+{
+    if (!url) return NO;
+    if ([self openWakeURLViaLaunchServices:url]) return YES;
+    if ([self openWakeURLViaUIApplication:url]) return YES;
     [self.extensionContext openURL:url completionHandler:^(BOOL success) {
-        NSLog(@"[FuckFileShare] wake containing app=%d", success);
+        NSLog(@"[FuckFileShare] wake via extensionContext=%d", success);
     }];
+    return NO;
 }
 
 - (void)completeExtension
@@ -345,9 +434,9 @@ static NSString *FFShareSafeName(NSString *name)
             @"已接收 %ld 个文件，正在打开 FuckFile…", (long)count];
         NSURL *wakeURL = [NSURL URLWithString:
             [NSString stringWithFormat:@"%@://shared-inbox", FFShareWakeScheme]];
-        [self openWakeURL:wakeURL];
+        BOOL requested = [self openWakeURL:wakeURL];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(0.80 * NSEC_PER_SEC)),
+            (int64_t)((requested ? 0.20 : 0.80) * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{ [self completeExtension]; });
         return;
     }
@@ -369,7 +458,7 @@ static NSString *FFShareSafeName(NSString *name)
         dispatch_async(dispatch_get_main_queue(), ^{
             self.statusLabel.text = ok
                 ? [NSString stringWithFormat:@"已导入 %lu 个文件", (unsigned long)sent]
-                : @"直传失败，文件已暂存；请保持 FuckFile 在前台后重试";
+                : @"直传失败：请先打开 FuckFile，然后重新分享一次";
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                 (int64_t)((ok ? 0.15 : 1.2) * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{ [self completeExtension]; });
