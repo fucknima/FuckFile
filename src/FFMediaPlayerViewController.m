@@ -55,6 +55,8 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    // 系统播放器自带的全屏退出后方向可能没恢复，需要设备物理方向来纠偏。
+    [UIDevice.currentDevice beginGeneratingDeviceOrientationNotifications];
     AVAudioSession *session = AVAudioSession.sharedInstance;
     NSError *sessionError = nil;
     if (![session setCategory:AVAudioSessionCategoryPlayback
@@ -76,6 +78,53 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(itemDidPlayToEnd:) name:AVPlayerItemDidPlayToEndTimeNotification
         object:nil];
+}
+
+- (void)dealloc
+{
+    if (self.isViewLoaded)
+        [UIDevice.currentDevice endGeneratingDeviceOrientationNotifications];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    [self reconcileFullscreenStateAfterAppearing];
+    // 系统全屏退出的方向过渡可能还没结束，稍后再核对一次（幂等）。
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.view.window == nil) return;
+            [strongSelf reconcileFullscreenStateAfterAppearing];
+        });
+}
+
+// AVPlayerViewController 自带的全屏按钮不在我们 rotate 按钮的控制里：退出
+// 系统全屏后系统可能把界面留在横屏（设备其实已竖直），app 的约定是退出全屏
+// 回竖屏，这里补一次请求；设备横着用时不动，尊重自由旋转。同时把可能残留的
+// forcedLandscape 与真实 chrome 对齐，避免两套全屏状态互相打架。
+- (void)reconcileFullscreenStateAfterAppearing
+{
+    UIWindowScene *scene = self.view.window.windowScene;
+    if (!scene) return;
+    BOOL interfacePortrait = UIInterfaceOrientationIsPortrait(scene.interfaceOrientation);
+
+    if (self.forcedLandscape) {
+        [self updateFullscreenChrome];
+        if (interfacePortrait)
+            [self requestOrientation:UIInterfaceOrientationMaskLandscapeRight
+                      notifyOnFailure:NO];
+        return;
+    }
+
+    if (interfacePortrait) return;
+    UIDeviceOrientation device = UIDevice.currentDevice.orientation;
+    if (!UIDeviceOrientationIsValidInterfaceOrientation(device)) return;
+    if (!UIDeviceOrientationIsPortrait(device)) return;
+
+    FFLogTag(@"Media", @"restoring portrait after system fullscreen exit");
+    [self requestOrientation:UIInterfaceOrientationMaskPortrait notifyOnFailure:NO];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -180,6 +229,13 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 
 - (void)requestOrientation:(UIInterfaceOrientationMask)mask
 {
+    [self requestOrientation:mask notifyOnFailure:YES];
+}
+
+// notifyOnFailure 只给用户主动触发的旋转（rotate/退出按钮）用：自动纠偏
+// 失败时静默，避免在 iPad 多窗口下误报「方向锁定」。
+- (void)requestOrientation:(UIInterfaceOrientationMask)mask notifyOnFailure:(BOOL)notify
+{
     UIWindowScene *scene = self.view.window.windowScene;
     if (!scene) {
         [UIViewController attemptRotationToDeviceOrientation];
@@ -192,6 +248,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
         [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
             if (!error) return;
             FFLogTag(@"Media", @"orientation request failed: %@", error.localizedDescription);
+            if (!notify) return;
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf flash:@"系统未允许旋转：请关闭控制中心的方向锁定后重试"];
             });

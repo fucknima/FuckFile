@@ -1039,3 +1039,29 @@ ImportService/PathPolicy），未引入新的事实来源。
 原因：用户要求下载必须能在任务中心查看并支持断点续传；WKDownload 的生命周期
 绑定页面，只有改由任务系统执行才能同时满足离页继续、取消与续传。旧路径
 （临时文件原子 rename）由 FFImportService 的重名规则替代，落盘安全性不变。
+
+## ADR-029
+
+日期：2026-09-17
+
+决定：
+
+**播放器双全屏机制的方向纠偏；系统 Quick Look 手势问题记录在案。**
+
+1. 真机反馈：点系统播放器（AVPlayerViewController）自带的全屏/退出全屏按钮后，
+   界面停在横屏回不到竖屏。根因是两套全屏并存：系统内建全屏与自建「横屏即
+   全屏」（rotate 按钮 + requestGeometryUpdate）。系统全屏退出后没有任何回调
+   把方向拉回来，`forcedLandscape` 也可能残留。公开 API 没有禁用系统全屏按钮
+   的开关（只有 enters/exitsFullScreenWhenPlaybackBegins），因此：
+   - `viewDidAppear`（以及 0.6s 后再一次，幂等）核对方向：设备竖直而界面横屏
+     且不在 forcedLandscape，则请求竖屏；设备横着用时不动（尊重自由旋转）；
+     forcedLandscape 残留则重设 chrome 并补齐横屏方向。
+   - `requestOrientation` 增加 notifyOnFailure：只有用户主动触发（rotate/退出
+     按钮）失败才提示「方向锁定」，自动纠偏失败静默（iPad 多窗口下旋转请求
+     本就不适用）。
+2. 系统 Quick Look（QLPreviewController，PDF 默认关联）双指缩放与双击偶发冲突：
+   App 未在其视图层级添加任何手势，行为来自系统实现；规避方式是文件关联把
+   PDF 切到内置 PDFKit 阅读器（viewerID "pdf"，默认仍是 Quick Look）。
+   自动纠偏失败静默（不再误报方向锁定）。
+
+原因：用户真机反馈；两套全屏状态需对齐，系统组件问题如实记录不硬改。
