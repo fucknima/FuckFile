@@ -204,8 +204,8 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     // 底栏背景钉在屏幕底（键盘弹起时被键盘盖住的部分不可见），内容行
     // 跟随 keyboardLayoutGuide：收起时 guide 顶 = 安全区底（地址栏照旧在
     // Home Indicator 上方），弹起时 guide 顶 = 键盘顶，整行被顶到键盘上
-    // 方，输入框不再被挡。
-    self.view.keyboardLayoutGuide.usesBottomSafeArea = YES;
+    // 方，输入框不再被挡。不用 usesBottomSafeArea（iOS 17+）：它默认就是
+    // true（guide 收起时贴 safeArea 底），正好是这里要的行为。
     [NSLayoutConstraint activateConstraints:@[
         [self.bottomChrome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.bottomChrome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
