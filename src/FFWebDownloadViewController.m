@@ -26,13 +26,13 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) UITextField *addressField;
 @property(nonatomic, strong) UIProgressView *progressView;
-@property(nonatomic, strong) UIToolbar *bottomBar;
+@property(nonatomic, strong) UIView *bottomChrome;
+@property(nonatomic, strong) UIButton *backButton;
+@property(nonatomic, strong) UIButton *forwardButton;
+@property(nonatomic, strong) UIButton *reloadButton;
+@property(nonatomic, strong) UIButton *safariButton;
 @property(nonatomic, strong) UIButton *downloadBar;
 @property(nonatomic, strong) NSLayoutConstraint *downloadBarHeight;
-@property(nonatomic, strong) UIBarButtonItem *backItem;
-@property(nonatomic, strong) UIBarButtonItem *forwardItem;
-@property(nonatomic, strong) UIBarButtonItem *reloadItem;
-@property(nonatomic, strong) UIBarButtonItem *safariItem;
 @property(nonatomic, strong) UIBarButtonItem *downloadsItem;
 // 只统计本页面发起的下载：任务中心还混着别的任务，状态条不能跟着跑。
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *sessionDownloads;
@@ -84,7 +84,6 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     // 下载提示条：本页面的下载都进任务中心，这行是页内唯一入口。
     self.downloadBar = [UIButton buttonWithType:UIButtonTypeSystem];
     self.downloadBar.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    self.downloadBar.tintColor = UIColor.systemBlueColor;
     self.downloadBar.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     self.downloadBar.titleLabel.adjustsFontForContentSizeCategory = YES;
     self.downloadBar.clipsToBounds = YES;
@@ -93,66 +92,7 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     self.downloadBar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.downloadBar];
 
-    // Safari 式底部工具条：地址栏居中，历史/刷新在两侧。
-    self.bottomBar = [[UIToolbar alloc] init];
-    self.bottomBar.translatesAutoresizingMaskIntoConstraints = NO;
-    self.backItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"chevron.left"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(goBack)];
-    self.backItem.accessibilityLabel = @"后退";
-    self.forwardItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"chevron.right"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(goForward)];
-    self.forwardItem.accessibilityLabel = @"前进";
-    self.reloadItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"arrow.clockwise"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(reloadPage)];
-    self.reloadItem.accessibilityLabel = @"刷新";
-    self.safariItem = [[UIBarButtonItem alloc] initWithImage:
-        [UIImage systemImageNamed:@"safari"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(openInSafari)];
-    self.safariItem.accessibilityLabel = @"在 Safari 打开";
-
-    self.addressField = [[UITextField alloc] init];
-    self.addressField.borderStyle = UITextBorderStyleRoundedRect;
-    self.addressField.backgroundColor = UIColor.tertiarySystemFillColor;
-    self.addressField.keyboardType = UIKeyboardTypeURL;
-    self.addressField.returnKeyType = UIReturnKeyGo;
-    self.addressField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    self.addressField.autocorrectionType = UITextAutocorrectionTypeNo;
-    self.addressField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    self.addressField.placeholder = @"输入网址，登录后下载";
-    self.addressField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.addressField.delegate = self;
-    UIImageView *globe = [[UIImageView alloc] initWithImage:
-        [UIImage systemImageNamed:@"globe"]];
-    globe.tintColor = UIColor.secondaryLabelColor;
-    globe.contentMode = UIViewContentModeCenter;
-    globe.frame = CGRectMake(0, 0, 28, 20);
-    self.addressField.leftView = globe;
-    self.addressField.leftViewMode = UITextFieldViewModeAlways;
-    self.addressField.translatesAutoresizingMaskIntoConstraints = NO;
-
-    // UIToolbar 会把 customView 按 intrinsic 尺寸居中；外面套一层容器，
-    // 宽度/高度约束全加在容器上，避免和 toolbar 内部布局打架。
-    UIView *addressContainer = [[UIView alloc] init];
-    addressContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    [addressContainer addSubview:self.addressField];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.addressField.topAnchor constraintEqualToAnchor:addressContainer.topAnchor],
-        [self.addressField.bottomAnchor constraintEqualToAnchor:addressContainer.bottomAnchor],
-        [self.addressField.leadingAnchor constraintEqualToAnchor:addressContainer.leadingAnchor],
-        [self.addressField.trailingAnchor constraintEqualToAnchor:addressContainer.trailingAnchor],
-    ]];
-    UIBarButtonItem *addressItem = [[UIBarButtonItem alloc]
-        initWithCustomView:addressContainer];
-    UIBarButtonItem *flexA = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-    UIBarButtonItem *flexB = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-    [self.bottomBar setItems:@[ self.backItem, self.forwardItem, flexA, addressItem,
-                                flexB, self.reloadItem, self.safariItem ] animated:NO];
-    [self.view addSubview:self.bottomBar];
+    [self buildBottomChrome];
 
     self.downloadsItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"arrow.down.circle"]
@@ -175,21 +115,9 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         [self.webView.bottomAnchor constraintEqualToAnchor:self.downloadBar.topAnchor],
         [self.downloadBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.downloadBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.downloadBar.bottomAnchor constraintEqualToAnchor:self.bottomBar.topAnchor],
+        [self.downloadBar.bottomAnchor constraintEqualToAnchor:self.bottomChrome.topAnchor],
         self.downloadBarHeight,
-        [self.bottomBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.bottomBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.bottomBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
-        [addressContainer.heightAnchor constraintEqualToConstant:34],
-        [addressContainer.widthAnchor constraintGreaterThanOrEqualToConstant:100],
-        [addressContainer.widthAnchor constraintLessThanOrEqualToConstant:420],
     ]];
-    // 宽度随工具条走（给两侧按钮留 200pt），小屏可缩，iPad 上限 420
-    //（750 优先级：空间不够时让位给 required 的上限/下限）。
-    NSLayoutConstraint *addressWidth = [addressContainer.widthAnchor
-        constraintEqualToAnchor:self.bottomBar.widthAnchor constant:-200];
-    addressWidth.priority = UILayoutPriorityDefaultHigh;
-    addressWidth.active = YES;
 
     [self.webView addObserver:self forKeyPath:@"estimatedProgress"
         options:NSKeyValueObservingOptionNew context:NULL];
@@ -214,6 +142,93 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     [NSNotificationCenter.defaultCenter removeObserver:self];
     self.webView.navigationDelegate = nil;
     self.webView.UIDelegate = nil;
+}
+
+// Safari 式底部工具条：地址栏居中，后退/前进/刷新/在 Safari 打开在两侧。
+// 自绘而不是用 UIToolbar：系统 bar 会给 customView 装 required 约束，
+// 与自定义宽高互斥（真机 #888 就在激活约束时崩过）。自绘完全走 Auto Layout。
+- (void)buildBottomChrome
+{
+    self.bottomChrome = [UIView new];
+    self.bottomChrome.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.bottomChrome.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.bottomChrome];
+
+    UIView *separator = [UIView new];
+    separator.backgroundColor = UIColor.separatorColor;
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.bottomChrome addSubview:separator];
+
+    self.addressField = [[UITextField alloc] init];
+    self.addressField.borderStyle = UITextBorderStyleRoundedRect;
+    self.addressField.keyboardType = UIKeyboardTypeURL;
+    self.addressField.returnKeyType = UIReturnKeyGo;
+    self.addressField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.addressField.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.addressField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    self.addressField.placeholder = @"输入网址，登录后下载";
+    self.addressField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.addressField.translatesAutoresizingMaskIntoConstraints = NO;
+    self.addressField.delegate = self;
+    [self.addressField setContentHuggingPriority:UILayoutPriorityDefaultLow
+        forAxis:UILayoutConstraintAxisHorizontal];
+    [self.addressField setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+        forAxis:UILayoutConstraintAxisHorizontal];
+    UIImageView *globe = [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"globe"]];
+    globe.tintColor = UIColor.secondaryLabelColor;
+    globe.contentMode = UIViewContentModeCenter;
+    globe.frame = CGRectMake(0, 0, 28, 20);
+    self.addressField.leftView = globe;
+    self.addressField.leftViewMode = UITextFieldViewModeAlways;
+
+    self.backButton = [self chromeButtonWithSymbol:@"chevron.left" label:@"后退"
+        action:@selector(goBack)];
+    self.forwardButton = [self chromeButtonWithSymbol:@"chevron.right" label:@"前进"
+        action:@selector(goForward)];
+    self.reloadButton = [self chromeButtonWithSymbol:@"arrow.clockwise" label:@"刷新"
+        action:@selector(reloadPage)];
+    self.safariButton = [self chromeButtonWithSymbol:@"safari" label:@"在 Safari 打开"
+        action:@selector(openInSafari)];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.backButton, self.forwardButton, self.addressField,
+        self.reloadButton, self.safariButton
+    ]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 6;
+    [self.bottomChrome addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.bottomChrome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.bottomChrome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.bottomChrome.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.bottomChrome.topAnchor constraintEqualToAnchor:stack.topAnchor constant:-8],
+        [separator.topAnchor constraintEqualToAnchor:self.bottomChrome.topAnchor],
+        [separator.leadingAnchor constraintEqualToAnchor:self.bottomChrome.leadingAnchor],
+        [separator.trailingAnchor constraintEqualToAnchor:self.bottomChrome.trailingAnchor],
+        [separator.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
+        [stack.leadingAnchor constraintEqualToAnchor:self.bottomChrome.leadingAnchor constant:12],
+        [stack.trailingAnchor constraintEqualToAnchor:self.bottomChrome.trailingAnchor constant:-12],
+        [stack.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [self.addressField.heightAnchor constraintEqualToConstant:34],
+    ]];
+}
+
+- (UIButton *)chromeButtonWithSymbol:(NSString *)symbol
+                               label:(NSString *)label
+                              action:(SEL)action
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+    button.accessibilityLabel = label;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [button.widthAnchor constraintEqualToConstant:40].active = YES;
+    [button.heightAnchor constraintEqualToConstant:40].active = YES;
+    return button;
 }
 
 // 登录常见于 popup / target=_blank：没有第二窗口，直接在当前 WebView 打开。
@@ -287,9 +302,10 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 
 - (void)updateNavigationState
 {
-    self.backItem.enabled = self.webView.canGoBack;
-    self.forwardItem.enabled = self.webView.canGoForward;
-    self.safariItem.enabled = self.webView.URL != nil || self.addressField.text.length > 0;
+    self.backButton.enabled = self.webView.canGoBack;
+    self.forwardButton.enabled = self.webView.canGoForward;
+    self.reloadButton.enabled = self.webView.URL != nil;
+    self.safariButton.enabled = self.webView.URL != nil || self.addressField.text.length > 0;
     if (self.webView.URL) self.lastPageURL = self.webView.URL;
     if (!self.addressField.isFirstResponder)
         self.addressField.text = self.webView.URL.absoluteString ?: @"";
@@ -340,8 +356,8 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     [self updateNavigationState];
 }
 
-// 导航本身要求下载（Content-Disposition: attachment）：不让 WebKit 下载，
-// 把请求（含 Cookie/Referer/方法体）交给统一任务系统，任务中心可见。
+// 导航本身要求下载（download 属性）：不让 WebKit 下载，把请求（含
+// Cookie/Referer/方法体）交给统一任务系统，任务中心可见。
 - (void)webView:(__unused WKWebView *)webView
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                         preferences:(WKWebpagePreferences *)preferences
@@ -432,6 +448,7 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
                         cookies:(NSArray<NSHTTPCookie *> *)cookies
 {
     NSURL *url = request.URL;
+    if (!url) return;
     NSMutableArray<NSHTTPCookie *> *matched = [NSMutableArray array];
     for (NSHTTPCookie *cookie in cookies)
         if ([self cookie:cookie matchesURL:url]) [matched addObject:cookie];
