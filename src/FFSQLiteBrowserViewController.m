@@ -1,5 +1,7 @@
 #import "FFSQLiteBrowserViewController.h"
 
+#import <stdio.h>
+
 #import "FFSQLiteService.h"
 #import "FFSQLiteRowEditorViewController.h"
 #import "FFViewerActions.h"
