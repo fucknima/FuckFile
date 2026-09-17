@@ -546,14 +546,12 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     UIAction *photos = [UIAction actionWithTitle:@"导入照片…"
         image:[self symbolImage:@"photo.on.rectangle" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) { [weakSelf importPhotosTapped]; }];
-    UIAction *download = [UIAction actionWithTitle:@"从 URL 下载…"
+    // 唯一下载入口：内置浏览器既能粘直链（响应阶段自动转任务），也能登录后下载。
+    UIAction *download = [UIAction actionWithTitle:@"下载…"
         image:[self symbolImage:@"arrow.down.circle" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [weakSelf downloadURLTapped]; }];
-    UIAction *webDownload = [UIAction actionWithTitle:@"从网页下载…"
-        image:[self symbolImage:@"safari" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [weakSelf webDownloadTapped]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf downloadTapped]; }];
     return [UIMenu menuWithTitle:@"新建"
-        children:@[newFolder, newFile, import, photos, download, webDownload]];
+        children:@[newFolder, newFile, import, photos, download]];
 }
 
 - (void)cancelBatchMode
@@ -1405,52 +1403,13 @@ didFinishPicking:(NSArray<PHPickerResult *> *)results
     });
 }
 
-- (void)downloadURLTapped
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"从 URL 下载"
-        message:@"请输入 HTTPS 文件地址。下载完成后保存到当前目录。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"https://example.com/file.zip";
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
-        style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"下载"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            NSString *raw = [alert.textFields.firstObject.text
-                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            NSURL *url = [NSURL URLWithString:raw];
-            if (!url || ![url.scheme.lowercaseString isEqualToString:@"https"]) {
-                [weakSelf flash:@"请输入有效的 HTTPS 地址"];
-                return;
-            }
-            [weakSelf startDownloadFromURL:url];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-// 需要登录才能下载的站点：进内置浏览器，登录后下载请求由任务系统执行。
-- (void)webDownloadTapped
+// 唯一下载入口：进内置浏览器。直链粘到地址栏即可（文件响应自动转任务），
+// 需要登录的站点在同一界面登录后下载，Cookie/Referer/UA 一并交给任务系统。
+- (void)downloadTapped
 {
     FFWebDownloadViewController *browser = [[FFWebDownloadViewController alloc]
         initWithDestinationDirectory:[self.currentPath copy]];
     [self.navigationController pushViewController:browser animated:YES];
-}
-
-- (void)startDownloadFromURL:(NSURL *)url
-{
-    FFFileTask *task = [FFFileTask new];
-    task.kind = FFFileTaskKindDownload;
-    task.remoteURL = url.absoluteString;
-    task.destination = [self.currentPath copy];
-    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : url.host;
-    task.displayName = name.length ? [NSString stringWithFormat:@"下载 %@", name] : @"下载文件";
-    [[FFFileTaskManager sharedManager] enqueueTask:task];
-    [self flash:@"已加入下载任务，可在任务中心查看进度"];
 }
 
 - (void)documentPicker:(__unused UIDocumentPickerViewController *)controller

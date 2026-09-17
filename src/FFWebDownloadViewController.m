@@ -35,10 +35,14 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 @property(nonatomic, strong) UIButton *downloadBar;
 @property(nonatomic, strong) NSLayoutConstraint *downloadBarHeight;
 @property(nonatomic, strong) UIBarButtonItem *downloadsItem;
+// 下载当前页面/直链：可显示的内容（图片/PDF/文本）也能一键落盘。
+@property(nonatomic, strong) UIBarButtonItem *downloadPageItem;
 // 只统计本页面发起的下载：任务中心还混着别的任务，状态条不能跟着跑。
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *sessionDownloads;
 // 连续崩溃计数：坏页面反复杀死 WebContent 时停止自动重载。
 @property(nonatomic) NSInteger webContentCrashCount;
+// 进页面时只自动聚焦一次地址栏（返回本页不再弹键盘）。
+@property(nonatomic) BOOL focusedAddressOnEntry;
 @end
 
 @implementation FFWebDownloadViewController
@@ -54,7 +58,7 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     if (self) {
         _destinationDirectory = [directory copy];
         _sessionDownloads = [NSMutableArray array];
-        self.title = @"网页下载";
+        self.title = @"下载";
         // 必须 push 前设置：否则根 tab bar（文件/设置）压在下工具条上。
         self.hidesBottomBarWhenPushed = YES;
         if (url) _initialURL = url;
@@ -101,11 +105,16 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         initWithImage:[UIImage systemImageNamed:@"arrow.down.circle"]
         style:UIBarButtonItemStylePlain target:self action:@selector(openTasks)];
     self.downloadsItem.accessibilityLabel = @"下载任务";
+    self.downloadPageItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"arrow.down.to.line"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(downloadCurrentPage)];
+    self.downloadPageItem.accessibilityLabel = @"下载当前页面";
     UIBarButtonItem *shareItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
         style:UIBarButtonItemStylePlain target:self action:@selector(shareLink)];
     shareItem.accessibilityLabel = @"分享链接";
-    self.navigationItem.rightBarButtonItems = @[ self.downloadsItem, shareItem ];
+    self.navigationItem.rightBarButtonItems =
+        @[ self.downloadsItem, self.downloadPageItem, shareItem ];
 
     self.downloadBarHeight = [self.downloadBar.heightAnchor constraintEqualToConstant:0];
     [NSLayoutConstraint activateConstraints:@[
@@ -136,6 +145,16 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         [self updateNavigationState];
     }
     [self refreshDownloadBar];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    // 没有初始地址（从＋菜单进入）时聚焦地址栏：粘链接/输网址一步到位。
+    if (self.focusedAddressOnEntry) return;
+    self.focusedAddressOnEntry = YES;
+    if (!self.initialURL && !self.webView.URL && !self.addressField.isFirstResponder)
+        [self.addressField becomeFirstResponder];
 }
 
 - (void)dealloc
@@ -169,7 +188,7 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     self.addressField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.addressField.autocorrectionType = UITextAutocorrectionTypeNo;
     self.addressField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    self.addressField.placeholder = @"输入网址，登录后下载";
+    self.addressField.placeholder = @"输入网址或文件链接";
     self.addressField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     self.addressField.translatesAutoresizingMaskIntoConstraints = NO;
     self.addressField.delegate = self;
@@ -310,12 +329,30 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     [self presentViewController:activity animated:YES completion:nil];
 }
 
+// 显式下载当前页面/地址栏里的直链：可显示内容（图片/PDF/文本）不会走
+// decidePolicy 的自动转任务，这里给一条确定入口；Cookie/Referer/UA 照旧。
+- (void)downloadCurrentPage
+{
+    NSURL *url = self.webView.URL ?: [NSURL URLWithString:self.addressField.text ?: @""] ?:
+        self.lastPageURL;
+    if (!url.scheme.length) {
+        [self flash:@"先打开一个网页或粘贴文件链接"];
+        return;
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    [self enqueueDownloadForRequest:request];
+    [self flash:@"已加入下载任务"];
+}
+
 - (void)updateNavigationState
 {
     self.backButton.enabled = self.webView.canGoBack;
     self.forwardButton.enabled = self.webView.canGoForward;
     self.reloadButton.enabled = self.webView.URL != nil;
     self.safariButton.enabled = self.webView.URL != nil || self.addressField.text.length > 0;
+    self.downloadPageItem.enabled = self.webView.URL != nil ||
+        self.lastPageURL != nil || self.addressField.text.length > 0;
     if (self.webView.URL) self.lastPageURL = self.webView.URL;
     if (!self.addressField.isFirstResponder)
         self.addressField.text = self.webView.URL.absoluteString ?: @"";
