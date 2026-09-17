@@ -88,8 +88,9 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
 {
     UISearchController *controller = [self valueForKey:@"searchController"];
     if (!controller) return;
-    // 重走一遍同一 query：结果全量重建（含当前目录），不会留下过期条目。
-    [self ff_recursive_updateSearchResultsForSearchController:controller];
+    // 注意：类加载时两个 selector 已交换，调用「原」选择器才会走到本类的
+    // 递归实现（ff_ 前缀的那个指向交换后的原始本地过滤）。
+    [self updateSearchResultsForSearchController:controller];
 }
 
 - (NSArray<FFEntry *> *)ff_immediateMatchesForQuery:(NSString *)query
