@@ -30,6 +30,9 @@ static const void *kFFBrowserRecursiveSearchSeenPathsKey = &kFFBrowserRecursiveS
 @end
 
 @interface FFBrowserViewController (LocalSearchFix)
+// 原始 selector 在 .m 私有实现里，这里补声明以便类内转发（swizzle 后调用它
+// 会走到本类的递归实现）。
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController;
 - (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
 @end
 @implementation FFBrowserViewController (LocalSearchFix)
