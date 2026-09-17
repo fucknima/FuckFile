@@ -201,6 +201,11 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     stack.spacing = 6;
     [self.bottomChrome addSubview:stack];
 
+    // 底栏背景钉在屏幕底（键盘弹起时被键盘盖住的部分不可见），内容行
+    // 跟随 keyboardLayoutGuide：收起时 guide 顶 = 安全区底（地址栏照旧在
+    // Home Indicator 上方），弹起时 guide 顶 = 键盘顶，整行被顶到键盘上
+    // 方，输入框不再被挡。
+    self.view.keyboardLayoutGuide.usesBottomSafeArea = YES;
     [NSLayoutConstraint activateConstraints:@[
         [self.bottomChrome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.bottomChrome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -212,7 +217,9 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         [separator.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
         [stack.leadingAnchor constraintEqualToAnchor:self.bottomChrome.leadingAnchor constant:12],
         [stack.trailingAnchor constraintEqualToAnchor:self.bottomChrome.trailingAnchor constant:-12],
-        [stack.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [stack.heightAnchor constraintEqualToConstant:40],
+        [stack.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor
+            constant:-8],
         [self.addressField.heightAnchor constraintEqualToConstant:34],
     ]];
 }
