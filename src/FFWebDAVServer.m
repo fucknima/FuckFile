@@ -840,11 +840,26 @@ static NSString *FFRealPath(NSString *path)
     NSError *operationError = nil;
     BOOL ok = NO;
     @synchronized (self) {
-        if (exists) [NSFileManager.defaultManager removeItemAtPath:destination error:&operationError];
+        // 覆盖写：先把旧目标挪到备份名，成功后再删；失败回滚。
+        // 不能先 remove 再搬——磁盘满/中途失败会让原文件永久丢失。
+        NSString *backup = nil;
+        if (exists) {
+            backup = [destination stringByAppendingFormat:@".old%@",
+                [NSUUID.UUID.UUIDString substringToIndex:8]];
+            if (![NSFileManager.defaultManager moveItemAtPath:destination
+                toPath:backup error:&operationError]) {
+                backup = nil;
+            }
+        }
         if (!operationError) {
             ok = move
                 ? [NSFileManager.defaultManager moveItemAtPath:source toPath:destination error:&operationError]
                 : [NSFileManager.defaultManager copyItemAtPath:source toPath:destination error:&operationError];
+        }
+        if (backup) {
+            if (ok) [NSFileManager.defaultManager removeItemAtPath:backup error:nil];
+            else [NSFileManager.defaultManager moveItemAtPath:backup
+                toPath:destination error:nil];
         }
     }
     if (!ok) {

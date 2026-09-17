@@ -7,6 +7,13 @@
 
 static const NSUInteger kSQLitePageRows = 200;
 
+// CSV 字段：始终加引号并转义内部引号（列名同样处理，避免逗号/换行破坏结构）。
+static NSString *FFSQLiteCSVField(NSString *value)
+{
+    return [NSString stringWithFormat:@"\"%@\"",
+        [value stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""]];
+}
+
 #pragma mark - Private: one-shot query result bridge
 
 // UITableView keeps dataSource/delegate weakly, so the query page owns
@@ -199,31 +206,55 @@ static const NSUInteger kSQLitePageRows = 200;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *quoted = [_objectName stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
         NSString *sql = [NSString stringWithFormat:@"SELECT * FROM \"%@\"", quoted];
-        NSArray<NSString *> *columns = nil;
-        NSError *error = nil;
-        NSArray *rows = [_service rowsForQuery:sql limit:50000 offset:0
-            outColumns:&columns error:&error];
-        NSString *path = nil;
-        if (rows && columns) {
-            NSMutableString *csv = [NSMutableString string];
-            for (NSString *column in columns)
-                [csv appendFormat:@"%@,", column ?: @""];
-            if (columns.count) [csv deleteCharactersInRange:
-                NSMakeRange(csv.length - 1, 1)];
-            [csv appendString:@"\n"];
-            for (NSDictionary<NSString *, NSString *> *row in rows) {
-                for (NSString *column in columns) {
-                    NSString *value = row[column] ?: @"";
-                    value = [value stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
-                    [csv appendFormat:@"\"%@\",", value];
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@.csv",
+                [_objectName stringByReplacingOccurrencesOfString:@"/" withString:@"_"]]];
+        NSString *failure = nil;
+        // 分页流式写盘：不把整表读进内存，列名与值都按 CSV 规则转义。
+        FILE *out = fopen(path.fileSystemRepresentation, "wb");
+        if (!out) {
+            failure = @"无法创建导出文件";
+        } else {
+            const NSUInteger pageSize = 2000;
+            NSUInteger offset = 0;
+            BOOL headerWritten = NO;
+            while (!failure) {
+                NSArray<NSString *> *columns = nil;
+                NSError *error = nil;
+                NSArray *rows = [_service rowsForQuery:sql limit:pageSize offset:offset
+                    outColumns:&columns error:&error];
+                if (!rows || !columns) {
+                    failure = error.localizedDescription ?: @"查询失败";
+                    break;
                 }
-                [csv deleteCharactersInRange:NSMakeRange(csv.length - 1, 1)];
-                [csv appendString:@"\n"];
+                NSMutableString *chunk = [NSMutableString string];
+                if (!headerWritten) {
+                    headerWritten = YES;
+                    NSMutableArray<NSString *> *fields = [NSMutableArray array];
+                    for (NSString *column in columns)
+                        [fields addObject:FFSQLiteCSVField(column ?: @"")];
+                    [chunk appendFormat:@"%@\n", [fields componentsJoinedByString:@","]];
+                }
+                for (NSDictionary<NSString *, NSString *> *row in rows) {
+                    NSMutableArray<NSString *> *fields =
+                        [NSMutableArray arrayWithCapacity:columns.count];
+                    for (NSString *column in columns)
+                        [fields addObject:FFSQLiteCSVField(row[column] ?: @"")];
+                    [chunk appendFormat:@"%@\n", [fields componentsJoinedByString:@","]];
+                }
+                NSData *data = [chunk dataUsingEncoding:NSUTF8StringEncoding];
+                if (data.length && fwrite(data.bytes, 1, data.length, out) != data.length) {
+                    failure = @"写入导出文件失败";
+                    break;
+                }
+                if (rows.count < pageSize) break;
+                offset += pageSize;
             }
-            path = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                [NSString stringWithFormat:@"%@.csv",
-                    [_objectName stringByReplacingOccurrencesOfString:@"/" withString:@"_"]]];
-            [csv writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            fclose(out);
+            if (failure) {
+                [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+                path = nil;
+            }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf dismissViewControllerAnimated:YES completion:^{
@@ -232,7 +263,7 @@ static const NSUInteger kSQLitePageRows = 200;
                 if (!path) {
                     UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
                         message:[NSString stringWithFormat:@"导出失败：%@",
-                            error.localizedDescription ?: @"未知错误"]
+                            failure ?: @"未知错误"]
                         preferredStyle:UIAlertControllerStyleAlert];
                     [alert addAction:[UIAlertAction actionWithTitle:@"好"
                         style:UIAlertActionStyleDefault handler:nil]];

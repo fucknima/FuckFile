@@ -186,8 +186,9 @@ static NSError *FFBridgeError(NSInteger code, NSString *message)
             if (!name.length) name = @"imported";
             NSString *tempPath = [incomingRoot stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"%u-%@", index, name]];
-            [[NSFileManager defaultManager] createFileAtPath:tempPath contents:nil attributes:nil];
-            int output = open(tempPath.fileSystemRepresentation, O_WRONLY | O_TRUNC | O_CLOEXEC);
+            // 单步 O_EXCL 创建：避免 create 与 open 之间被换成符号链接。
+            int output = open(tempPath.fileSystemRepresentation,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
             if (output < 0) { ok = NO; break; }
 
             uint64_t remaining = dataLength;

@@ -1,4 +1,5 @@
 #import "FFBrowserViewController.h"
+#import "FFArchiveService.h"
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
 #import "FFLogger.h"
@@ -194,8 +195,10 @@ static BOOL FFStoragePathIsInsideRoot(NSString *path, NSString *root)
 {
     NSString *stem = item.name.stringByDeletingPathExtension;
     if (stem.length == 0) stem = @"archive";
-    NSString *sibling = [self.currentPath stringByAppendingPathComponent:
-        [stem stringByAppendingString:@" (解压)"]];
+    // 与主浏览器一致：目标唯一化，避免覆盖已有解压目录。
+    NSString *sibling = [FFArchiveService uniqueDirectoryInParent:self.currentPath
+        baseName:[stem stringByAppendingString:@" (解压)"]] ?: [self.currentPath
+        stringByAppendingPathComponent:[stem stringByAppendingString:@" (解压)"]];
 
     FFFileTask *task = [FFFileTask new];
     task.kind = FFFileTaskKindExtract;

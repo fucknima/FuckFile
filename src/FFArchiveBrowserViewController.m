@@ -39,12 +39,7 @@ static NSString * const kFFArchiveLastExtractDirectoryKey = @"FFArchiveLastExtra
 
 static NSString *FFArchiveUniqueDirectory(NSString *parent, NSString *base)
 {
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSString *candidate = [parent stringByAppendingPathComponent:base];
-    for (NSUInteger index = 2; index < 1000 && [manager fileExistsAtPath:candidate]; index++)
-        candidate = [parent stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"%@ %lu", base, (unsigned long)index]];
-    return candidate;
+    return [FFArchiveService uniqueDirectoryInParent:parent baseName:base];
 }
 
 @implementation FFArchiveBrowserViewController

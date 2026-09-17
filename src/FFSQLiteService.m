@@ -52,7 +52,9 @@ static NSError *FFSQLiteError(int code, NSString *message)
     _db = NULL;
     _editable = !readOnly;
     _databasePath = [path copy];
-    int flags = SQLITE_OPEN_NOMUTEX | (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE);
+    // 连接会被多个 global queue 并发调用（数据浏览/表浏览/导出），必须用
+    // 默认的 serialized 模式（sqlite3 自带互斥），不能开 NOMUTEX。
+    int flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
     int rc = sqlite3_open_v2(path.fileSystemRepresentation, &_db, flags, NULL);
     if (rc != SQLITE_OK) {
         if (error)

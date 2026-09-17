@@ -216,6 +216,17 @@ static NSString *FFArchiveCurrentEntryName(unzFile zip, unz_file_info64 *infoOut
     return stem.length ? stem : @"archive";
 }
 
++ (NSString *)uniqueDirectoryInParent:(NSString *)parent baseName:(NSString *)base
+{
+    if (parent.length == 0 || base.length == 0) return nil;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *candidate = [parent stringByAppendingPathComponent:base];
+    for (NSUInteger index = 2; index < 1000 && [manager fileExistsAtPath:candidate]; index++)
+        candidate = [parent stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@ %lu", base, (unsigned long)index]];
+    return candidate;
+}
+
 + (NSString *)cachedPasswordForArchivePath:(NSString *)archivePath
 {
     return archivePath.length ? [FFArchivePasswordCache() objectForKey:FFArchivePasswordKey(archivePath)] : nil;

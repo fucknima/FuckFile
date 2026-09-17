@@ -22,6 +22,10 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)isKnownButUnsupportedExtension:(NSString *)extension;
 + (NSString *)archiveStemForPath:(NSString *)archivePath;
 
+// 解压目标唯一化：目标已存在时依次尝试 "xxx 2"、"xxx 3"…，
+// 避免静默替换/删除上一次解压出来的同名目录（含用户改动）。
++ (nullable NSString *)uniqueDirectoryInParent:(NSString *)parent baseName:(NSString *)base;
+
 + (nullable NSString *)cachedPasswordForArchivePath:(NSString *)archivePath;
 + (void)cachePassword:(NSString *)password forArchivePath:(NSString *)archivePath;
 + (void)clearCachedPasswordForArchivePath:(NSString *)archivePath;
