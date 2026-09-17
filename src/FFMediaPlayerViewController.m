@@ -33,6 +33,7 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 @property(nonatomic, strong) NSArray<NSString *> *subtitleFiles;
 @property(nonatomic, copy) NSString *activeSubtitlePath;
 @property(nonatomic, strong) id timeObserver;
+@property(nonatomic) BOOL observingItemEnd;
 @property(nonatomic, strong) UIBarButtonItem *subtitleItem;
 @property(nonatomic, strong) UIBarButtonItem *rotateItem;
 @property(nonatomic, strong) UIButton *exitFullscreenButton;
@@ -57,31 +58,24 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     [super viewDidLoad];
     // 系统播放器自带的全屏退出后方向可能没恢复，需要设备物理方向来纠偏。
     [UIDevice.currentDevice beginGeneratingDeviceOrientationNotifications];
-    AVAudioSession *session = AVAudioSession.sharedInstance;
-    NSError *sessionError = nil;
-    if (![session setCategory:AVAudioSessionCategoryPlayback
-                 mode:AVAudioSessionModeMoviePlayback options:0 error:&sessionError])
-        FFLogTag(@"Media", @"audio session category failed: %@",
-            sessionError.localizedDescription ?: @"unknown");
-    sessionError = nil;
-    if (![session setActive:YES error:&sessionError])
-        FFLogTag(@"Media", @"audio session activate failed: %@",
-            sessionError.localizedDescription ?: @"unknown");
 
     [self buildChrome];
     [self buildExitFullscreenButton];
     [self startPlaybackAtPath:self.filePath];
-    [self installTimeObserver];
     [self loadSiblings];
     [self loadSubtitlesForMedia:self.filePath];
+}
 
-    [[NSNotificationCenter defaultCenter] addObserver:self
-        selector:@selector(itemDidPlayToEnd:) name:AVPlayerItemDidPlayToEndTimeNotification
-        object:nil];
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    [self activateAudioSession];
+    [self installPlaybackObservers];
 }
 
 - (void)dealloc
 {
+    [self teardownPlaybackObservers];
     if (self.isViewLoaded)
         [UIDevice.currentDevice endGeneratingDeviceOrientationNotifications];
 }
@@ -132,19 +126,62 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     [super viewWillDisappear:animated];
     [self saveResumePosition];
     // 无论 push 还是 pop 都退出全屏，避免下一个页面没有导航栏。
-    if (self.forcedLandscape) [self setForcedLandscape:NO];
-    if (self.isMovingFromParentViewController) {
+    // 自动退出全屏不弹「方向锁定」：那是用户主动旋转时的提示。
+    if (self.forcedLandscape) [self setForcedLandscape:NO notifyOnFailure:NO];
+}
+
+// 观察者只在 viewDidDisappear 拆除：viewWillDisappear 会在「侧滑返回被取消」
+// 时也触发，拆了之后 viewDidAppear 不会重建，播放器会变成没进度/没字幕。
+- (void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    [self teardownPlaybackObservers];
+    if (self.isMovingFromParentViewController || self.isBeingDismissed ||
+        self.navigationController.isBeingDismissed) {
         [self.player pause];
-        if (self.timeObserver) {
-            [self.player removeTimeObserver:self.timeObserver];
-            self.timeObserver = nil;
-        }
-        [[NSNotificationCenter defaultCenter] removeObserver:self];
         NSError *error = nil;
         [AVAudioSession.sharedInstance setActive:NO
             withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&error];
         if (error) FFLogTag(@"Media", @"audio session deactivate failed: %@",
             error.localizedDescription ?: @"unknown");
+    }
+}
+
+- (void)activateAudioSession
+{
+    AVAudioSession *session = AVAudioSession.sharedInstance;
+    NSError *sessionError = nil;
+    if (![session setCategory:AVAudioSessionCategoryPlayback
+                 mode:AVAudioSessionModeMoviePlayback options:0 error:&sessionError])
+        FFLogTag(@"Media", @"audio session category failed: %@",
+            sessionError.localizedDescription ?: @"unknown");
+    sessionError = nil;
+    if (![session setActive:YES error:&sessionError])
+        FFLogTag(@"Media", @"audio session activate failed: %@",
+            sessionError.localizedDescription ?: @"unknown");
+}
+
+- (void)installPlaybackObservers
+{
+    if (!self.timeObserver) [self installTimeObserver];
+    if (!self.observingItemEnd) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+            selector:@selector(itemDidPlayToEnd:)
+            name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+        self.observingItemEnd = YES;
+    }
+}
+
+- (void)teardownPlaybackObservers
+{
+    if (self.timeObserver) {
+        [self.player removeTimeObserver:self.timeObserver];
+        self.timeObserver = nil;
+    }
+    if (self.observingItemEnd) {
+        [NSNotificationCenter.defaultCenter removeObserver:self
+            name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+        self.observingItemEnd = NO;
     }
 }
 
@@ -210,6 +247,11 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
 
 - (void)setForcedLandscape:(BOOL)landscape
 {
+    [self setForcedLandscape:landscape notifyOnFailure:YES];
+}
+
+- (void)setForcedLandscape:(BOOL)landscape notifyOnFailure:(BOOL)notify
+{
     // 必须写 ivar：属性自定义 setter 里再赋值会无限递归。
     _forcedLandscape = landscape;
     [self updateRotateItem];
@@ -217,7 +259,8 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
     // 只请求「右转横屏」（UIInterfaceOrientationLandscapeRight），
     // 不用双值 mask：否则系统可能挑到反方向。
     [self requestOrientation:landscape ? UIInterfaceOrientationMaskLandscapeRight
-                                       : UIInterfaceOrientationMaskPortrait];
+                                       : UIInterfaceOrientationMaskPortrait
+              notifyOnFailure:notify];
 }
 
 - (void)updateRotateItem
@@ -389,7 +432,8 @@ static const NSTimeInterval kFFMediaResumeTailGuard = 10;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 typeof(weakSelf) strongSelf = weakSelf;
-                if (!strongSelf) return;
+                // 0.4s 内可能已经切到下一集：旧断点不能 seek 到新 item 上。
+                if (!strongSelf || strongSelf.player.currentItem != item) return;
                 CMTime target = CMTimeMakeWithSeconds(resume, NSEC_PER_SEC);
                 [strongSelf.player seekToTime:target toleranceBefore:kCMTimeZero
                     toleranceAfter:kCMTimeZero];
