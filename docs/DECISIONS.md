@@ -1176,3 +1176,25 @@ ImportService/PathPolicy），未引入新的事实来源。
 3. 协议策略收敛为一套：浏览器与任务系统都接受 http/https。
 
 原因：两个入口概念重复，用户反馈入口不清；合并为一套心智模型。
+
+## ADR-035
+
+日期：2026-09-17
+
+决定：
+
+**HTML 预览支持双指缩放；无配色页面深色适配。**
+
+1. 双指缩放：本地 HTML 常带 user-scalable=no / maximum-scale=1，WebKit 因此
+   禁用缩放。FFWebViewerViewController 注入 documentStart / DOMContentLoaded /
+   load 三个时机的脚本，改写已有 viewport meta（user-scalable=yes、
+   maximum-scale=5），并把 scrollView.maximumZoomScale 设为 5。没有 viewport
+   meta 的页面保持原样（本来就允许缩放，避免改变桌面版式）。
+2. 深色适配：只对「没有自带配色」的页面生效——html 与 body 的计算背景都是
+   透明且 body 文字是默认黑，才注入 prefers-color-scheme 媒体查询
+   （:root color-scheme: dark；html/body 背景透明），默认文字转亮、背景透出
+   WKWebView 的 underPageBackgroundColor（系统背景）；自带配色的页面完全不碰。
+   网页下载浏览器只设置 underPageBackgroundColor（空白/过滚动区域跟随系统），
+   不注入任何样式。
+
+原因：用户反馈 HTML 预览无法双指缩放、深色模式下白底刺眼。

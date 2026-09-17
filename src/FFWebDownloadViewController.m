@@ -85,6 +85,9 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
     self.webView.allowsBackForwardNavigationGestures = YES;
+    // 深色模式下空白/过滚动区域跟随系统，站点自身配色不碰。
+    self.webView.underPageBackgroundColor = UIColor.systemBackgroundColor;
+    self.webView.scrollView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.webView];
 

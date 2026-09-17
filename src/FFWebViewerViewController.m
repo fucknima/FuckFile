@@ -3,6 +3,61 @@
 #import "FFLogger.h"
 #import "FFViewerActions.h"
 
+// 本地 HTML 常带 user-scalable=no / maximum-scale=1，WebKit 会因此禁用双指
+// 缩放；文档开始与解析完成时改写已有 viewport meta，把缩放权限改回来。
+// 页面没有 viewport meta 时本来就允许缩放，不改动（避免改变桌面版式）。
+static WKUserScript *FFWebViewZoomUserScript(void)
+{
+    NSString *source =
+        @"(function () {"
+         "  function fix() {"
+         "    var metas = document.querySelectorAll('meta[name=\"viewport\"]');"
+         "    for (var i = 0; i < metas.length; i++) {"
+         "      var content = metas[i].getAttribute('content') || '';"
+         "      content = content.replace(/user-scalable\\s*=\\s*no/ig, 'user-scalable=yes')"
+         "                       .replace(/maximum-scale\\s*=\\s*[^,\\s]+/ig, 'maximum-scale=5');"
+         "      if (!/user-scalable/i.test(content)) content += ', user-scalable=yes';"
+         "      if (!/maximum-scale/i.test(content)) content += ', maximum-scale=5';"
+         "      metas[i].setAttribute('content', content);"
+         "    }"
+         "  }"
+         "  fix();"
+         "  document.addEventListener('DOMContentLoaded', fix);"
+         "  window.addEventListener('load', fix);"
+         "})();";
+    return [[WKUserScript alloc] initWithSource:source
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+}
+
+// 深色适配：只对「没有自带配色」的页面生效（body 背景透明且文字是默认黑），
+// 注入 prefers-color-scheme 媒体查询，浅色页面文字自动转亮、背景透出
+// WKWebView 的 underPageBackgroundColor；自带配色的页面完全不碰。
+static WKUserScript *FFWebViewDarkModeUserScript(void)
+{
+    NSString *source =
+        @"(function () {"
+         "  var body = document.body;"
+         "  if (!body) return;"
+         "  function isTransparent(value) {"
+         "    return !value || value === 'transparent' ||"
+         "        /rgba\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*\\)/.test(value);"
+         "  }"
+         "  var bodyStyle = window.getComputedStyle(body);"
+         "  var rootStyle = window.getComputedStyle(document.documentElement);"
+         "  if (!isTransparent(bodyStyle.backgroundColor)) return;"
+         "  if (!isTransparent(rootStyle.backgroundColor)) return;"
+         "  if (!/^rgb\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*\\)$/.test(bodyStyle.color || '')) return;"
+         "  var style = document.createElement('style');"
+         "  style.textContent = '@media (prefers-color-scheme: dark) {'"
+         "      + ':root { color-scheme: dark; }'"
+         "      + 'html, body { background-color: transparent !important; }'"
+         "      + '}';"
+         "  (document.head || document.documentElement).appendChild(style);"
+         "})();";
+    return [[WKUserScript alloc] initWithSource:source
+        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
+}
+
 @interface FFWebViewerViewController () <WKNavigationDelegate, WKUIDelegate>
 @property(nonatomic, copy) NSString *filePath;
 @property(nonatomic, strong) WKWebView *webView;
@@ -36,6 +91,14 @@
         UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
+    // 双指缩放 + 深色适配（脚本必须在首次加载前挂上）。
+    WKUserContentController *contentController = self.webView.configuration.userContentController;
+    [contentController addUserScript:FFWebViewZoomUserScript()];
+    [contentController addUserScript:FFWebViewDarkModeUserScript()];
+    self.webView.scrollView.maximumZoomScale = 5.0;
+    self.webView.scrollView.minimumZoomScale = 1.0;
+    self.webView.underPageBackgroundColor = UIColor.systemBackgroundColor;
+    self.webView.scrollView.backgroundColor = UIColor.systemBackgroundColor;
     self.navigationItem.rightBarButtonItem = [FFViewerActions actionsItemForPath:self.filePath
         title:nil icon:nil presenter:self allowTrash:YES];
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
