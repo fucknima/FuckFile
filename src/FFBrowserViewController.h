@@ -34,6 +34,10 @@ NS_ASSUME_NONNULL_BEGIN
 // of pushing another controller for the same directory.
 - (void)reloadEntries;
 
+// 目录加载完成后滚动并高亮该路径（任务中心「查看文件」跳转用）。
+// 只为刚 push / 待刷新的浏览器设置；条目不在当前目录时静默忽略。
+@property(nonatomic, copy, nullable) NSString *pendingRevealPath;
+
 // Opens an item: directories push a browser, files open the preview.
 // nav is the caller's navigation controller (a fresh browser instance
 // has none). Missing items call the completion with NO.

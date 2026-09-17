@@ -136,9 +136,54 @@
     tasks.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemDone
         target:self action:@selector(dismissTasks)];
+    // 点已完成任务：关掉任务中心，切到文件 tab 并跳到落盘位置。
+    __weak typeof(self) weakSelf = self;
+    tasks.revealHandler = ^(NSString *path) {
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf dismissViewControllerAnimated:YES completion:^{
+            [strongSelf revealPathInBrowser:path];
+        }];
+    };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:tasks];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     [self presentViewController:nav animated:YES completion:nil];
+}
+
+// 打开 path 所在目录；是文件则滚动定位并短暂高亮。已在浏览栈里的同目录
+// 页面优先复用（与导入结果跳转一致），否则新 push 一个浏览器。
+- (void)revealPathInBrowser:(NSString *)path
+{
+    if (!path.length) return;
+    BOOL isDirectory = NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory]) return;
+    NSString *directory = isDirectory ? path : path.stringByDeletingLastPathComponent;
+    if (!directory.length) return;
+
+    self.selectedIndex = 0;
+    UINavigationController *nav = [self activeNavigationController];
+    if (!nav) return;
+    NSString *target = directory.stringByStandardizingPath;
+    FFBrowserViewController *existing = nil;
+    for (UIViewController *controller in nav.viewControllers) {
+        if (![controller isKindOfClass:FFBrowserViewController.class]) continue;
+        FFBrowserViewController *browser = (FFBrowserViewController *)controller;
+        if ([browser.currentPath.stringByStandardizingPath isEqualToString:target]) {
+            existing = browser;
+            break;
+        }
+    }
+    NSString *revealPath = isDirectory ? nil : path;
+    if (existing) {
+        existing.pendingRevealPath = revealPath;
+        if (nav.topViewController != existing) [nav popToViewController:existing animated:YES];
+        [existing reloadEntries];
+        return;
+    }
+    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:directory];
+    browser.title = directory.lastPathComponent.length ? directory.lastPathComponent : @"文件";
+    browser.pendingRevealPath = revealPath;
+    [nav pushViewController:browser animated:YES];
 }
 
 - (void)dismissTasks

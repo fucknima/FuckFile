@@ -888,6 +888,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             if ([self ff_recursiveSearchActive]) [self ff_recursiveReapplySearch];
             else [self applyFilter];
             [self refreshVisibleContent];
+            [self consumePendingRevealPath];
             [self.refreshControl endRefreshing];
             [self.gridRefreshControl endRefreshing];
             [self applyLayoutModeAnimated:NO];
@@ -903,6 +904,42 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     [self.tableView reloadData];
     if (self.collectionView) [self.collectionView reloadData];
     [self updateEmptyState];
+}
+
+// 任务中心跳转定位：目录加载完成后滚动到目标条目并短暂高亮（列表）；
+// 网格没有选中态样式，只滚动到可见位置。条目不在结果集里就静默放弃。
+- (void)consumePendingRevealPath
+{
+    NSString *path = self.pendingRevealPath;
+    if (!path.length) return;
+    self.pendingRevealPath = nil;
+    NSUInteger row = NSNotFound;
+    for (NSUInteger index = 0; index < self.filteredEntries.count; index++) {
+        if ([self.filteredEntries[index].path isEqualToString:path]) { row = index; break; }
+    }
+    if (row == NSNotFound) return;
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:(NSInteger)row inSection:0];
+    if (self.gridMode && self.collectionView) {
+        [self.collectionView scrollToItemAtIndexPath:indexPath
+            atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES];
+        return;
+    }
+    [self.tableView scrollToRowAtIndexPath:indexPath
+        atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
+    // 多选编辑态下不能借用选中态做高亮（会改变批量选择）。
+    if (self.editing) return;
+    [self.tableView selectRowAtIndexPath:indexPath animated:YES
+        scrollPosition:UITableViewScrollPositionNone];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSIndexPath *current = [NSIndexPath indexPathForRow:(NSInteger)row inSection:0];
+            if (![strongSelf.tableView.indexPathsForSelectedRows containsObject:current]) return;
+            if (current.row >= (NSInteger)strongSelf.filteredEntries.count) return;
+            [strongSelf.tableView deselectRowAtIndexPath:current animated:YES];
+        });
 }
 
 // 空状态视图（列表与网格共用）：iOS 17+ 使用系统

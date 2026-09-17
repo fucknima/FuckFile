@@ -1,6 +1,7 @@
 #import "FFTasksViewController.h"
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
+#import "FFPreviewRouter.h"
 
 #import <objc/runtime.h>
 
@@ -189,6 +190,7 @@
     BOOL active = task.state == FFFileTaskStateRunning || task.state == FFFileTaskStateQueued;
     cell.selectionStyle = active ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
     if (active) {
+        cell.accessoryType = UITableViewCellAccessoryNone;
         UIProgressView *progress = (UIProgressView *)[cell.contentView viewWithTag:77];
         if (!progress) {
             progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
@@ -207,6 +209,9 @@
     } else {
         UIProgressView *progress = (UIProgressView *)[cell.contentView viewWithTag:77];
         progress.hidden = YES;
+        // 已完成的记录可点进所在目录：给出可点提示（失败/取消不给）。
+        cell.accessoryType = task.state == FFFileTaskStateCompleted
+            ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
     }
     return cell;
 }
@@ -234,6 +239,55 @@
     NSArray<FFFileTask *> *rows = indexPath.section == 0 ? self.activeTasks : self.historyTasks;
     if (indexPath.row < 0 || (NSUInteger)indexPath.row >= rows.count) return nil;
     return rows[(NSUInteger)indexPath.row];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    FFFileTask *task = [self taskAtIndexPath:indexPath];
+    if (!task) return;
+    // 只有成功完成的任务才有可跳转的落盘结果。
+    if (task.state != FFFileTaskStateCompleted) return;
+    NSString *path = [self revealPathForTask:task];
+    if (!path.length) {
+        [FFPreviewRouter toastOnNav:self.navigationController message:@"目标文件已不存在"];
+        return;
+    }
+    if (self.revealHandler) self.revealHandler(path);
+}
+
+// 已完成任务对应的落盘路径：
+//   下载 → 目标目录 + detailName（成功时写入最终文件名）
+//   复制/移动 → 单源时定位复制出的那个文件，多源时只打开目标目录
+//   解压 → 解压出来的目录本身；压缩 → 生成的压缩包文件
+// 文件/目录已不存在（被删除/改名）返回 nil。
+- (nullable NSString *)revealPathForTask:(FFFileTask *)task
+{
+    NSFileManager *manager = NSFileManager.defaultManager;
+    BOOL isDirectory = NO;
+    switch (task.kind) {
+        case FFFileTaskKindDownload:
+            if (task.destination.length && task.detailName.length) {
+                NSString *candidate = [task.destination
+                    stringByAppendingPathComponent:task.detailName];
+                if ([manager fileExistsAtPath:candidate]) return candidate;
+            }
+            return [manager fileExistsAtPath:task.destination] ? task.destination : nil;
+        case FFFileTaskKindCopy:
+        case FFFileTaskKindMove:
+            if (task.sources.count == 1 && task.destination.length) {
+                NSString *candidate = [task.destination stringByAppendingPathComponent:
+                    task.sources.firstObject.lastPathComponent];
+                if ([manager fileExistsAtPath:candidate]) return candidate;
+            }
+            return [manager fileExistsAtPath:task.destination] ? task.destination : nil;
+        case FFFileTaskKindExtract:
+        case FFFileTaskKindCompress:
+            if ([manager fileExistsAtPath:task.destination isDirectory:&isDirectory])
+                return task.destination;
+            return nil;
+    }
+    return nil;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
