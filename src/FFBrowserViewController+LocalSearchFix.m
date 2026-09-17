@@ -22,10 +22,16 @@ static const void *kFFBrowserRecursiveSearchSeenPathsKey = &kFFBrowserRecursiveS
 - (void)refreshVisibleContent;
 @end
 
+// 供主实现（reloadEntries）回调：递归搜索进行中时，目录刷新不能把
+// filteredEntries 覆盖回「仅当前目录」的结果集。
+@interface FFBrowserViewController (RecursiveSearchHook)
+- (BOOL)ff_recursiveSearchActive;
+- (void)ff_recursiveReapplySearch;
+@end
+
 @interface FFBrowserViewController (LocalSearchFix)
 - (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
 @end
-
 @implementation FFBrowserViewController (LocalSearchFix)
 
 + (void)load
@@ -69,6 +75,21 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
     objc_setAssociatedObject(self, kFFBrowserRecursiveSearchGenerationKey,
         @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return next;
+}
+
+- (BOOL)ff_recursiveSearchActive
+{
+    NSString *searchText = [self valueForKey:@"searchText"];
+    return searchText.length > 0 &&
+        objc_getAssociatedObject(self, kFFBrowserRecursiveSearchSeenPathsKey) != nil;
+}
+
+- (void)ff_recursiveReapplySearch
+{
+    UISearchController *controller = [self valueForKey:@"searchController"];
+    if (!controller) return;
+    // 重走一遍同一 query：结果全量重建（含当前目录），不会留下过期条目。
+    [self ff_recursive_updateSearchResultsForSearchController:controller];
 }
 
 - (NSArray<FFEntry *> *)ff_immediateMatchesForQuery:(NSString *)query

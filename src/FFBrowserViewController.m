@@ -104,6 +104,14 @@ typedef NS_ENUM(NSInteger, FFFilterMode) {
 @property(nonatomic, copy) NSArray<NSString *> *breadcrumbPaths;
 // 任务落盘后的尾随刷新（trailing edge debounce）：最后一次通知后必刷一次。
 @property(nonatomic) BOOL pendingAutoReload;
+// block 观察者 token：dealloc 时必须注销，否则通知中心永久持有。
+@property(nonatomic, strong) NSMutableArray<id> *notificationTokens;
+@end
+
+// 递归搜索（+LocalSearchFix）提供的刷新钩子。
+@interface FFBrowserViewController (RecursiveSearchHook)
+- (BOOL)ff_recursiveSearchActive;
+- (void)ff_recursiveReapplySearch;
 @end
 
 // Process-wide paste state so Copy in one folder can Paste in another.
@@ -217,7 +225,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
     // 任务中心变更：有任务落到当前目录（复制/移动/解压/压缩完成）时
     // 自动刷新列表，免去手动下拉。
     __weak typeof(self) weakSelf = self;
-    [[NSNotificationCenter defaultCenter]
+    self.notificationTokens = [NSMutableArray array];
+    [self.notificationTokens addObject:[[NSNotificationCenter defaultCenter]
         addObserverForName:FFFileTaskManagerDidChangeNotification object:nil queue:nil
         usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
@@ -247,20 +256,22 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 strongSelf.pendingAutoReload = NO;
                 if (strongSelf.hasLoaded) [strongSelf reloadEntries];
             });
-        }];
+        }]];
 
     // 回收站恢复/永久删除后刷新当前目录（恢复可能落回这里）。
-    [[NSNotificationCenter defaultCenter] addObserverForName:FFTrashDidChangeNotification
+    [self.notificationTokens addObject:[[NSNotificationCenter defaultCenter]
+        addObserverForName:FFTrashDidChangeNotification
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf || !strongSelf.hasLoaded) return;
             dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf reloadEntries]; });
-        }];
+        }]];
 
     // 设置页修改（显示隐藏文件等）后，已打开的浏览器页面即时生效。
     // 网格默认值只对新打开的目录生效；运行中页面用"更多 → 显示方式"
     // 局部切换，避免设置页覆盖用户当前选择。
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"FFSettingsChangedNotification"
+    [self.notificationTokens addObject:[[NSNotificationCenter defaultCenter]
+        addObserverForName:@"FFSettingsChangedNotification"
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -270,7 +281,7 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
                 if (strongSelf.moreItem) strongSelf.moreItem.menu = [strongSelf moreMenu];
                 [strongSelf reloadEntries];
             });
-        }];
+        }]];
 
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
@@ -422,6 +433,8 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 
 - (void)dealloc
 {
+    for (id token in self.notificationTokens)
+        [NSNotificationCenter.defaultCenter removeObserver:token];
 }
 
 #pragma mark - Clipboard state
@@ -518,24 +531,27 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 // ＋（导航栏）的唯一职责：往当前目录添加内容（创建 + 导入）。
 - (UIMenu *)createMenu
 {
+    // UIAction handler 会被 UIBarButtonItem.menu 长期持有：必须 weak，
+    // 否则 self→plusItem→menu→action→self 形成保留环，页面永不释放。
+    __weak typeof(self) weakSelf = self;
     UIAction *newFolder = [UIAction actionWithTitle:@"新建文件夹"
         image:[self symbolImage:@"folder.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFolder]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf createFolder]; }];
     UIAction *newFile = [UIAction actionWithTitle:@"新建文件"
         image:[self symbolImage:@"doc.badge.plus" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self createFile]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf createFile]; }];
     UIAction *import = [UIAction actionWithTitle:@"导入文件…"
         image:[self symbolImage:@"square.and.arrow.down" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self importFilesTapped]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf importFilesTapped]; }];
     UIAction *photos = [UIAction actionWithTitle:@"导入照片…"
         image:[self symbolImage:@"photo.on.rectangle" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self importPhotosTapped]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf importPhotosTapped]; }];
     UIAction *download = [UIAction actionWithTitle:@"从 URL 下载…"
         image:[self symbolImage:@"arrow.down.circle" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self downloadURLTapped]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf downloadURLTapped]; }];
     UIAction *webDownload = [UIAction actionWithTitle:@"从网页下载…"
         image:[self symbolImage:@"safari" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self webDownloadTapped]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf webDownloadTapped]; }];
     return [UIMenu menuWithTitle:@"新建"
         children:@[newFolder, newFile, import, photos, download, webDownload]];
 }
@@ -867,7 +883,10 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
             self.entries = loaded;
             self.hasLoaded = YES;
             self.loading = NO;
-            [self applyFilter];
+            // 搜索进行中：目录刷新只重建搜索（保留递归结果），不能用
+            // applyFilter 把深层结果覆盖成「仅当前目录」。
+            if ([self ff_recursiveSearchActive]) [self ff_recursiveReapplySearch];
+            else [self applyFilter];
             [self refreshVisibleContent];
             [self.refreshControl endRefreshing];
             [self.gridRefreshControl endRefreshing];
@@ -1159,22 +1178,23 @@ static FFClipboardMode gClipboardMode = FFClipboardModeNone;
 // 「视图」二级菜单（选项组）。导入在 ＋；创建不在本菜单。
 - (UIMenu *)moreMenu
 {
+    __weak typeof(self) weakSelf = self;
     UIAction *select = [UIAction actionWithTitle:@"选择" image:[self symbolImage:@"checkmark.circle" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self toggleBatchMode]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf toggleBatchMode]; }];
     UIAction *paste = [UIAction actionWithTitle:@"粘贴" image:[self symbolImage:@"doc.on.clipboard" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self pasteAction:nil]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf pasteAction:nil]; }];
     paste.attributes = gClipboardSources.count == 0 ? UIMenuElementAttributesDisabled : 0;
     UIAction *refresh = [UIAction actionWithTitle:@"刷新" image:[self symbolImage:@"arrow.clockwise" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self reloadEntries]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf reloadEntries]; }];
     UIAction *copyCurrentPath = [UIAction actionWithTitle:@"复制当前路径"
         image:[self symbolImage:@"point.topleft.down.curvedto.point.bottomright.up" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) {
-            UIPasteboard.generalPasteboard.string = self.currentPath;
-            [self flash:@"路径已复制"];
+            UIPasteboard.generalPasteboard.string = weakSelf.currentPath;
+            [weakSelf flash:@"路径已复制"];
         }];
     UIAction *folderInfo = [UIAction actionWithTitle:@"文件夹信息"
         image:[self symbolImage:@"info.circle" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self showCurrentFolderInfo]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf showCurrentFolderInfo]; }];
 
     // 视图：排序/筛选/显示方式（只此一个二级，其余全部一级）。
     UIMenu *viewMenu = [UIMenu menuWithTitle:@"视图" children:@[
@@ -1449,14 +1469,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
 - (UIMenu *)sortMenu
 {
+    __weak typeof(self) weakSelf = self;
     UIAction *name = [UIAction actionWithTitle:@"名称" image:[self symbolImage:@"textformat" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeName]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf setSortMode:FFSortModeName]; }];
     UIAction *size = [UIAction actionWithTitle:@"大小" image:[self symbolImage:@"arrow.down.right.and.arrow.up.left" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeSize]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf setSortMode:FFSortModeSize]; }];
     UIAction *date = [UIAction actionWithTitle:@"修改时间" image:[self symbolImage:@"calendar" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeDate]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf setSortMode:FFSortModeDate]; }];
     UIAction *kind = [UIAction actionWithTitle:@"类型" image:[self symbolImage:@"square.grid.2x2" tint:nil]
-        identifier:nil handler:^(__unused UIAction *action) { [self setSortMode:FFSortModeKind]; }];
+        identifier:nil handler:^(__unused UIAction *action) { [weakSelf setSortMode:FFSortModeKind]; }];
     name.state = self.sortMode == FFSortModeName ? UIMenuElementStateOn : UIMenuElementStateOff;
     size.state = self.sortMode == FFSortModeSize ? UIMenuElementStateOn : UIMenuElementStateOff;
     date.state = self.sortMode == FFSortModeDate ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -1465,9 +1486,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     UIAction *direction = [UIAction actionWithTitle:directionTitle
         image:[self symbolImage:self.sortDescending ? @"arrow.down" : @"arrow.up" tint:nil]
         identifier:nil handler:^(__unused UIAction *action) {
-            self.sortDescending = !self.sortDescending;
-            [self updatePasteState];
-            [self reloadEntries];
+            weakSelf.sortDescending = !weakSelf.sortDescending;
+            [weakSelf updatePasteState];
+            [weakSelf reloadEntries];
         }];
     return [UIMenu menuWithTitle:@"排序方式" children:@[name, size, date, kind, direction]];
 }
@@ -1522,15 +1543,16 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 
 - (UIMenu *)filterMenu
 {
+    __weak typeof(self) weakSelf = self;
     NSMutableArray<UIAction *> *actions = [NSMutableArray array];
     for (NSInteger mode = FFFilterModeAll; mode <= FFFilterModeCode; mode++) {
         FFFilterMode filterMode = (FFFilterMode)mode;
         UIAction *action = [UIAction actionWithTitle:FFFilterTitle(filterMode)
             image:nil identifier:nil handler:^(__unused UIAction *act) {
-                self.filterMode = filterMode;
-                [self updatePasteState];
-                [self applyFilter];
-                [self refreshVisibleContent];
+                weakSelf.filterMode = filterMode;
+                [weakSelf updatePasteState];
+                [weakSelf applyFilter];
+                [weakSelf refreshVisibleContent];
             }];
         action.state = self.filterMode == filterMode ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
@@ -1545,6 +1567,14 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     return self.filteredEntries.count;
 }
 
+// 安全取行：reloadData 与手势/菜单回调交错时 indexPath 可能已失效，
+// 越界直接返回 nil（网格侧已有同类校验，这里补齐列表侧）。
+- (FFEntry *)entryForRow:(NSInteger)row
+{
+    if (row < 0 || (NSUInteger)row >= self.filteredEntries.count) return nil;
+    return self.filteredEntries[(NSUInteger)row];
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
@@ -1553,7 +1583,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                       reuseIdentifier:@"Cell"];
     }
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    FFEntry *item = [self entryForRow:indexPath.row];
+    if (!item) return cell;
     [self configureCell:cell withItem:item];
     return cell;
 }
@@ -1783,7 +1814,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
         return;
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    [self openEntry:self.filteredEntries[indexPath.row]];
+    FFEntry *entry = [self entryForRow:indexPath.row];
+    if (!entry) return;
+    [self openEntry:entry];
 }
 
 // 打开条目：目录进入、文件预览（列表与网格共用）。
@@ -2007,7 +2040,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     UICollectionViewCell *cell = [collectionView
         dequeueReusableCellWithReuseIdentifier:@"GridCell" forIndexPath:indexPath];
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    FFEntry *item = [self entryForRow:indexPath.row];
+    if (!item) return cell;
     UIView *existing = [cell.contentView viewWithTag:999];
     [existing removeFromSuperview];
 
@@ -2060,7 +2094,9 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     didSelectItemAtIndexPath:(NSIndexPath *)indexPath
 {
     [collectionView deselectItemAtIndexPath:indexPath animated:YES];
-    [self openEntry:self.filteredEntries[indexPath.row]];
+    FFEntry *entry = [self entryForRow:indexPath.row];
+    if (!entry) return;
+    [self openEntry:entry];
 }
 
 #pragma mark - Context menu & swipe actions
@@ -2192,7 +2228,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     point:(CGPoint)point
 {
     __weak typeof(self) weakSelf = self;
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    FFEntry *item = [self entryForRow:indexPath.row];
+    if (!item) return nil;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
         previewProvider:nil
         actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
@@ -2205,7 +2242,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
     point:(CGPoint)point
 {
     __weak typeof(self) weakSelf = self;
-    FFEntry *item = self.filteredEntries[(NSUInteger)indexPath.row];
+    FFEntry *item = [self entryForRow:indexPath.row];
+    if (!item) return nil;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
         previewProvider:nil
         actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
@@ -2218,7 +2256,8 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 {
     // 编辑（多选）模式下禁用左滑：swipe 按钮与底部批量工具栏重叠。
     if (self.editing) return nil;
-    FFEntry *item = self.filteredEntries[indexPath.row];
+    FFEntry *item = [self entryForRow:indexPath.row];
+    if (!item) return nil;
     __weak typeof(self) weakSelf = self;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
         title:@"删除" handler:^(__unused UIContextualAction *action, __unused UIView *sourceView,
@@ -2685,8 +2724,10 @@ static NSString *FFFilterTitle(FFFilterMode mode)
 - (void)extractEntry:(FFEntry *)item
 {
     NSString *stem = [FFArchiveService archiveStemForPath:item.path];
-    NSString *sibling = [self.currentPath stringByAppendingPathComponent:
-        [stem stringByAppendingString:@" (解压)"]];
+    // 目标目录唯一化：重复解压不会静默替换上一次的解压结果。
+    NSString *sibling = [FFArchiveService uniqueDirectoryInParent:self.currentPath
+        baseName:[stem stringByAppendingString:@" (解压)"]] ?: [self.currentPath
+        stringByAppendingPathComponent:[stem stringByAppendingString:@" (解压)"]];
     NSString *extractedRoot = [FFStorageRootPath() stringByAppendingPathComponent:@"Extracted"];
     NSString *fallbackDestination = [extractedRoot stringByAppendingPathComponent:
         [stem stringByAppendingFormat:@"-%@",
