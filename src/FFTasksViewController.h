@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 // Task center: live queue of copy/move/extract operations with progress
 // bars, cancel and history cleanup.
 @interface FFTasksViewController : UITableViewController
@@ -8,3 +10,5 @@
 @property(nonatomic, copy, nullable) void (^revealHandler)(NSString *path);
 
 @end
+
+NS_ASSUME_NONNULL_END
