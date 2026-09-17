@@ -248,37 +248,59 @@
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     FFFileTask *task = [self taskAtIndexPath:indexPath];
     if (!task) return;
-    // 只有成功完成的任务才有可跳转的落盘结果。
-    if (task.state != FFFileTaskStateCompleted) return;
-    NSString *path = [self revealPathForTask:task];
+    FFLogTag(@"Tasks", @"reveal tap state=%ld kind=%ld destination=%@ detail=%@",
+        (long)task.state, (long)task.kind, task.destination ?: @"(nil)",
+        task.detailName ?: @"(nil)");
+    // 只有成功完成的任务才有可跳转的落盘结果；其余给个明确反馈，避免点了没反应。
+    if (task.state != FFFileTaskStateCompleted) {
+        NSString *message = (task.state == FFFileTaskStateRunning ||
+            task.state == FFFileTaskStateQueued)
+            ? @"任务还在进行中" : @"任务未完成，没有可跳转的文件";
+        [FFPreviewRouter toastOnNav:self.navigationController message:message];
+        return;
+    }
+    NSString *note = nil;
+    NSString *path = [self revealPathForTask:task note:&note];
     if (!path.length) {
         [FFPreviewRouter toastOnNav:self.navigationController message:@"目标文件已不存在"];
         return;
     }
-    if (self.revealHandler) self.revealHandler(path);
+    if (self.revealHandler) {
+        self.revealHandler(path, note);
+        return;
+    }
+    // 理论上所有入口都经 FFRootTabBarController 接线；走到这里说明有入口漏了。
+    FFLogTag(@"Tasks", @"reveal handler missing path=%@", path);
+    [FFPreviewRouter toastOnNav:self.navigationController message:@"无法跳转（缺少导航接线）"];
 }
 
 // 已完成任务对应的落盘路径：
-//   下载 → 目标目录 + detailName（成功时写入最终文件名）
+//   下载 → 目标目录 + 实际文件名（detailName，另兜底 URL 尾段）
 //   复制/移动 → 单源时定位复制出的那个文件，多源时只打开目标目录
 //   解压 → 解压出来的目录本身；压缩 → 生成的压缩包文件
-// 文件/目录已不存在（被删除/改名）返回 nil。
-- (nullable NSString *)revealPathForTask:(FFFileTask *)task
+// 目标文件缺失但所在目录还在时：打开目录并通过 note 说明（不再静默无反应）。
+// 文件/目录都已不存在返回 nil。
+- (nullable NSString *)revealPathForTask:(FFFileTask *)task note:(NSString **)noteOut
 {
     NSFileManager *manager = NSFileManager.defaultManager;
     // 存档里的绝对路径可能来自旧容器（更新/重装后容器 UUID 变化）：映射回当前容器。
     NSString *destination = FFCanonicalStoragePath(task.destination ?: @"");
     BOOL destinationExists = [manager fileExistsAtPath:destination];
     NSString *resolved = nil;
+    NSString *note = nil;
     switch (task.kind) {
-        case FFFileTaskKindDownload:
-            if (destination.length && task.detailName.length) {
-                NSString *candidate = [destination
-                    stringByAppendingPathComponent:task.detailName];
-                if ([manager fileExistsAtPath:candidate]) resolved = candidate;
+        case FFFileTaskKindDownload: {
+            for (NSString *name in [self downloadCandidateNamesForTask:task]) {
+                NSString *candidate = [destination stringByAppendingPathComponent:name];
+                if ([manager fileExistsAtPath:candidate]) { resolved = candidate; break; }
             }
-            if (!resolved && destinationExists) resolved = destination;
+            if (!resolved && destinationExists) {
+                resolved = destination;
+                note = [NSString stringWithFormat:@"未找到 %@，已打开所在目录",
+                    task.detailName ?: @"下载文件"];
+            }
             break;
+        }
         case FFFileTaskKindCopy:
         case FFFileTaskKindMove:
             if (task.sources.count == 1 && destination.length) {
@@ -289,15 +311,37 @@
             if (!resolved && destinationExists) resolved = destination;
             break;
         case FFFileTaskKindExtract:
-        case FFFileTaskKindCompress:
             if (destinationExists) resolved = destination;
             break;
+        case FFFileTaskKindCompress: {
+            if (destinationExists) {
+                resolved = destination;
+                break;
+            }
+            NSString *parent = destination.stringByDeletingLastPathComponent;
+            if (destination.length && [manager fileExistsAtPath:parent]) {
+                resolved = parent;
+                note = [NSString stringWithFormat:@"未找到 %@，已打开所在目录",
+                    destination.lastPathComponent];
+            }
+            break;
+        }
     }
     if (!resolved) {
         FFLogTag(@"Tasks", @"reveal missing kind=%ld destination=%@ name=%@",
             (long)task.kind, task.destination ?: @"(nil)", task.detailName ?: @"(nil)");
     }
+    if (noteOut) *noteOut = note;
     return resolved;
+}
+
+- (NSArray<NSString *> *)downloadCandidateNamesForTask:(FFFileTask *)task
+{
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    if (task.detailName.length) [names addObject:task.detailName];
+    NSString *urlName = [NSURL URLWithString:task.remoteURL ?: @""].lastPathComponent;
+    if (urlName.length && ![names containsObject:urlName]) [names addObject:urlName];
+    return names;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath

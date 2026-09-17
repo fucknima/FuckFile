@@ -5,6 +5,7 @@
 #import "FFSettingsViewController.h"
 #import "FFStorageEnvironment.h"
 #import "FFFileTaskManager.h"
+#import "FFPreviewRouter.h"
 
 @interface FFRootTabBarController () <UITabBarControllerDelegate>
 @property(nonatomic, strong) UIButton *taskPill;
@@ -73,7 +74,7 @@
     self.taskPill.layer.shadowOpacity = 0.18;
     self.taskPill.layer.shadowRadius = 10;
     self.taskPill.layer.shadowOffset = CGSizeMake(0, 3);
-    [self.taskPill addTarget:self action:@selector(showTasks) forControlEvents:UIControlEventTouchUpInside];
+    [self.taskPill addTarget:self action:@selector(presentTaskCenter) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.taskPill];
     [NSLayoutConstraint activateConstraints:@[
         [self.taskPill.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
@@ -130,7 +131,7 @@
     self.taskPill.accessibilityLabel = title;
 }
 
-- (void)showTasks
+- (void)presentTaskCenter
 {
     FFTasksViewController *tasks = [FFTasksViewController new];
     tasks.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
@@ -138,11 +139,11 @@
         target:self action:@selector(dismissTasks)];
     // 点已完成任务：关掉任务中心，切到文件 tab 并跳到落盘位置。
     __weak typeof(self) weakSelf = self;
-    tasks.revealHandler = ^(NSString *path) {
+    tasks.revealHandler = ^(NSString *path, NSString *note) {
         typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         [strongSelf dismissViewControllerAnimated:YES completion:^{
-            [strongSelf revealPathInBrowser:path];
+            [strongSelf revealPathInBrowser:path note:note];
         }];
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:tasks];
@@ -152,11 +153,16 @@
 
 // 打开 path 所在目录；是文件则滚动定位并短暂高亮。已在浏览栈里的同目录
 // 页面优先复用（与导入结果跳转一致），否则新 push 一个浏览器。
-- (void)revealPathInBrowser:(NSString *)path
+// note 非空时跳转后补一条提示（例如「未找到 xxx，已打开所在目录」）。
+- (void)revealPathInBrowser:(NSString *)path note:(NSString *)note
 {
     if (!path.length) return;
     BOOL isDirectory = NO;
-    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory]) return;
+    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory]) {
+        [FFPreviewRouter toastOnNav:[self activeNavigationController]
+            message:@"目标文件已不存在"];
+        return;
+    }
     NSString *directory = isDirectory ? path : path.stringByDeletingLastPathComponent;
     if (!directory.length) return;
 
@@ -178,12 +184,13 @@
         existing.pendingRevealPath = revealPath;
         if (nav.topViewController != existing) [nav popToViewController:existing animated:YES];
         [existing reloadEntries];
-        return;
+    } else {
+        FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:directory];
+        browser.title = directory.lastPathComponent.length ? directory.lastPathComponent : @"文件";
+        browser.pendingRevealPath = revealPath;
+        [nav pushViewController:browser animated:YES];
     }
-    FFBrowserViewController *browser = [[FFBrowserViewController alloc] initWithPath:directory];
-    browser.title = directory.lastPathComponent.length ? directory.lastPathComponent : @"文件";
-    browser.pendingRevealPath = revealPath;
-    [nav pushViewController:browser animated:YES];
+    if (note.length) [FFPreviewRouter toastOnNav:nav message:note];
 }
 
 - (void)dismissTasks

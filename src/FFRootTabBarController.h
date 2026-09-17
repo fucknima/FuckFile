@@ -9,6 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (UINavigationController *)activeNavigationController;
 
+// 打开任务中心（模态，内部接好「点击已完成任务跳转」）。
+// 所有入口（任务胶囊、网页下载条）都走这里，保证跳转接线一致。
+- (void)presentTaskCenter;
+
 @end
 
 NS_ASSUME_NONNULL_END

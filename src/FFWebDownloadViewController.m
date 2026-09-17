@@ -5,6 +5,7 @@
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
 #import "FFLogger.h"
+#import "FFRootTabBarController.h"
 #import "FFTasksViewController.h"
 
 // WebKit 把「导航变成下载」当成一次策略中断（Frame load interrupted by
@@ -578,6 +579,12 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 
 - (void)openTasks
 {
+    // 统一走根 shell 的模态任务中心：那里接好了「点击已完成任务跳转」。
+    // 之前这里 push 的实例没有接线，点任务会没反应。
+    if ([self.tabBarController isKindOfClass:FFRootTabBarController.class]) {
+        [(FFRootTabBarController *)self.tabBarController presentTaskCenter];
+        return;
+    }
     FFTasksViewController *tasks = [FFTasksViewController new];
     [self.navigationController pushViewController:tasks animated:YES];
 }
