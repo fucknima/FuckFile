@@ -1065,3 +1065,35 @@ ImportService/PathPolicy），未引入新的事实来源。
    自动纠偏失败静默（不再误报方向锁定）。
 
 原因：用户真机反馈；两套全屏状态需对齐，系统组件问题如实记录不硬改。
+
+## ADR-030
+
+日期：2026-09-17
+
+决定：
+
+**Build 892 全库审查后的修复批次：数据安全、崩溃、泄漏、构建链。**
+
+1. 文本编辑器只读预览（>8MB）此前仍可经编码/换行菜单触发保存，把 1MB 预览
+   写回原文件；现在 save / 替换 / 编码 / 换行入口全部按 readOnlyMode 拦截。
+2. 解压目标唯一化收敛到 `FFArchiveService uniqueDirectoryInParent:baseName:`，
+   主浏览器与存储页不再静默替换已有的「xxx (解压)」目录。
+3. 浏览器 UIAction 菜单 handler 改 weak；block 通知观察者保存 token 并在
+   dealloc 注销（此前每个目录页因 self→item→menu→action→self 泄漏）。
+4. 图片查看器条带缩略图回主线程再赋值，并按 imagePath 校验复用错位。
+5. SQLite 连接去掉 SQLITE_OPEN_NOMUTEX，改回默认 serialized。
+6. 播放器观察者拆除移到 viewDidDisappear 并可在 viewWillAppear 重建；断点
+   续播的延迟 seek 校验 currentItem；离开页面自动退出全屏不再弹方向锁定。
+7. Hex 编辑器保存改为同目录临时文件 + fsync + rename 原子替换，保存期间禁止
+   编辑/重复提交；成功后重开 fd。
+8. 中危修复：递归搜索结果不再被目录刷新覆盖；http/https 策略统一（Info.plist
+   增加 ATS 例外）；iPad 设置 formSheet 手势关闭清缓存；Mach-O 签名索引边界
+   改 64 位检查；列表/网格/任务回调补齐 indexPath 边界校验；WebDAV COPY/MOVE
+   覆盖前先备份；WebContent 崩溃自动重载限次；CSV 导出流式写盘并转义列名；
+   局域网共享接收文件 O_EXCL 创建；任务执行代次防止取消→继续后重复执行；
+   下载取消清理临时文件并用锁保护 resumeData。
+9. 构建链：打包显式选择 fat 产物并断言 arm64+arm64e；Makefile 缺少
+   FF_LIBARCHIVE_A 直接失败、`make clean` 不再跑 npm；runtime 缓存校验改由
+   manifest 驱动；SheetJS 升到 0.20.2（CVE-2023-30533 / CVE-2024-22363）。
+
+原因：build 892 代码审查发现的数据丢失/崩溃/泄漏与构建静默回退风险。

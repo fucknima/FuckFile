@@ -413,6 +413,10 @@
 - [x] 系统 Quick Look（QLPreviewController，PDF 默认关联）双指缩放与双击偶发冲突：
       App 未加任何手势，属系统实现，无法从外部修复；需规避时把 PDF 关联切到内置
       PDFKit 阅读器（设置 → 文件关联，viewerID "pdf"）
+- [x] 审查修复批次（ADR-030）：只读编辑器保存守卫、解压目标唯一化、菜单/通知
+      泄漏、缩略图主线程、SQLite mutex、播放器观察者生命周期、Hex 原子保存、
+      搜索覆盖、http/ATS 统一、Mach-O 边界、WebDAV 覆盖备份、CSV 流式导出、
+      构建链加固（fat 断言 / libarchive fail-closed / runtime manifest / xlsx 0.20.2）
 - [ ] blob:/data: 类网页下载（WebKit 专属能力）：暂不支持，弹窗提示改用 Safari
 - [ ] URL 下载补充方案 B：cURL / 自定义请求头（暂不做，按需再加）
 - [ ] 网络位置客户端：WebDAV 客户端（连接/浏览/下载/上传）

@@ -6,6 +6,7 @@ RUNTIME_ROOT="$ROOT/.office-runtime"
 BUNDLE="$RUNTIME_ROOT/bundle"
 OUT="$BUNDLE/OfficeAssets"
 CACHE="$RUNTIME_ROOT/npm"
+MANIFEST="$RUNTIME_ROOT/.runtime-manifest"
 STAMP="$OUT/.runtime-version"
 SOURCE_HASH="$(cat \
   "$ROOT/resources/office/entry.js" \
@@ -14,12 +15,18 @@ SOURCE_HASH="$(cat \
   "$ROOT/resources/office/host.css" | shasum -a 256 | awk '{print $1}')"
 VERSION="reamkit=1.29.0;docx-preview=0.4.0;jszip=3.10.1;mdgate=0.6.25;marked=18.0.12;dompurify=3.4.15;esbuild=0.25.9;fixed-layout=3;src=$SOURCE_HASH"
 
+# Cache hit requires the stamp to match and every file recorded by the last
+# successful build to still exist (catches lost assets / licenses).
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
-      && -s "$OUT/index.html" \
-      && -s "$OUT/office-host.js" \
-      && -s "$OUT/host.css" ]]; then
-  echo "== Office runtime cached: $VERSION"
-  exit 0
+      && -s "$MANIFEST" ]]; then
+  CACHE_OK=1
+  while IFS= read -r rel; do
+    [[ -s "$OUT/$rel" ]] || { CACHE_OK=0; break; }
+  done < "$MANIFEST"
+  if [[ "$CACHE_OK" == 1 ]]; then
+    echo "== Office runtime cached: $VERSION"
+    exit 0
+  fi
 fi
 
 rm -rf "$BUNDLE" "$CACHE"
@@ -84,7 +91,6 @@ for pkg in \
   fi
 done
 
-printf '%s\n' "$VERSION" > "$STAMP"
 for file in index.html office-host.js host.css; do
   if [[ ! -s "$OUT/$file" ]]; then
     echo "ERROR: Office runtime output missing: $file" >&2
@@ -106,4 +112,6 @@ grep -q 'ff-fixed-layout-stage' "$OUT/office-host.js" || {
   echo "ERROR: Office fixed-layout compositor scaler missing" >&2; exit 1;
 }
 
+( cd "$OUT" && find . -type f | sed 's|^\./||' | sort > "$MANIFEST" )
+printf '%s\n' "$VERSION" > "$STAMP"
 echo "== Office runtime ready: $VERSION ($(du -sh "$OUT" | awk '{print $1}'))"

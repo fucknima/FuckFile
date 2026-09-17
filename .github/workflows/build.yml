@@ -258,8 +258,24 @@ jobs:
           echo "Branch: ${GITHUB_REF_NAME}"
           echo "Build: ${BUILD_NUMBER}"
 
-          APP="$(find .theos/obj -name 'FuckFile.app' -type d | head -1)"
-          EXT_BUILD="$(find .theos/obj -name 'FuckFileShare.appex' -type d | head -1)"
+          # Theos leaves per-arch bundles next to the merged one; pick the
+          # universal (fat) bundle explicitly instead of trusting find order.
+          select_bundle() { # $1 = bundle dir name, $2 = executable name
+            local fallback=""
+            while IFS= read -r candidate; do
+              local binary="$candidate/$2"
+              [ -x "$binary" ] || continue
+              if file "$binary" | grep -q 'universal binary'; then
+                echo "$candidate"
+                return 0
+              fi
+              [ -z "$fallback" ] && fallback="$candidate"
+            done < <(find .theos/obj -type d -name "$1" | sort)
+            if [ -n "$fallback" ]; then echo "$fallback"; fi
+            return 0
+          }
+          APP="$(select_bundle FuckFile.app FuckFile)"
+          EXT_BUILD="$(select_bundle FuckFileShare.appex FuckFileShare)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "ERROR: FuckFile.app not found"; exit 1
           fi
@@ -269,6 +285,15 @@ jobs:
           if [ ! -x "$EXT_BUILD/FuckFileShare" ]; then
             echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
           fi
+          # ARCHS=arm64 arm64e：thin bundle would silently drop older devices.
+          for pair in "$APP/FuckFile" "$EXT_BUILD/FuckFileShare"; do
+            lipo -archs "$pair"
+            for arch in arm64 arm64e; do
+              lipo -archs "$pair" | tr ' ' '\n' | grep -Fxq "$arch" || {
+                echo "ERROR: $pair is missing $arch"; exit 1;
+              }
+            done
+          done
 
           # Do not repeat the Build 810 failure mode: a green native build is
           # insufficient if a JS viewer runtime was never copied into the app.
@@ -313,7 +338,7 @@ jobs:
             --output-format human-readable-text \
             --output-partial-info-plist "$APP/icon-partial-info.plist"
           test -f "$APP/Assets.car"
-          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({'CFBundleIcons':a['CFBundleIcons']} if 'CFBundleIcons' in a else {}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
+          python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({k:v for k,v in a.items() if k.startswith('CFBundleIcons')}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
 
           mkdir -p "$APP/Languages"
           for d in c cpp objc swift python javascript typescript tsx json html css bash yaml xml markdown sql; do
@@ -327,6 +352,11 @@ jobs:
             fi
           done
           test -f "$APP/Languages/c/highlights.scm"
+          for d in c cpp objc swift python javascript typescript tsx json html css bash yaml xml markdown sql; do
+            test -f "$APP/Languages/$d/highlights.scm" || {
+              echo "ERROR: missing language highlights: $d"; exit 1;
+            }
+          done
 
           rm -rf "$APP/PlugIns/FuckFileShare.appex"
           mkdir -p "$APP/PlugIns"

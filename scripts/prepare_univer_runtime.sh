@@ -6,27 +6,34 @@ RUNTIME_ROOT="$ROOT/.univer-runtime"
 BUNDLE="$RUNTIME_ROOT/bundle"
 OUT="$BUNDLE/UniverAssets"
 CACHE="$RUNTIME_ROOT/npm"
+MANIFEST="$RUNTIME_ROOT/.runtime-manifest"
 STAMP="$OUT/.runtime-version"
 SOURCE_HASH="$(cat \
   "$ROOT/resources/univer/entry.js" \
   "$ROOT/resources/univer/style-xml.mjs" \
   "$ROOT/resources/univer/index.html" \
   "$ROOT/resources/univer/host.css" | shasum -a 256 | awk '{print $1}')"
-VERSION="univer=1.0.0-rc.0;sheetjs=0.18.5;jszip=3.10.1;esbuild=0.25.9;src=$SOURCE_HASH"
+VERSION="univer=1.0.0-rc.0;sheetjs=0.20.2;jszip=3.10.1;esbuild=0.25.9;src=$SOURCE_HASH"
 
+# Cache hit requires the stamp to match and every file recorded by the last
+# successful build to still exist (catches lost font assets / licenses).
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$VERSION" \
-      && -s "$OUT/index.html" \
-      && -s "$OUT/univer-host.js" \
-      && -s "$OUT/univer-host.css" \
-      && -s "$OUT/xlsx.full.min.js" \
-      && -s "$OUT/host.css" ]]; then
-  echo "== Univer runtime cached: $VERSION"
-  exit 0
+      && -s "$MANIFEST" ]]; then
+  CACHE_OK=1
+  while IFS= read -r rel; do
+    [[ -s "$OUT/$rel" ]] || { CACHE_OK=0; break; }
+  done < "$MANIFEST"
+  if [[ "$CACHE_OK" == 1 ]]; then
+    echo "== Univer runtime cached: $VERSION"
+    exit 0
+  fi
 fi
 
 rm -rf "$BUNDLE" "$CACHE"
 mkdir -p "$OUT" "$CACHE"
 
+# npm registry 上的 xlsx 停在 0.18.5（含原型污染/ReDoS 修复前的老版本），
+# SheetJS 官方只在自有 CDN 发布修复版，这里用 tarball URL 锁死版本。
 cat > "$CACHE/package.json" <<'JSON'
 {
   "private": true,
@@ -36,7 +43,7 @@ cat > "$CACHE/package.json" <<'JSON'
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "rxjs": "7.8.2",
-    "xlsx": "0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.2/xlsx-0.20.2.tgz",
     "jszip": "3.10.1",
     "esbuild": "0.25.9"
   }
@@ -85,8 +92,8 @@ if [[ -f "$CACHE/node_modules/xlsx/LICENSE" ]]; then
     "$OUT/licenses/SheetJS-Apache-2.0.txt"
 fi
 
-printf '%s\n' "$VERSION" > "$STAMP"
-for file in index.html univer-host.js univer-host.css xlsx.full.min.js host.css; do
+for file in index.html univer-host.js univer-host.css xlsx.full.min.js host.css \
+            licenses/Univer-Apache-2.0.txt; do
   if [[ ! -s "$OUT/$file" ]]; then
     echo "ERROR: Univer runtime output missing: $file" >&2
     exit 1
@@ -94,4 +101,6 @@ for file in index.html univer-host.js univer-host.css xlsx.full.min.js host.css;
 done
 node --check "$OUT/univer-host.js"
 node --check "$OUT/xlsx.full.min.js"
+( cd "$OUT" && find . -type f | sed 's|^\./||' | sort > "$MANIFEST" )
+printf '%s\n' "$VERSION" > "$STAMP"
 echo "== Univer runtime ready: $VERSION ($(du -sh "$OUT" | awk '{print $1}'))"

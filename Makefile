@@ -12,13 +12,24 @@ APPEX_NAME = FuckFileShare
 # incremental builds reuse the generated assets and do not reinstall npm deps.
 # Every runtime is fail-closed: a missing JS bundle must fail the build instead
 # of producing an IPA whose viewer opens to a blank page.
-UNIVER_RUNTIME_READY := $(shell bash scripts/prepare_univer_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
-OFFICE_RUNTIME_READY := $(shell bash scripts/prepare_office_runtime.sh >/dev/null 2>&1 && echo yes || echo no)
+# `make clean` must stay usable without npm/network, so skip when the only goal
+# is clean; failures keep their own log instead of being swallowed by /dev/null.
+_FF_NEED_RUNTIMES := $(if $(MAKECMDGOALS),$(filter-out clean,$(MAKECMDGOALS)),all)
+ifneq ($(_FF_NEED_RUNTIMES),)
+_FF_PREP_LOG_DIR := $(_THEOS_LOCAL_DATA_DIR)
+UNIVER_RUNTIME_READY := $(shell mkdir -p $(_FF_PREP_LOG_DIR); bash scripts/prepare_univer_runtime.sh >$(_FF_PREP_LOG_DIR)/prepare-univer.log 2>&1 && echo yes || echo no)
+OFFICE_RUNTIME_READY := $(shell mkdir -p $(_FF_PREP_LOG_DIR); bash scripts/prepare_office_runtime.sh >$(_FF_PREP_LOG_DIR)/prepare-office.log 2>&1 && echo yes || echo no)
 ifeq ($(UNIVER_RUNTIME_READY),no)
-$(error Failed to prepare offline Univer spreadsheet runtime; run scripts/prepare_univer_runtime.sh for details)
+$(error Failed to prepare offline Univer spreadsheet runtime; see $(_FF_PREP_LOG_DIR)/prepare-univer.log)
 endif
 ifeq ($(OFFICE_RUNTIME_READY),no)
-$(error Failed to prepare offline Office document runtime; run scripts/prepare_office_runtime.sh for details)
+$(error Failed to prepare offline Office document runtime; see $(_FF_PREP_LOG_DIR)/prepare-office.log)
+endif
+# iOS has no public libarchive; without the pinned static slice the backend
+# would silently fall back to dlopen of a private system library. Fail closed.
+ifeq ($(strip $(FF_LIBARCHIVE_A)),)
+$(error FF_LIBARCHIVE_A is not set: CI provides the pinned libarchive static slice in the "Prepare pinned libarchive" step; local builds must set it too)
+endif
 endif
 
 FuckFile_FILES = \
