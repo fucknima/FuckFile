@@ -30,9 +30,6 @@ static const void *kFFBrowserRecursiveSearchSeenPathsKey = &kFFBrowserRecursiveS
 @end
 
 @interface FFBrowserViewController (LocalSearchFix)
-// 原始 selector 在 .m 私有实现里，这里补声明以便类内转发（swizzle 后调用它
-// 会走到本类的递归实现）。
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController;
 - (void)ff_recursive_updateSearchResultsForSearchController:(UISearchController *)searchController;
 @end
 @implementation FFBrowserViewController (LocalSearchFix)
@@ -92,8 +89,9 @@ static BOOL FFLocalSearchMatches(NSString *field, NSString *query)
     UISearchController *controller = [self valueForKey:@"searchController"];
     if (!controller) return;
     // 注意：类加载时两个 selector 已交换，调用「原」选择器才会走到本类的
-    // 递归实现（ff_ 前缀的那个指向交换后的原始本地过滤）。
-    [self updateSearchResultsForSearchController:controller];
+    // 递归实现（ff_ 前缀的那个指向交换后的原始本地过滤）。原实现是私有
+    // 的，走 UISearchResultsUpdating 协议声明来调用。
+    [(id<UISearchResultsUpdating>)self updateSearchResultsForSearchController:controller];
 }
 
 - (NSArray<FFEntry *> *)ff_immediateMatchesForQuery:(NSString *)query
