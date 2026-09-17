@@ -89,7 +89,8 @@ static FFFileTask *FFTaskFromDictionary(NSDictionary *row)
     NSString *remoteURL = [row[@"remoteURL"] isKindOfClass:NSString.class] ? row[@"remoteURL"] : nil;
     if (kindValue.integerValue == FFFileTaskKindDownload) {
         NSURL *url = [NSURL URLWithString:remoteURL ?: @""];
-        if (![[url.scheme lowercaseString] isEqualToString:@"https"]) return nil;
+        NSString *scheme = url.scheme.lowercaseString;
+        if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) return nil;
     }
 
     FFFileTask *task = [FFFileTask new];
@@ -297,7 +298,8 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
     [self.taskList insertObject:task atIndex:0];
     [self.lock unlock];
     [self notifyChange];
-    dispatch_async(self.workQueue, ^{ [self executeTask:task]; });
+    NSUInteger generation = ++task.executionGeneration;
+    dispatch_async(self.workQueue, ^{ [self executeTask:task generation:generation]; });
 }
 
 - (void)cancelTask:(FFFileTask *)task
@@ -323,7 +325,8 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
     task.skippedCount = 0;
     task.detailName = nil;
     [self notifyChange];
-    dispatch_async(self.workQueue, ^{ [self executeTask:task]; });
+    NSUInteger generation = ++task.executionGeneration;
+    dispatch_async(self.workQueue, ^{ [self executeTask:task generation:generation]; });
 }
 
 - (void)removeTask:(FFFileTask *)task
@@ -456,9 +459,13 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
         FFLogTag(@"Tasks", @"persist write FAIL error=%@", writeError);
 }
 
-- (void)executeTask:(FFFileTask *)task
+- (void)executeTask:(FFFileTask *)task generation:(NSUInteger)generation
 {
     if (task.cancelled || task.state == FFFileTaskStateCancelled) return;
+    // 取消→「继续」会留下两个已入队的 block：代次过期的那个直接退出，
+    // 否则第一个跑完后第二个还会把任务再执行一遍。
+    if (generation != task.executionGeneration) return;
+    if (task.state == FFFileTaskStateCompleted) return;
 
     task.state = FFFileTaskStateRunning;
     [self notifyChange];
@@ -836,10 +843,13 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
 - (BOOL)executeDownloadTask:(FFFileTask *)task
 {
     NSURL *url = [NSURL URLWithString:task.remoteURL ?: @""];
-    if (!url || ![[url.scheme lowercaseString] isEqualToString:@"https"]) {
+    NSString *scheme = url.scheme.lowercaseString;
+    // 网页下载浏览器允许 http/https（Info.plist 已配 ATS 例外）：两边策略一致，
+    // 否则浏览器里成功入队的 http 任务一到执行就必失败。
+    if (!url || (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"])) {
         task.failedCount = 1;
         task.error = [NSError errorWithDomain:@"FFFileTaskErrorDomain" code:470
-            userInfo:@{NSLocalizedDescriptionKey: @"下载地址无效（仅支持 HTTPS）"}];
+            userInfo:@{NSLocalizedDescriptionKey: @"下载地址无效（仅支持 http/https）"}];
         return NO;
     }
     if (!task.destination.length ||
@@ -860,10 +870,12 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
 
     // 最多两次：先带 resumeData 续传，若服务器/文件已变化导致断点失效，
     // 清掉断点后全量重来一次。取消不重试，断点保留给用户点「继续」。
+    NSLock *cancelLock = [NSLock new];
     for (NSInteger attempt = 0; attempt < 2; attempt++) {
         NSData *resumeData = task.resumeData;
         BOOL usedResumeData = resumeData.length > 0;
         __block NSData *cancelResumeData = nil;
+        __block BOOL cancelResumeDataReady = NO;
         __block BOOL cancelRequested = NO;
         __block NSURL *tempURL = nil;
         __block NSURLResponse *response = nil;
@@ -911,21 +923,29 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
             cancelRequested = YES;
             dispatch_semaphore_t resumeSemaphore = dispatch_semaphore_create(0);
             [download cancelByProducingResumeData:^(NSData *data) {
+                [cancelLock lock];
                 cancelResumeData = data;
+                cancelResumeDataReady = YES;
+                [cancelLock unlock];
                 dispatch_semaphore_signal(resumeSemaphore);
             }];
-            dispatch_semaphore_wait(resumeSemaphore,
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
+            if (dispatch_semaphore_wait(resumeSemaphore,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC))) != 0)
+                FFLogTag(@"Tasks", @"cancel resume data timed out, falling back");
         }
         [session finishTasksAndInvalidate];
         delegate.progressBlock = nil;
         delegate.finishBlock = nil;
 
         if (cancelRequested || task.cancelled) {
-            NSData *resume = cancelResumeData.length ? cancelResumeData
-                : downloadError.userInfo[NSURLSessionDownloadTaskResumeData];
+            [cancelLock lock];
+            NSData *resume = cancelResumeDataReady ? cancelResumeData : nil;
+            [cancelLock unlock];
+            if (!resume.length) resume = downloadError.userInfo[NSURLSessionDownloadTaskResumeData];
             if ([resume isKindOfClass:NSData.class] && resume.length) task.resumeData = resume;
             else if (!task.resumeData.length) task.resumeData = usedResumeData ? resumeData : nil;
+            // 取消与下载完成撞车时，临时文件不再导入，及时清掉避免留在 tmp。
+            if (tempURL) [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
             FFLogTag(@"Tasks", @"download cancelled resume=%lu",
                 (unsigned long)task.resumeData.length);
             return NO;

@@ -68,6 +68,9 @@ typedef NS_ENUM(NSInteger, FFFileTaskState) {
 @property(atomic) FFZipEncryptionMode archiveEncryption;
 
 @property(atomic) BOOL cancelled;
+// 执行代次：入队/重试时自增。worker 领取的任务若代次已过期（取消后又点了
+// 「继续」），旧 block 直接退出，避免同一任务被执行两遍。
+@property(atomic) NSUInteger executionGeneration;
 @property(atomic, copy, nullable) FFConflictAction (^conflictHandler)(NSString *name);
 
 @property(nonatomic, readonly) NSString *stateText;
