@@ -490,6 +490,11 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)save
 {
+    // 只读预览（>8MB）只显示前 1MB：保存会把预览写回，等于截断原文件。
+    if (self.readOnlyMode) {
+        [self flash:@"只读预览不能保存，避免截断大文件"];
+        return;
+    }
     NSString *text = self.editorView.text ?: @"";
     FFTextEncoding encoding = self.encoding;
     BOOL bom = self.hasBOM;
@@ -575,6 +580,10 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         UIAction *action = [UIAction actionWithTitle:spec[1]
             image:nil identifier:[NSString stringWithFormat:@"enc.%ld", (long)value]
             handler:^(__unused UIAction *action) {
+                if (weakSelf.readOnlyMode) {
+                    [weakSelf flash:@"只读预览不能修改编码"];
+                    return;
+                }
                 weakSelf.encodingOverride = YES;
                 weakSelf.encoding = value;
                 weakSelf.hasBOM = (value == FFTextEncodingUTF8BOM);
@@ -596,6 +605,10 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
         UIAction *action = [UIAction actionWithTitle:spec[1]
             image:nil identifier:[NSString stringWithFormat:@"le.%ld", (long)value]
             handler:^(__unused UIAction *action) {
+                if (weakSelf.readOnlyMode) {
+                    [weakSelf flash:@"只读预览不能修改换行符"];
+                    return;
+                }
                 weakSelf.lineEndingOverride = YES;
                 weakSelf.lineEnding = value;
                 [weakSelf.editorView setLineEndingStyle:[weakSelf lineEndingStyleValue:value]];
@@ -935,12 +948,15 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 {
     self.findCaseButton.alpha = self.caseSensitive ? 1.0 : 0.35;
     self.findRegexButton.alpha = self.regexEnabled ? 1.0 : 0.35;
-    // Prev/Next 只在「稳定 snapshot ready」时可点（搜索未完成前禁用）。
+    // Prev/Next 只在「稳定 snapshot ready」时可点（搜索未完成前禁用）；
+    // 只读预览下替换按钮禁用（替换同样无法保存，只会误导）。
     BOOL ready = self.searchSession.state == FFSearchSessionStateReady;
+    BOOL replaceReady = ready && !self.readOnlyMode;
     for (UIView *view in self.findRowButtons) {
         if ([view isKindOfClass:UIButton.class]) {
             UIButton *button = (UIButton *)view;
             if (button.tag == 23 || button.tag == 24) button.enabled = ready;
+            if (button.tag == 26 || button.tag == 27) button.enabled = replaceReady;
         }
     }
     if (self.findCountLabel) {
@@ -1000,6 +1016,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)replaceCurrent
 {
+    if (self.readOnlyMode) return;
     NSRange range = self.searchSession.currentRange;
     if (range.location == NSNotFound) {
         [self.searchSession navigateNext];
@@ -1016,6 +1033,7 @@ typedef NS_ENUM(NSInteger, FFEditorAccessoryAction) {
 
 - (void)replaceAll
 {
+    if (self.readOnlyMode) return;
     NSArray<NSValue *> *snapshot = self.searchSession.matches;
     if (snapshot.count == 0) return;
     NSRegularExpression *regex = [self replacementRegex];

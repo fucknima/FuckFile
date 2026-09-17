@@ -257,11 +257,11 @@ static NSDictionary *FFParseCodeSignature(const uint8_t *bytes, NSUInteger lengt
     for (uint32_t i = 0; i < count; i++) {
         uint32_t type = FFReadBE32(bytes + 12 + i * 8);
         uint32_t offset = FFReadBE32(bytes + 16 + i * 8);
-        if (offset + 8 > totalLength) continue;
+        if (!FFRangeInside(offset, 8, totalLength)) continue;
         const uint8_t *blob = bytes + offset;
         uint32_t blobMagic = FFReadBE32(blob);
         uint32_t blobLength = FFReadBE32(blob + 4);
-        if (blobLength < 8 || offset + blobLength > totalLength) continue;
+        if (blobLength < 8 || !FFRangeInside(offset, blobLength, totalLength)) continue;
 
         if (blobMagic == 0xfade0c02 && blobLength >= 44) {
             uint32_t version = FFReadBE32(blob + 8);

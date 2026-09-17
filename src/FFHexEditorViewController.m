@@ -32,6 +32,7 @@ static const NSUInteger kPageSize = 64 * 1024;
 // failed save can roll back what it already wrote.
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *patches;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *originals;
+@property(nonatomic) BOOL saving; // 保存进行中：禁止再次提交/编辑/丢弃
 @property(nonatomic, strong) NSData *pageCache; // current 64 KiB page
 @property(nonatomic, strong) NSArray<NSNumber *> *searchMatches;
 @property(nonatomic) NSUInteger searchIndex;
@@ -122,12 +123,12 @@ static const NSUInteger kPageSize = 64 * 1024;
 {
     for (UIBarButtonItem *item in self.navigationItem.rightBarButtonItems)
         item.enabled = YES; // 跳转始终可用
-    // Save enabled only with pending patches.
-    self.navigationItem.rightBarButtonItems.firstObject.enabled =
-        self.patches.count > 0;
+    // Save/discard enabled only with pending patches, and never while a save
+    // is in flight (avoid double-submit and concurrent patch mutation).
+    BOOL hasPending = self.patches.count > 0 && !self.saving;
+    self.navigationItem.rightBarButtonItems.firstObject.enabled = hasPending;
     // 「取消修改」同样只在有未保存修改时可点（避免点了没反应）。
-    self.navigationItem.rightBarButtonItems.lastObject.enabled =
-        self.patches.count > 0;
+    self.navigationItem.rightBarButtonItems.lastObject.enabled = hasPending;
 }
 
 #pragma mark - Page reading
@@ -207,6 +208,7 @@ static const NSUInteger kPageSize = 64 * 1024;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (self.saving) return;
 
     NSData *page = [self currentPageData];
     NSUInteger row = (NSUInteger)indexPath.row;
@@ -263,6 +265,7 @@ static const NSUInteger kPageSize = 64 * 1024;
 
 - (void)applyHex:(NSString *)hex toLineBase:(unsigned long long)base lineLength:(NSUInteger)lineLength
 {
+    if (self.saving) return;
     if (hex.length / 2 != lineLength) {
         [self flash:[NSString stringWithFormat:
             @"长度不符：本行固定 %lu 字节", (unsigned long)lineLength]];
@@ -513,6 +516,7 @@ static NSData *FFHexSearchNeedle(NSString *query)
 
 - (void)discardPatches
 {
+    if (self.saving) return;
     if (self.patches.count == 0) return;
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"放弃修改"
         message:[NSString stringWithFormat:@"将丢弃 %lu 处未保存的字节修改。",
@@ -534,6 +538,7 @@ static NSData *FFHexSearchNeedle(NSString *query)
 
 - (void)saveTapped
 {
+    if (self.saving) return;
     if (self.patches.count == 0) return;
     NSString *detail = nil;
     NSString *finalName = nil;
@@ -545,20 +550,35 @@ static NSData *FFHexSearchNeedle(NSString *query)
         [self flash:[NSString stringWithFormat:@"无法保存：%@", detail ?: @"路径不合法"]];
         return;
     }
+    self.saving = YES;
+    [self updateBarState];
+    // 快照：保存期间仍可能产生新编辑，后台不能枚举会变的字典。
+    NSDictionary<NSNumber *, NSNumber *> *patches = [self.patches copy];
+    unsigned long long fileSize = self.fileSize;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *error = nil;
-        NSUInteger applied = [self applyPatchesToParent:parent name:finalName error:&error];
+        NSUInteger applied = [self applyPatches:patches fileSize:fileSize
+            toParent:parent name:finalName error:&error];
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.saving = NO;
             if (applied == NSNotFound) {
+                [self updateBarState];
                 [self flash:[NSString stringWithFormat:@"保存失败：%@",
                     error.localizedDescription ?: @"未知错误"]];
                 return;
             }
+            // rename 后旧 fd 指向已被替换的 inode，必须重新打开才能读到新内容。
+            if (![self reopenTargetAfterSave])
+                [self flash:@"已保存，但重新打开文件失败，请退出后重进"];
+            // 只清掉真正写盘的补丁；保存期间新产生的编辑保持待保存状态。
+            for (NSNumber *offset in patches) {
+                if ([self.patches[offset] isEqualToNumber:patches[offset]]) {
+                    [self.patches removeObjectForKey:offset];
+                    [self.originals removeObjectForKey:offset];
+                }
+            }
             FFLogTag(@"HexEditor", @"saved path=%@ patches=%lu",
                 self.filePath, (unsigned long)applied);
-            [self.patches removeAllObjects];
-            [self.originals removeAllObjects];
-            // 磁盘已更新：作废页缓存，重新 pread 反映新字节。
             self.pageCache = nil;
             [self.tableView reloadData];
             [self refreshHeader];
@@ -568,65 +588,94 @@ static NSData *FFHexSearchNeedle(NSString *query)
     });
 }
 
-// Applies every patch via pwrite on the validated target. Returns the
-// number of patches written, or NSNotFound after rolling back partial
-// writes from the cached originals — the file is never left half-modified.
-- (NSUInteger)applyPatchesToParent:(NSString *)parent name:(NSString *)name error:(NSError **)error
+- (BOOL)reopenTargetAfterSave
+{
+    int fd = open(self.filePath.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NO;
+    struct stat status = {0};
+    if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode)) {
+        close(fd);
+        return NO;
+    }
+    if (self.fd >= 0) close(self.fd);
+    self.fd = fd;
+    self.fileSize = (unsigned long long)status.st_size;
+    self.deviceID = status.st_dev;
+    self.inodeID = status.st_ino;
+    self.pageCount = MAX(1ULL, ((uint64_t)self.fileSize + kPageSize - 1) / kPageSize);
+    if (self.pageIndex >= self.pageCount) self.pageIndex = self.pageCount - 1;
+    return YES;
+}
+
+// 原子保存：先把原文件整份复制成同目录临时文件，在临时文件上打补丁并
+// fsync，确认原文件未被替换后 rename 覆盖。中途失败/断电只会留下原文件
+// 和一个已清理的临时文件，不会出现半修改状态。
+- (NSUInteger)applyPatches:(NSDictionary<NSNumber *, NSNumber *> *)patches
+                  fileSize:(unsigned long long)fileSize
+                  toParent:(NSString *)parent
+                      name:(NSString *)name
+                     error:(NSError **)error
 {
     NSString *target = [parent stringByAppendingPathComponent:name];
-    int fd = open(target.fileSystemRepresentation,
-        O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
+    NSString *tempPath = [parent stringByAppendingPathComponent:
+        [NSString stringWithFormat:@".%@.ffhex-%@.tmp", name,
+            [NSUUID.UUID.UUIDString substringToIndex:8]]];
+    NSFileManager *manager = NSFileManager.defaultManager;
+    if (![manager copyItemAtPath:target toPath:tempPath error:error]) return NSNotFound;
+
+    NSError *failure = nil;
+    NSUInteger applied = 0;
+    int fd = open(tempPath.fileSystemRepresentation, O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno
+        failure = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno
             userInfo:@{NSLocalizedDescriptionKey:
-                [NSString stringWithFormat:@"打开文件失败：%s", strerror(errno)]}];
-        return NSNotFound;
-    }
-    struct stat status = {0};
-    if (fstat(fd, &status) != 0 || status.st_dev != self.deviceID ||
-        status.st_ino != self.inodeID) {
-        close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIDRM
-            userInfo:@{NSLocalizedDescriptionKey:@"目标文件已被替换，拒绝写入"}];
-        return NSNotFound;
-    }
-    NSMutableArray<NSNumber *> *written = [NSMutableArray array];
-    BOOL ok = YES;
-    NSString *failure = nil;
-    for (NSNumber *offsetNumber in self.patches) {
-        unsigned long long offset = offsetNumber.unsignedLongLongValue;
-        if (offset >= self.fileSize) continue; // stale patch beyond EOF
-        uint8_t byte = (uint8_t)self.patches[offsetNumber].unsignedCharValue;
-        ssize_t result = pwrite(fd, &byte, 1, (off_t)offset);
-        if (result != 1) {
+                [NSString stringWithFormat:@"打开临时文件失败：%s", strerror(errno)]}];
+    } else {
+        BOOL ok = YES;
+        for (NSNumber *offsetNumber in patches) {
+            unsigned long long offset = offsetNumber.unsignedLongLongValue;
+            if (offset >= fileSize) continue; // stale patch beyond EOF
+            uint8_t byte = (uint8_t)patches[offsetNumber].unsignedCharValue;
+            if (pwrite(fd, &byte, 1, (off_t)offset) != 1) {
+                ok = NO;
+                failure = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno
+                    userInfo:@{NSLocalizedDescriptionKey:
+                        [NSString stringWithFormat:@"写入 0x%llX 失败：%s",
+                            offset, strerror(errno)]}];
+                break;
+            }
+            applied++;
+        }
+        if (ok && fsync(fd) != 0) {
             ok = NO;
-            failure = [NSString stringWithFormat:@"写入 0x%llX 失败：%s",
-                offset, strerror(errno)];
-            break;
+            failure = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno
+                userInfo:@{NSLocalizedDescriptionKey:
+                    [NSString stringWithFormat:@"fsync 失败：%s", strerror(errno)]}];
         }
-        [written addObject:offsetNumber];
-    }
-    if (ok && fsync(fd) != 0) {
-        ok = NO;
-        failure = [NSString stringWithFormat:@"fsync 失败：%s", strerror(errno)];
-    }
-    if (!ok) {
-        // Roll back everything already written so no half state remains.
-        for (NSNumber *offsetNumber in written) {
-            NSNumber *original = self.originals[offsetNumber];
-            if (!original) continue;
-            uint8_t byte = (uint8_t)original.unsignedCharValue;
-            pwrite(fd, &byte, 1, (off_t)offsetNumber.unsignedLongLongValue);
-        }
-        fsync(fd);
         close(fd);
-        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO
-            userInfo:@{NSLocalizedDescriptionKey:
-                failure ?: @"写入中断，已回滚"}];
-        return NSNotFound;
+        if (ok) {
+            // 目标被别的进程替换过就放弃，避免覆盖别人的新内容。
+            struct stat current = {0};
+            if (lstat(target.fileSystemRepresentation, &current) != 0 ||
+                current.st_dev != self.deviceID || current.st_ino != self.inodeID) {
+                ok = NO;
+                failure = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIDRM
+                    userInfo:@{NSLocalizedDescriptionKey:@"目标文件已被替换，拒绝写入"}];
+            }
+        }
+        if (ok && rename(tempPath.fileSystemRepresentation,
+                         target.fileSystemRepresentation) != 0) {
+            ok = NO;
+            failure = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno
+                userInfo:@{NSLocalizedDescriptionKey:
+                    [NSString stringWithFormat:@"替换原文件失败：%s", strerror(errno)]}];
+        }
+        if (ok) return applied;
     }
-    close(fd);
-    return written.count;
+    [manager removeItemAtPath:tempPath error:nil];
+    if (error) *error = failure ?: [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO
+        userInfo:@{NSLocalizedDescriptionKey:@"写入中断，原文件未改动"}];
+    return NSNotFound;
 }
 
 - (void)flash:(NSString *)message
