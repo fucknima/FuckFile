@@ -115,7 +115,7 @@ typedef NS_ENUM(NSInteger, FFSidebarLocation) {
 
 @end
 
-@interface FFMainSplitViewController ()
+@interface FFMainSplitViewController () <UIAdaptivePresentationControllerDelegate>
 @property(nonatomic, strong) UINavigationController *detailNav;
 @property(nonatomic, strong) UINavigationController *presentedSettingsNav;
 @end
@@ -219,7 +219,16 @@ typedef NS_ENUM(NSInteger, FFSidebarLocation) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
     nav.modalPresentationStyle = UIModalPresentationFormSheet;
     self.presentedSettingsNav = nav;
-    [self presentViewController:nav animated:YES completion:nil];
+    [self presentViewController:nav animated:YES completion:^{
+        // presentationController 在 present 之前为 nil，必须在这之后挂 delegate。
+        nav.presentationController.delegate = self;
+    }];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController
+{
+    if (presentationController.presentedViewController == self.presentedSettingsNav)
+        self.presentedSettingsNav = nil;
 }
 
 - (void)dismissSettings

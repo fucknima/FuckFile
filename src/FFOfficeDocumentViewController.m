@@ -134,6 +134,8 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
 @property(nonatomic) BOOL documentRendered;
 @property(nonatomic) BOOL needsForegroundRecovery;
 @property(nonatomic) BOOL webProcessTerminated;
+// 连续崩溃计数：坏文件反复杀死 WebContent 时停止自动重载，避免死循环。
+@property(nonatomic) NSInteger webContentCrashCount;
 @property(nonatomic) BOOL errorPresented;
 @property(nonatomic) BOOL hasBackgroundSignature;
 @property(nonatomic) unsigned long long backgroundFileSize;
@@ -427,13 +429,22 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
 
 - (void)webViewWebContentProcessDidTerminate:(__unused WKWebView *)webView
 {
+    self.webContentCrashCount += 1;
     self.webProcessTerminated = YES;
     self.needsForegroundRecovery = YES;
     self.recoveryInFlight = NO;
     self.documentRendered = NO;
-    FFLogTag(@"Office", @"WebContent process terminated path=%@ state=%ld",
-        self.filePath, (long)UIApplication.sharedApplication.applicationState);
+    FFLogTag(@"Office", @"WebContent process terminated path=%@ state=%ld count=%ld",
+        self.filePath, (long)UIApplication.sharedApplication.applicationState,
+        (long)self.webContentCrashCount);
 
+    if (self.webContentCrashCount > 3) {
+        // 解析炸弹/超限文件会「终止→重载」无限循环：超限后停手，交给用户决定。
+        self.needsForegroundRecovery = NO;
+        [self presentRuntimeFailure:@"办公文档解析器反复崩溃，已停止自动重载。"
+            allowRetry:YES];
+        return;
+    }
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
         [self recoverWebContentIfVisible];
 }
@@ -518,6 +529,7 @@ static const unsigned long long FFOfficeMaxSourceBytes = 128ULL * 1024 * 1024;
         self.needsForegroundRecovery = NO;
         self.documentRendered = YES;
         self.errorPresented = NO;
+        self.webContentCrashCount = 0;
         FFLogTag(@"Office", @"rendered path=%@ mode=%@ ext=%@", self.filePath,
             body[@"mode"] ?: @"?", body[@"extension"] ?: @"?");
         return;

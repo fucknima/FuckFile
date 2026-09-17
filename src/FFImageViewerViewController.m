@@ -14,6 +14,8 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
 @interface FFImageStripCell : UICollectionViewCell
 @property(nonatomic, strong) UIImageView *thumbView;
 - (void)setCurrent:(BOOL)current;
+// cell 复用后异步缩略图可能晚到：用它校验图片仍属于当前条目。
+@property(nonatomic, copy) NSString *imagePath;
 @end
 
 @implementation FFImageStripCell
@@ -477,9 +479,11 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
         forIndexPath:indexPath];
     NSUInteger index = (NSUInteger)indexPath.item;
     cell.thumbView.image = nil;
+    cell.imagePath = nil;
     [cell setCurrent:index == self.index];
     if (index >= self.imagePaths.count) return cell;
     NSString *path = self.imagePaths[index];
+    cell.imagePath = path;
     UIImage *cached = [self.imageCache objectForKey:path];
     if (cached) {
         cell.thumbView.image = cached;
@@ -488,8 +492,13 @@ static NSString * const FFImageStripCellID = @"FFImageStripCell";
     __weak FFImageStripCell *weakCell = cell;
     [FFThumbnailService.sharedService thumbnailForPath:path size:CGSizeMake(56, 56)
         completion:^(UIImage *image) {
-            typeof(weakCell) strongCell = weakCell;
-            if (strongCell && image) strongCell.thumbView.image = image;
+            // 服务回调在自带工作队列上：UIKit 只能在主线程碰。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(weakCell) strongCell = weakCell;
+                if (!strongCell || !image) return;
+                if (![strongCell.imagePath isEqualToString:path]) return;
+                strongCell.thumbView.image = image;
+            });
         }];
     return cell;
 }

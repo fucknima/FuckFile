@@ -134,6 +134,8 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 @property(nonatomic) BOOL documentRendered;
 @property(nonatomic) BOOL needsForegroundRecovery;
 @property(nonatomic) BOOL webProcessTerminated;
+// 连续崩溃计数：坏文件反复杀死 WebContent 时停止自动重载，避免死循环。
+@property(nonatomic) NSInteger webContentCrashCount;
 @property(nonatomic) BOOL errorPresented;
 @property(nonatomic) BOOL hasBackgroundSignature;
 @property(nonatomic) unsigned long long backgroundFileSize;
@@ -404,13 +406,22 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
 
 - (void)webViewWebContentProcessDidTerminate:(__unused WKWebView *)webView
 {
+    self.webContentCrashCount += 1;
     self.webProcessTerminated = YES;
     self.needsForegroundRecovery = YES;
     self.recoveryInFlight = NO;
     self.documentRendered = NO;
-    FFLogTag(@"Spreadsheet", @"WebContent process terminated path=%@ state=%ld",
-        self.filePath, (long)UIApplication.sharedApplication.applicationState);
+    FFLogTag(@"Spreadsheet", @"WebContent process terminated path=%@ state=%ld count=%ld",
+        self.filePath, (long)UIApplication.sharedApplication.applicationState,
+        (long)self.webContentCrashCount);
 
+    if (self.webContentCrashCount > 3) {
+        // 解析炸弹/超限文件会「终止→重载」无限循环：超限后停手，交给用户决定。
+        self.needsForegroundRecovery = NO;
+        [self presentRuntimeFailure:@"电子表格解析器反复崩溃，已停止自动重载。"
+            allowRetry:YES];
+        return;
+    }
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
         [self recoverWebContentIfVisible];
 }
@@ -441,6 +452,27 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
         allowRetry:YES];
 }
 
+// 与 Office 查看器一致：离线运行时只允许本地 scheme，表格里的外链交给系统
+// 浏览器，其余一律取消，避免整个查看器被导航到外部网页。
+- (void)webView:(__unused WKWebView *)webView
+ decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+{
+    NSURL *url = navigationAction.request.URL;
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    if (!url || [scheme isEqualToString:FFSpreadsheetScheme] ||
+        [scheme isEqualToString:@"about"] || [scheme isEqualToString:@"data"] ||
+        [scheme isEqualToString:@"blob"]) {
+        decisionHandler(WKNavigationActionPolicyAllow);
+        return;
+    }
+    if (([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) &&
+        navigationAction.navigationType == WKNavigationTypeLinkActivated) {
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+    }
+    decisionHandler(WKNavigationActionPolicyCancel);
+}
+
 #pragma mark - JS bridge
 
 - (void)userContentController:(__unused WKUserContentController *)controller
@@ -465,6 +497,7 @@ static const unsigned long long FFSpreadsheetMaxSourceBytes = 96ULL * 1024 * 102
         self.needsForegroundRecovery = NO;
         self.documentRendered = YES;
         self.errorPresented = NO;
+        self.webContentCrashCount = 0;
         FFLogTag(@"Spreadsheet", @"rendered path=%@ sheets=%@", self.filePath,
             body[@"sheets"] ?: @"?");
         return;

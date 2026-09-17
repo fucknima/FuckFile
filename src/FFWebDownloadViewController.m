@@ -36,6 +36,8 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 @property(nonatomic, strong) UIBarButtonItem *downloadsItem;
 // 只统计本页面发起的下载：任务中心还混着别的任务，状态条不能跟着跑。
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *sessionDownloads;
+// 连续崩溃计数：坏页面反复杀死 WebContent 时停止自动重载。
+@property(nonatomic) NSInteger webContentCrashCount;
 @end
 
 @implementation FFWebDownloadViewController
@@ -343,13 +345,32 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     [self updateNavigationState];
     self.progressView.hidden = YES;
     [self.progressView setProgress:0 animated:NO];
+    self.webContentCrashCount = 0;
+}
+
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView
+{
+    self.webContentCrashCount += 1;
+    FFLogTag(@"WebDownload", @"WebContent process terminated count=%ld",
+        (long)self.webContentCrashCount);
+    // 页面进程被回收后只会白屏：自动重载，但坏页面反复崩溃要停手。
+    if (self.webContentCrashCount > 3) {
+        [self flash:@"网页渲染进程反复崩溃，已停止自动重载"];
+        return;
+    }
+    [webView reload];
 }
 
 - (void)webView:(__unused WKWebView *)webView
     didFailProvisionalNavigation:(__unused WKNavigation *)navigation
                        withError:(NSError *)error
 {
-    if (FFWebDownloadIsBenignNavigationError(error)) return;
+    if (FFWebDownloadIsBenignNavigationError(error)) {
+        // 转下载/被策略取消：进度条不能卡在半截。
+        self.progressView.hidden = YES;
+        [self.progressView setProgress:0 animated:NO];
+        return;
+    }
     FFLogTag(@"WebDownload", @"navigation FAIL %@", error);
     [self updateNavigationState];
     [self flash:[NSString stringWithFormat:@"加载失败：%@",
@@ -359,7 +380,11 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 - (void)webView:(__unused WKWebView *)webView
     didFailNavigation:(__unused WKNavigation *)navigation withError:(NSError *)error
 {
-    if (FFWebDownloadIsBenignNavigationError(error)) return;
+    if (FFWebDownloadIsBenignNavigationError(error)) {
+        self.progressView.hidden = YES;
+        [self.progressView setProgress:0 animated:NO];
+        return;
+    }
     [self updateNavigationState];
 }
 
@@ -385,6 +410,12 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
                       decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
 {
+    // 子 frame 的响应同样会走到这里：只有主框架才能整页转下载，
+    // 否则 iframe 里的附件会把主页面顶掉。
+    if (!navigationResponse.isForMainFrame) {
+        decisionHandler(WKNavigationResponsePolicyAllow);
+        return;
+    }
     if (!navigationResponse.canShowMIMEType ||
         [self responseIsAttachment:navigationResponse.response]) {
         decisionHandler(WKNavigationResponsePolicyCancel);

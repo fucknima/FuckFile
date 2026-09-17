@@ -145,7 +145,8 @@
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Task"];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Task"];
-    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
+    FFFileTask *task = [self taskAtIndexPath:indexPath];
+    if (!task) return cell;
     cell.accessoryView = nil;
     UIListContentConfiguration *config = [cell defaultContentConfiguration];
     config.text = task.displayName;
@@ -226,16 +227,27 @@
     if (task) [[FFFileTaskManager sharedManager] cancelTask:task];
 }
 
+// 进度通知每 ~0.15s reloadData，滑动/回调里的旧 indexPath 可能已越界；
+// 统一取值入口，越界返回 nil（删除操作尤其需要，避免删错任务）。
+- (FFFileTask *)taskAtIndexPath:(NSIndexPath *)indexPath
+{
+    NSArray<FFFileTask *> *rows = indexPath.section == 0 ? self.activeTasks : self.historyTasks;
+    if (indexPath.row < 0 || (NSUInteger)indexPath.row >= rows.count) return nil;
+    return rows[(NSUInteger)indexPath.row];
+}
+
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
-    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
+    FFFileTask *task = [self taskAtIndexPath:indexPath];
+    if (!task) return;
     [[FFFileTaskManager sharedManager] removeTask:task];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
+    FFFileTask *task = [self taskAtIndexPath:indexPath];
+    if (!task) return NO;
     return task.state != FFFileTaskStateRunning && task.state != FFFileTaskStateQueued;
 }
 
@@ -246,7 +258,8 @@
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    FFFileTask *task = indexPath.section == 0 ? self.activeTasks[indexPath.row] : self.historyTasks[indexPath.row];
+    FFFileTask *task = [self taskAtIndexPath:indexPath];
+    if (!task) return nil;
     if (task.state != FFFileTaskStateFailed && task.state != FFFileTaskStateCancelled) return nil;
     BOOL resumable = [self taskHasResumeData:task];
     UIContextualAction *retry = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
