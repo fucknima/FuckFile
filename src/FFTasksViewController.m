@@ -1,7 +1,9 @@
 #import "FFTasksViewController.h"
 #import "FFFileTask.h"
 #import "FFFileTaskManager.h"
+#import "FFLogger.h"
 #import "FFPreviewRouter.h"
+#import "FFStorageEnvironment.h"
 
 #import <objc/runtime.h>
 
@@ -264,30 +266,38 @@
 - (nullable NSString *)revealPathForTask:(FFFileTask *)task
 {
     NSFileManager *manager = NSFileManager.defaultManager;
-    BOOL isDirectory = NO;
+    // 存档里的绝对路径可能来自旧容器（更新/重装后容器 UUID 变化）：映射回当前容器。
+    NSString *destination = FFCanonicalStoragePath(task.destination ?: @"");
+    BOOL destinationExists = [manager fileExistsAtPath:destination];
+    NSString *resolved = nil;
     switch (task.kind) {
         case FFFileTaskKindDownload:
-            if (task.destination.length && task.detailName.length) {
-                NSString *candidate = [task.destination
+            if (destination.length && task.detailName.length) {
+                NSString *candidate = [destination
                     stringByAppendingPathComponent:task.detailName];
-                if ([manager fileExistsAtPath:candidate]) return candidate;
+                if ([manager fileExistsAtPath:candidate]) resolved = candidate;
             }
-            return [manager fileExistsAtPath:task.destination] ? task.destination : nil;
+            if (!resolved && destinationExists) resolved = destination;
+            break;
         case FFFileTaskKindCopy:
         case FFFileTaskKindMove:
-            if (task.sources.count == 1 && task.destination.length) {
-                NSString *candidate = [task.destination stringByAppendingPathComponent:
+            if (task.sources.count == 1 && destination.length) {
+                NSString *candidate = [destination stringByAppendingPathComponent:
                     task.sources.firstObject.lastPathComponent];
-                if ([manager fileExistsAtPath:candidate]) return candidate;
+                if ([manager fileExistsAtPath:candidate]) resolved = candidate;
             }
-            return [manager fileExistsAtPath:task.destination] ? task.destination : nil;
+            if (!resolved && destinationExists) resolved = destination;
+            break;
         case FFFileTaskKindExtract:
         case FFFileTaskKindCompress:
-            if ([manager fileExistsAtPath:task.destination isDirectory:&isDirectory])
-                return task.destination;
-            return nil;
+            if (destinationExists) resolved = destination;
+            break;
     }
-    return nil;
+    if (!resolved) {
+        FFLogTag(@"Tasks", @"reveal missing kind=%ld destination=%@ name=%@",
+            (long)task.kind, task.destination ?: @"(nil)", task.detailName ?: @"(nil)");
+    }
+    return resolved;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath

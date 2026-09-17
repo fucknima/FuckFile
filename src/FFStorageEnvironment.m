@@ -42,17 +42,41 @@ NSString *FFDiagnosticsDirectoryPath(void)
     return directory;
 }
 
+// 更新/重装后 App 容器 UUID 会变，数据可能整体保留但存档里的绝对路径全部
+// 失效（任务历史、书签、最近列表）。把旧容器路径按“当前容器 + 相同后缀”
+// 映射回来；只在原路径已不存在且映射后的路径确实存在时才改写。
+static NSString *FFRewriteStaleContainerPath(NSString *candidate)
+{
+    if (!candidate.length || !candidate.isAbsolutePath) return candidate;
+    if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    NSRange marker = [candidate rangeOfString:@"/Containers/Data/Application/"];
+    if (marker.location == NSNotFound) return candidate;
+    NSString *rest = [candidate substringFromIndex:NSMaxRange(marker)];
+    NSRange slash = [rest rangeOfString:@"/"];
+    if (slash.location == NSNotFound) return candidate;
+    NSString *suffix = [rest substringFromIndex:slash.location + 1];
+    if (!suffix.length) return candidate;
+    NSString *mapped = [NSHomeDirectory() stringByAppendingPathComponent:suffix];
+    return [NSFileManager.defaultManager fileExistsAtPath:mapped] ? mapped : candidate;
+}
+
 static NSString *FFRewriteLegacyPathString(NSString *path)
 {
     if (!path.length || !path.isAbsolutePath) return path;
     NSString *candidate = path.stringByStandardizingPath;
     NSString *documents = FFDocumentsPath().stringByStandardizingPath;
     NSString *legacy = FFLegacyStorageRoot(documents).stringByStandardizingPath;
-    if ([candidate isEqualToString:legacy]) return documents;
-    NSString *prefix = [legacy stringByAppendingString:@"/"];
-    if (![candidate hasPrefix:prefix]) return candidate;
-    NSString *suffix = [candidate substringFromIndex:prefix.length];
-    return suffix.length ? [documents stringByAppendingPathComponent:suffix] : documents;
+    NSString *rewritten = candidate;
+    if ([candidate isEqualToString:legacy]) {
+        rewritten = documents;
+    } else {
+        NSString *prefix = [legacy stringByAppendingString:@"/"];
+        if ([candidate hasPrefix:prefix]) {
+            NSString *suffix = [candidate substringFromIndex:prefix.length];
+            rewritten = suffix.length ? [documents stringByAppendingPathComponent:suffix] : documents;
+        }
+    }
+    return FFRewriteStaleContainerPath(rewritten);
 }
 
 NSString *FFCanonicalStoragePath(NSString *path)

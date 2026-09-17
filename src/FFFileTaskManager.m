@@ -976,9 +976,13 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
                 task.progress = 1.0;
                 task.resumeData = nil;
                 if (task.totalBytes > 0) task.completedBytes = task.totalBytes;
-                if (result.destinationPath.lastPathComponent.length)
+                if (result.destinationPath.lastPathComponent.length) {
                     task.detailName = result.destinationPath.lastPathComponent;
-                FFLogTag(@"Tasks", @"download ok name=%@ bytes=%llu", name, task.completedBytes);
+                    // URL 尾段常常是哈希/token：完成后用实际落盘文件名做标题。
+                    task.displayName = [NSString stringWithFormat:@"下载 %@", task.detailName];
+                }
+                FFLogTag(@"Tasks", @"download ok name=%@ bytes=%llu",
+                    task.detailName ?: @"?", task.completedBytes);
                 return YES;
             }
             task.resumeData = nil;
