@@ -14,7 +14,7 @@ struct FilesView: View {
     @State private var pendingDeletion: [FileEntry] = []
     @State private var isDeleteConfirmPresented = false
     @State private var transferRequest: TransferRequest?
-    @State private var previewURL: URL?
+    @State private var viewerEntry: FileEntry?
 
     init(directory: String, title: String) {
         self.directory = directory
@@ -87,7 +87,11 @@ struct FilesView: View {
                 ProgressView()
             }
         }
-        .quickLookPreview($previewURL)
+        .navigationDestination(isPresented: viewerPresented) {
+            if let entry = viewerEntry {
+                ViewerHostView(entry: entry, siblings: viewModel.visibleEntries)
+            }
+        }
     }
 
     private var listContent: some View {
@@ -145,7 +149,7 @@ struct FilesView: View {
             }
         } else {
             Button {
-                previewURL = URL(fileURLWithPath: entry.path)
+                viewerEntry = entry
             } label: {
                 EntryRow(entry: entry)
             }
@@ -165,7 +169,7 @@ struct FilesView: View {
             .buttonStyle(.plain)
         } else {
             Button {
-                previewURL = URL(fileURLWithPath: entry.path)
+                viewerEntry = entry
             } label: {
                 gridCellContent(entry, isSelected: false)
             }
@@ -393,7 +397,7 @@ struct FilesView: View {
             }
         } else {
             Button {
-                previewURL = URL(fileURLWithPath: entry.path)
+                viewerEntry = entry
             } label: {
                 Label("打开", systemImage: "eye")
             }
@@ -434,6 +438,15 @@ struct FilesView: View {
             return "“\(entry.name)” 将移到回收站，可在那里恢复。"
         }
         return "\(pendingDeletion.count) 个项目将移到回收站，可在那里恢复。"
+    }
+
+    private var viewerPresented: Binding<Bool> {
+        Binding(
+            get: { viewerEntry != nil },
+            set: { presented in
+                if !presented { viewerEntry = nil }
+            }
+        )
     }
 
     private var namePromptBinding: Binding<Bool> {

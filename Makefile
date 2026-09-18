@@ -9,7 +9,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = FuckFile
 
 FuckFile_FILES = $(shell find Sources -name '*.swift' | sort)
-FuckFile_FRAMEWORKS = UIKit SwiftUI Foundation QuickLook
+FuckFile_FRAMEWORKS = UIKit SwiftUI Foundation QuickLook PDFKit AVKit
 FuckFile_INFOPLIST = Info.plist
 FuckFile_INSTALL_PATH = /Applications
 
