@@ -32,6 +32,12 @@ enum DirectoryLister {
             let isSymlink = mode == mode_t(S_IFLNK)
             var isDirectory = mode == mode_t(S_IFDIR)
             var size = UInt64(max(0, info.st_size))
+#if canImport(Darwin)
+            let modifiedSeconds = info.st_mtimespec.tv_sec
+#else
+            // Linux 仅供本地 swiftc 静态检查；真机走 Darwin 分支。
+            let modifiedSeconds = info.st_mtim.tv_sec
+#endif
 
             if isSymlink {
                 var target = stat()
@@ -47,7 +53,7 @@ enum DirectoryLister {
                 isDirectory: isDirectory,
                 isSymlink: isSymlink,
                 size: size,
-                modificationDate: Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
+                modificationDate: Date(timeIntervalSince1970: TimeInterval(modifiedSeconds))
             ))
         }
 
