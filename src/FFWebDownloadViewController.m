@@ -19,6 +19,70 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     return NO;
 }
 
+// 深色浏览开关的持久化键：缺省（从未手动切过）时跟随系统。
+static NSString * const kFFWebForceDarkKey = @"FFWebBrowserForceDark";
+
+// 网页深色浏览：站点自带深色（body 背景已足够暗）就不动；否则用
+// invert + hue-rotate 做强制暗色，图片/视频再反向一次保持原色。
+// 注意：filter 会创建包含块，个别页面的 position:fixed 元素可能不再吸顶，
+// 用户可用导航栏的月亮按钮关掉。
+static WKUserScript *FFWebForceDarkUserScript(BOOL enabled)
+{
+    NSString *source = [NSString stringWithFormat:
+        @"(function () {"
+         "  var ENABLED = %@;"
+         "  var STYLE_ID = 'ff-force-dark';"
+         "  function parseColor(color) {"
+         "    var m = /rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*(?:,\\s*([\\d.]+)\\s*)?\\)/"
+         "        .exec(color || '');"
+         "    if (!m) return null;"
+         "    return {r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4]};"
+         "  }"
+         "  function isTransparent(color) {"
+         "    var c = parseColor(color);"
+         "    return !c || c.a === 0;"
+         "  }"
+         "  function luminance(color) {"
+         "    var c = parseColor(color);"
+         "    if (!c) return 1;"
+         "    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;"
+         "  }"
+         "  function effectiveBackground() {"
+         "    var body = document.body;"
+         "    if (body) {"
+         "      var bodyBg = window.getComputedStyle(body).backgroundColor;"
+         "      if (!isTransparent(bodyBg)) return bodyBg;"
+         "    }"
+         "    return window.getComputedStyle(document.documentElement).backgroundColor;"
+         "  }"
+         "  function alreadyDark() {"
+         "    var bg = effectiveBackground();"
+         "    if (isTransparent(bg)) return false;"   // 透明画布默认白底：需要强制深色
+         "    return luminance(bg) < 0.4;"
+         "  }"
+         "  function apply() {"
+         "    var existing = document.getElementById(STYLE_ID);"
+         "    if (!ENABLED) {"
+         "      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);"
+         "      return;"
+         "    }"
+         "    if (existing || alreadyDark()) return;"
+         "    var style = document.createElement('style');"
+         "    style.id = STYLE_ID;"
+         "    style.textContent = 'html{filter:invert(1) hue-rotate(180deg) !important;}'"
+         "      + 'img,video,picture,canvas,svg,iframe,embed,object'"
+         "      + '{filter:invert(1) hue-rotate(180deg) !important;}';"
+         "    (document.head || document.documentElement).appendChild(style);"
+         "  }"
+         "  window.__ffSetForceDark = function (value) { ENABLED = value; apply(); };"
+         "  apply();"
+         "  document.addEventListener('DOMContentLoaded', apply);"
+         "})();",
+        enabled ? @"true" : @"false"];
+    return [[WKUserScript alloc] initWithSource:source
+        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
+}
+
 @interface FFWebDownloadViewController () <WKNavigationDelegate, WKUIDelegate,
                                             UITextFieldDelegate>
 @property(nonatomic, copy) NSString *destinationDirectory;
@@ -37,6 +101,9 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
 @property(nonatomic, strong) UIBarButtonItem *downloadsItem;
 // 下载当前页面/直链：可显示的内容（图片/PDF/文本）也能一键落盘。
 @property(nonatomic, strong) UIBarButtonItem *downloadPageItem;
+// 深色浏览开关（月亮）：默认跟随系统，手动切换后持久化。
+@property(nonatomic, strong) UIBarButtonItem *darkModeItem;
+@property(nonatomic) BOOL forceDarkMode;
 // 只统计本页面发起的下载：任务中心还混着别的任务，状态条不能跟着跑。
 @property(nonatomic, strong) NSMutableArray<FFFileTask *> *sessionDownloads;
 // 连续崩溃计数：坏页面反复杀死 WebContent 时停止自动重载。
@@ -85,11 +152,17 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
     self.webView.allowsBackForwardNavigationGestures = YES;
-    // 深色模式下空白/过滚动区域跟随系统，站点自身配色不碰。
-    self.webView.underPageBackgroundColor = UIColor.systemBackgroundColor;
-    self.webView.scrollView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.webView];
+
+    // 深色浏览：默认跟随系统，手动切换后记住用户选择。
+    NSNumber *storedForceDark = [NSUserDefaults.standardUserDefaults
+        objectForKey:kFFWebForceDarkKey];
+    _forceDarkMode = storedForceDark
+        ? storedForceDark.boolValue
+        : (UIScreen.mainScreen.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    [self updatePageBackgroundColor];
+    [self applyForceDarkUserScripts];
 
     // 下载提示条：本页面的下载都进任务中心，这行是页内唯一入口。
     self.downloadBar = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -112,12 +185,16 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
         initWithImage:[UIImage systemImageNamed:@"arrow.down.to.line"]
         style:UIBarButtonItemStylePlain target:self action:@selector(downloadCurrentPage)];
     self.downloadPageItem.accessibilityLabel = @"下载当前页面";
+    self.darkModeItem = [[UIBarButtonItem alloc]
+        initWithImage:nil style:UIBarButtonItemStylePlain target:self
+        action:@selector(toggleForceDarkMode)];
+    [self updateDarkModeItem];
     UIBarButtonItem *shareItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
         style:UIBarButtonItemStylePlain target:self action:@selector(shareLink)];
     shareItem.accessibilityLabel = @"分享链接";
     self.navigationItem.rightBarButtonItems =
-        @[ self.downloadsItem, self.downloadPageItem, shareItem ];
+        @[ self.downloadsItem, self.downloadPageItem, self.darkModeItem, shareItem ];
 
     self.downloadBarHeight = [self.downloadBar.heightAnchor constraintEqualToConstant:0];
     [NSLayoutConstraint activateConstraints:@[
@@ -346,6 +423,51 @@ static BOOL FFWebDownloadIsBenignNavigationError(NSError *error)
     request.HTTPMethod = @"GET";
     [self enqueueDownloadForRequest:request];
     [self flash:@"已加入下载任务"];
+}
+
+#pragma mark - Dark browsing
+
+- (void)toggleForceDarkMode
+{
+    self.forceDarkMode = !self.forceDarkMode;
+    [NSUserDefaults.standardUserDefaults setBool:self.forceDarkMode
+        forKey:kFFWebForceDarkKey];
+    [self updateDarkModeItem];
+    [self updatePageBackgroundColor];
+    // 之后的导航用新值重新注入；当前页面直接调用页内函数即时生效。
+    [self applyForceDarkUserScripts];
+    NSString *script = [NSString stringWithFormat:
+        @"window.__ffSetForceDark && window.__ffSetForceDark(%@);",
+        self.forceDarkMode ? @"true" : @"false"];
+    [self.webView evaluateJavaScript:script completionHandler:nil];
+    FFLogTag(@"WebDownload", @"force dark %@ url=%@",
+        self.forceDarkMode ? @"on" : @"off", self.webView.URL.absoluteString ?: @"-");
+}
+
+// 强制深色时把画布底色也压暗：透明背景的页面反转后是白字，底必须够黑；
+// 关闭时回到系统背景（浅色白、深色黑）。
+- (void)updatePageBackgroundColor
+{
+    UIColor *background = self.forceDarkMode
+        ? [UIColor colorWithWhite:0.07 alpha:1.0]
+        : UIColor.systemBackgroundColor;
+    self.webView.underPageBackgroundColor = background;
+    self.webView.scrollView.backgroundColor = background;
+}
+
+- (void)updateDarkModeItem
+{
+    self.darkModeItem.image = [UIImage systemImageNamed:
+        self.forceDarkMode ? @"moon.fill" : @"moon"];
+    self.darkModeItem.accessibilityLabel =
+        self.forceDarkMode ? @"关闭深色浏览" : @"开启深色浏览";
+}
+
+- (void)applyForceDarkUserScripts
+{
+    WKUserContentController *controller = self.webView.configuration.userContentController;
+    [controller removeAllUserScripts];
+    [controller addUserScript:FFWebForceDarkUserScript(self.forceDarkMode)];
 }
 
 - (void)updateNavigationState
