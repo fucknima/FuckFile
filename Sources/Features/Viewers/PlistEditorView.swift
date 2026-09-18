@@ -1,4 +1,9 @@
 import SwiftUI
+
+/// Result 的失败载荷：String 不能直接做 Error，这里包一层。
+private struct PlistEditorMessage: Error {
+    let text: String
+}
 import UIKit
 
 /// plist 树形编辑器（对齐 FFPlistEditorViewController 的核心行为）：
@@ -688,8 +693,8 @@ private struct PlistValueEditorSheet: View {
                     dataText = newMode == 1
                         ? data.base64EncodedString()
                         : PlistValueEditorSheet.hexString(from: data)
-                case .failure(let message):
-                    presentError(message)
+                case .failure(let error):
+                    presentError(error.text)
                 }
             }
         )
@@ -721,8 +726,8 @@ private struct PlistValueEditorSheet: View {
             switch parseData(dataText, base64: dataMode == 1) {
             case .success(let data):
                 onCommit(.data(data))
-            case .failure(let message):
-                presentError(message)
+            case .failure(let error):
+                presentError(error.text)
                 return
             }
         default:
@@ -737,12 +742,12 @@ private struct PlistValueEditorSheet: View {
         isErrorPresented = true
     }
 
-    private func parseData(_ text: String, base64: Bool) -> Result<Data, String> {
+    private func parseData(_ text: String, base64: Bool) -> Result<Data, PlistEditorMessage> {
         if base64 {
             let compact = text.components(separatedBy: .whitespacesAndNewlines).joined()
             if compact.isEmpty { return .success(Data()) }
             guard let data = Data(base64Encoded: compact) else {
-                return .failure("Base64 内容无效。")
+                return .failure(PlistEditorMessage(text: "Base64 内容无效。"))
             }
             return .success(data)
         }
@@ -753,7 +758,7 @@ private struct PlistValueEditorSheet: View {
         }
         if compact.isEmpty { return .success(Data()) }
         guard compact.count % 2 == 0 else {
-            return .failure("HEX 字符数必须为偶数。")
+            return .failure(PlistEditorMessage(text: "HEX 字符数必须为偶数。"))
         }
 
         var data = Data(capacity: compact.count / 2)
@@ -762,7 +767,7 @@ private struct PlistValueEditorSheet: View {
             let next = compact.index(index, offsetBy: 2)
             let pair = compact[index..<next]
             guard let byte = UInt8(pair, radix: 16) else {
-                return .failure("“\(pair)” 不是有效的 HEX 字节。")
+                return .failure(PlistEditorMessage(text: "“\(pair)” 不是有效的 HEX 字节。"))
             }
             data.append(byte)
             index = next
