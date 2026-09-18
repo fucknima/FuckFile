@@ -56,14 +56,6 @@ struct FilesView: View {
                     Text(prompt.message)
                 }
             }
-            .confirmationDialog("移到回收站",
-                                isPresented: $isDeleteConfirmPresented,
-                                titleVisibility: .visible) {
-                Button("移到回收站", role: .destructive) { commitDelete() }
-                Button("取消", role: .cancel) { pendingDeletion = [] }
-            } message: {
-                Text(deleteMessage)
-            }
             .sheet(item: $viewerPickerEntry) { entry in
                 NavigationStack {
                     ViewerPickerView(entry: entry) { viewer in
@@ -148,6 +140,20 @@ struct FilesView: View {
 
     @ViewBuilder
     private func listRow(for entry: FileEntry) -> some View {
+        rowBody(for: entry)
+            .confirmationDialog("移到回收站",
+                                isPresented: deleteBinding(for: entry),
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { pendingDeletion = [] }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
+    }
+
+    @ViewBuilder
+    private func rowBody(for entry: FileEntry) -> some View {
         if viewModel.isSelecting {
             HStack(spacing: 12) {
                 selectionMark(isSelected: viewModel.selectedPaths.contains(entry.path))
@@ -171,6 +177,20 @@ struct FilesView: View {
 
     @ViewBuilder
     private func gridCell(for entry: FileEntry) -> some View {
+        gridBody(for: entry)
+            .confirmationDialog("移到回收站",
+                                isPresented: deleteBinding(for: entry),
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { pendingDeletion = [] }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
+    }
+
+    @ViewBuilder
+    private func gridBody(for entry: FileEntry) -> some View {
         if viewModel.isSelecting {
             gridCellContent(entry, isSelected: viewModel.selectedPaths.contains(entry.path))
                 .onTapGesture { viewModel.toggleSelection(entry) }
@@ -373,6 +393,7 @@ struct FilesView: View {
                 batchButton("压缩", systemImage: "shippingbox", enabled: hasSelection) {
                     FileActions.shared.compress(viewModel.selectedEntries,
                                                 toDirectory: viewModel.directory)
+                    exitSelection()
                 }
                 batchButton("删除", systemImage: "trash", enabled: hasSelection,
                             role: .destructive) {
@@ -382,6 +403,15 @@ struct FilesView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(.bar)
+            .confirmationDialog("移到回收站",
+                                isPresented: batchDeleteBinding,
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { pendingDeletion = [] }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
         }
     }
 
@@ -506,6 +536,33 @@ struct FilesView: View {
         Task { await viewModel.load() }
     }
 
+    private func deleteBinding(for entry: FileEntry) -> Binding<Bool> {
+        Binding(
+            get: {
+                isDeleteConfirmPresented && pendingDeletion.count == 1 &&
+                    pendingDeletion.first?.path == entry.path
+            },
+            set: { presented in
+                if !presented {
+                    isDeleteConfirmPresented = false
+                    pendingDeletion = []
+                }
+            }
+        )
+    }
+
+    private var batchDeleteBinding: Binding<Bool> {
+        Binding(
+            get: { isDeleteConfirmPresented && pendingDeletion.count > 1 },
+            set: { presented in
+                if !presented {
+                    isDeleteConfirmPresented = false
+                    pendingDeletion = []
+                }
+            }
+        )
+    }
+
     private func confirmDelete(_ entries: [FileEntry]) {
         guard !entries.isEmpty else { return }
         pendingDeletion = entries
@@ -517,7 +574,7 @@ struct FilesView: View {
         pendingDeletion = []
         guard !entries.isEmpty else { return }
         FileActions.shared.trash(entries)
-        viewModel.clearSelection()
+        exitSelection()
         Task { await viewModel.load() }
     }
 
@@ -534,7 +591,7 @@ struct FilesView: View {
         case .move:
             FileActions.shared.move(request.entries, toDirectory: pickedDirectory)
         }
-        viewModel.clearSelection()
+        exitSelection()
         Task { await viewModel.load() }
     }
 
@@ -768,5 +825,25 @@ private struct DirectoryPickerView: View {
             directories = []
             AppLog.tag("Files", "picker list FAIL path=\(currentDirectory) error=\(error.localizedDescription)")
         }
+    }
+}
+
+// MARK: - 删除确认的锚点
+
+/// iOS 16.4+：把确认弹窗强制成 popover，让它贴着触发的条目（iPhone 也生效）；
+/// 旧系统退回系统默认（底部 action sheet）。
+private struct CompactPopoverModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.presentationCompactAdaptation(.popover)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func compactPopoverIfAvailable() -> some View {
+        modifier(CompactPopoverModifier())
     }
 }

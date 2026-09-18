@@ -7,6 +7,15 @@ struct ViewerHostView: View {
     var forcedViewer: ViewerID? = nil
 
     var body: some View {
+        Group {
+            viewerContent
+        }
+        .navigationTitle(entry.name)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var viewerContent: some View {
         switch resolvedViewerID {
         case .image:
             ImageViewerView(entry: entry, siblings: filteredSiblings(for: .image))

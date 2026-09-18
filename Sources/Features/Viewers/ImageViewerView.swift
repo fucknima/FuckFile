@@ -48,16 +48,10 @@ struct ImageViewerView: View {
     // MARK: - Overlays
 
     private var topOverlay: some View {
-        VStack(spacing: 2) {
-            Text(model.currentEntry.name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text("第 \(model.index + 1) / 共 \(model.count) 张")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.75))
-        }
-        .foregroundColor(.white)
+        // 文件名放导航栏标题（ViewerHostView 统一设置），这里只留页码。
+        Text("第 \(model.index + 1) / 共 \(model.count) 张")
+            .font(.caption)
+            .foregroundColor(.white)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
