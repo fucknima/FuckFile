@@ -1219,3 +1219,25 @@ ImportService/PathPolicy），未引入新的事实来源。
 4. HTML 文件预览维持 ADR-035 的保守策略（只适配无配色页面），不受此开关影响。
 
 原因：用户要求下载界面里访问的所有网页都能以深色模式浏览。
+
+## ADR-037
+
+日期：2026-09-18
+
+决定：
+
+**新开 `swift-fuckfile` 分支，用 Swift 重写 App；旧 Objective-C 版继续留在
+`无漏洞利用fuckfile` 分支发布。**
+
+1. 重写按 5 个阶段推进（见 docs/SWIFT-REWRITE.md）：骨架 → 浏览器/文件操作 →
+   查看器/编辑器 → 网络与任务中心 → Feather 式安装器。每阶段必须可编译、
+   可出包、可真机验证。
+2. 本分支只编译 `Sources/*.swift`（SwiftUI + UIKit 混合）；`src/` 的 ObjC 实现
+   保留作参考，不参与编译；Makefile 去掉 runtime 准备/libarchive 校验，
+   CI 打包去掉 ShareExtension 与 JS runtime/语言资源断言，新增
+   `swift-fuckfile` 触发与发布。
+3. 部署目标从 iOS 15 提升到 iOS 16（NavigationStack/LabeledContent）。
+4. 阶段 1 已交付：App 骨架（文件/任务/设置）、存储环境、日志（沿用旧日志
+   文件路径与格式）、目录列举（lstat 语义）、任务模型与串行执行器。
+
+原因：后续安装器需要 Swift 生态（IDeviceKit 等），且用户要求整体 Swift 重写。

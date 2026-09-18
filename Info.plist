@@ -87,7 +87,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>
-	<string>15.0</string>
+	<string>16.0</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于在同一 Wi‑Fi 局域网内通过浏览器或 WebDAV 访问你主动共享的 FuckFile 文件。</string>
 	<!-- 网页下载浏览器与「从 URL 下载」按用户输入直接访问 http/https 地址，

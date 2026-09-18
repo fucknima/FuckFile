@@ -6,6 +6,7 @@ on:
       - main
       - codex/comprehensive-review-fixes
       - 无漏洞利用fuckfile
+      - swift-fuckfile
   pull_request:
     branches:
       - main
@@ -71,39 +72,6 @@ jobs:
           chmod +x /tmp/ldid
           sudo mv /tmp/ldid /usr/local/bin/ldid
           ldid -v 2>&1 | head -1 || true
-
-      - name: Prepare pinned libarchive
-        shell: bash
-        run: |
-          set -euo pipefail
-          URL="https://github.com/Lakr233/libarchive.xcframework/releases/download/upstream.27cbc7827172.2/libarchive.xcframework.zip"
-          SHA256="573fa72ca53f0e623e1f26e3993a22a075b5dba91733ea8aaaa370b52d93537c"
-          rm -rf .deps/libarchive .deps/libarchive.zip
-          mkdir -p .deps/libarchive
-          curl -fL --retry 3 --retry-delay 2 -o .deps/libarchive.zip "$URL"
-          printf '%s  %s\n' "$SHA256" ".deps/libarchive.zip" | shasum -a 256 -c -
-          ditto -x -k .deps/libarchive.zip .deps/libarchive
-
-          LIB=""
-          while IFS= read -r candidate; do
-            case "$candidate" in
-              *ios-arm64*|*iphoneos*)
-                if file "$candidate" | grep -q 'current ar archive'; then
-                  LIB="$candidate"
-                  break
-                fi
-                ;;
-            esac
-          done < <(find .deps/libarchive -type f | sort)
-
-          if [[ -z "$LIB" ]]; then
-            echo "Pinned libarchive iOS static slice not found" >&2
-            find .deps/libarchive -maxdepth 5 -type f -print
-            exit 1
-          fi
-          echo "libarchive static slice: $LIB"
-          file "$LIB"
-          echo "FF_LIBARCHIVE_A=$GITHUB_WORKSPACE/$LIB" >> "$GITHUB_ENV"
 
       - name: Self-check core logic (probe/codec/search session)
         run: |
@@ -275,122 +243,50 @@ jobs:
             return 0
           }
           APP="$(select_bundle FuckFile.app FuckFile)"
-          EXT_BUILD="$(select_bundle FuckFileShare.appex FuckFileShare)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "ERROR: FuckFile.app not found"; exit 1
           fi
-          if [ -z "$EXT_BUILD" ] || [ ! -d "$EXT_BUILD" ]; then
-            echo "ERROR: FuckFileShare.appex not found"; find .theos/obj -maxdepth 4 -type d; exit 1
-          fi
-          if [ ! -x "$EXT_BUILD/FuckFileShare" ]; then
-            echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
-          fi
           # ARCHS=arm64 arm64e：thin bundle would silently drop older devices.
-          for pair in "$APP/FuckFile" "$EXT_BUILD/FuckFileShare"; do
-            lipo -archs "$pair"
-            for arch in arm64 arm64e; do
-              lipo -archs "$pair" | tr ' ' '\n' | grep -Fxq "$arch" || {
-                echo "ERROR: $pair is missing $arch"; exit 1;
-              }
-            done
+          for arch in arm64 arm64e; do
+            lipo -archs "$APP/FuckFile" | tr ' ' '\n' | grep -Fxq "$arch" || {
+              echo "ERROR: $APP/FuckFile is missing $arch"; exit 1;
+            }
           done
-
-          # Do not repeat the Build 810 failure mode: a green native build is
-          # insufficient if a JS viewer runtime was never copied into the app.
-          for file in \
-            "$APP/UniverAssets/index.html" \
-            "$APP/UniverAssets/univer-host.js" \
-            "$APP/UniverAssets/xlsx.full.min.js" \
-            "$APP/OfficeAssets/index.html" \
-            "$APP/OfficeAssets/office-host.js" \
-            "$APP/OfficeAssets/host.css"; do
-            if [ ! -s "$file" ]; then
-              echo "ERROR: packaged viewer runtime missing: $file" >&2
-              find "$APP" -maxdepth 3 -type f | sort
-              exit 1
-            fi
-          done
-          grep -q 'FFSpreadsheet' "$APP/UniverAssets/univer-host.js"
-          grep -q 'ffsheet:///document' "$APP/UniverAssets/univer-host.js"
-          grep -q 'FFOffice' "$APP/OfficeAssets/office-host.js"
-          grep -q 'ffoffice:///document' "$APP/OfficeAssets/office-host.js"
 
           cp Info.plist "$APP/Info.plist"
-          cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.fucknima.fuckfile" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_BUILD/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
           plutil -lint "$APP/Info.plist"
-          plutil -lint "$EXT_BUILD/Info.plist"
           plutil -lint FuckFile.entitlements
-          plutil -lint ShareExtension/FuckFileShare.entitlements
 
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
 
           xcrun actool Assets.xcassets \
-            third_party/runestone/0.5.2/Theme.xcassets \
             --compile "$APP" \
             --platform iphoneos \
-            --minimum-deployment-target 15.0 \
+            --minimum-deployment-target 16.0 \
             --app-icon AppIcon \
             --output-format human-readable-text \
             --output-partial-info-plist "$APP/icon-partial-info.plist"
           test -f "$APP/Assets.car"
           python3 -c "import plistlib,sys; a=plistlib.load(open(sys.argv[2],'rb')); b=plistlib.load(open(sys.argv[1],'rb')); b.update({k:v for k,v in a.items() if k.startswith('CFBundleIcons')}); plistlib.dump(b,open(sys.argv[1],'wb'))" "$APP/Info.plist" "$APP/icon-partial-info.plist"
 
-          mkdir -p "$APP/Languages"
-          for d in c cpp objc swift python javascript typescript tsx json html css bash yaml xml markdown sql; do
-            SRC="third_party/tree-sitter-languages/$d/queries/highlights.scm"
-            if [ ! -f "$SRC" ]; then
-              SRC="third_party/tree-sitter-languages/typescript/$d/queries/highlights.scm"
-            fi
-            if [ -f "$SRC" ]; then
-              mkdir -p "$APP/Languages/$d"
-              cp "$SRC" "$APP/Languages/$d/highlights.scm"
-            fi
-          done
-          test -f "$APP/Languages/c/highlights.scm"
-          for d in c cpp objc swift python javascript typescript tsx json html css bash yaml xml markdown sql; do
-            test -f "$APP/Languages/$d/highlights.scm" || {
-              echo "ERROR: missing language highlights: $d"; exit 1;
-            }
-          done
-
-          rm -rf "$APP/PlugIns/FuckFileShare.appex"
-          mkdir -p "$APP/PlugIns"
-          ditto "$EXT_BUILD" "$APP/PlugIns/FuckFileShare.appex"
-          EXT="$APP/PlugIns/FuckFileShare.appex"
-
           [ "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :UISupportsDocumentBrowser' "$APP/Info.plist")" = "true" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "false" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSHandlerRank' "$APP/Info.plist")" = "Default" ] || exit 1
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = "com.apple.share-services" ] || exit 1
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")" = "FFShareViewController" ] || exit 1
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionActivationRule:NSExtensionActivationSupportsFileWithMaxCount' "$EXT/Info.plist")" = "25" ] || exit 1
 
-          file "$EXT/FuckFileShare"
-          otool -l "$EXT/FuckFileShare" | grep -A3 LC_MAIN
-
-          codesign --force -s - --entitlements ShareExtension/FuckFileShare.entitlements "$EXT"
           codesign --force -s - --entitlements FuckFile.entitlements "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
-
-          codesign -d --entitlements :- "$APP" > /tmp/app-entitlements.plist 2>/dev/null
-          codesign -d --entitlements :- "$EXT" > /tmp/share-entitlements.plist 2>/dev/null
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/app-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/share-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
 
           rm -rf Payload "$IPA_NAME"
           mkdir -p Payload
           ditto "$APP" Payload/FuckFile.app
           zip -qry "$IPA_NAME" Payload
           test -f "$IPA_NAME"
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/OfficeAssets/office-host.js'
-          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/UniverAssets/univer-host.js'
+          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/FuckFile'
           echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
       - name: Upload build ${{ env.BUILD_NUMBER }}
@@ -401,7 +297,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish branch IPA download
-        if: github.event_name == 'push' && (github.ref_name == 'codex/comprehensive-review-fixes' || github.ref_name == '无漏洞利用fuckfile')
+        if: github.event_name == 'push' && (github.ref_name == 'codex/comprehensive-review-fixes' || github.ref_name == '无漏洞利用fuckfile' || github.ref_name == 'swift-fuckfile')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
