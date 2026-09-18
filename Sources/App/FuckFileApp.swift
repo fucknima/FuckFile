@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct FuckFileApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         AppLog.info("==== FuckFile (Swift) launch ====")
         AppLog.info("documents=\(StorageEnvironment.documentsPath)")
@@ -11,6 +13,14 @@ struct FuckFileApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .onOpenURL { url in
+                    ImportCoordinator.shared.handle(url)
+                }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                ImportCoordinator.shared.drainInbox()
+            }
         }
     }
 

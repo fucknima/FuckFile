@@ -25,6 +25,7 @@ struct FilesView: View {
     @State private var batchRenameEntries: [FileEntry] = []
     @State private var isBatchRenamePresented = false
     @ObservedObject private var clipboard = ClipboardService.shared
+    @ObservedObject private var importer = ImportCoordinator.shared
 
     init(directory: String, title: String) {
         self.directory = directory
@@ -35,6 +36,7 @@ struct FilesView: View {
     var body: some View {
         content
             .navigationTitle(viewModel.isSelecting ? "已选 \(viewModel.selectedPaths.count) 项" : title)
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { path in
                 FilesView(directory: path, title: (path as NSString).lastPathComponent)
             }
@@ -55,6 +57,13 @@ struct FilesView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .fileActionsDidChange)) { _ in
                 Task { await viewModel.load() }
+            }
+            .onChange(of: importer.pendingRevealPath) { path in
+                guard directory == StorageEnvironment.documentsPath,
+                      let path, !path.isEmpty else { return }
+                importer.pendingRevealPath = nil
+                openPath = path
+                isOpenPresented = true
             }
             .fileActionsDialogs()
             .alert(namePrompt?.title ?? "名称", isPresented: namePromptBinding) {
@@ -118,15 +127,18 @@ struct FilesView: View {
     @ViewBuilder
     private var content: some View {
         VStack(spacing: 0) {
-            BreadcrumbView(path: directory) { path in
-                guard path != directory else { return }
-                openPath = path
-                isOpenPresented = true
+            // 根目录不显示面包屑（标题已在顶栏，避免「文件 / Documents」两行重复）。
+            if directory != StorageEnvironment.documentsPath {
+                BreadcrumbView(path: directory) { path in
+                    guard path != directory else { return }
+                    openPath = path
+                    isOpenPresented = true
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(.bar)
+                Divider()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .background(.bar)
-            Divider()
             Group {
                 if isGrid {
                     gridContent

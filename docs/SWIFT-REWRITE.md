@@ -27,6 +27,9 @@ Objective-C 版，并为后续「Feather 式 IPA 安装器」提供 Swift 生态
    信息、剪贴板复制剪切粘贴、面包屑、收藏/最近、批量重命名，以及排序/筛选
    持久化、菜单语义、取消全选、任务 tab 按需出现（并行约定见
    docs/SWIFT-REWRITE-P3C.md）。
+   3d 导入复刻已完成：分享扩展（Swift appex）、App Group 收件箱、回环直传桥
+   （127.0.0.1:47551）、Open in / 文档打开导入、启动/回前台自动收件、导入结果
+   提示与「前往查看」（并行约定见 docs/SWIFT-REWRITE-P3D.md）。
 4. **网络与任务中心**：WebDAV/局域网共享、下载任务、任务中心 UI 完整化。
 5. **安装器**：pairing 文件导入 + LocalDevVPN 连通 + lockdownd/AFC/
    installation_proxy（Feather 的 Pairing 安装路径，只装已签名 IPA）。

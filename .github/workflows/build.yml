@@ -236,22 +236,35 @@ jobs:
             return 0
           }
           APP="$(select_bundle FuckFile.app FuckFile)"
+          EXT_BUILD="$(select_bundle FuckFileShare.appex FuckFileShare)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "ERROR: FuckFile.app not found"; exit 1
           fi
+          if [ -z "$EXT_BUILD" ] || [ ! -d "$EXT_BUILD" ]; then
+            echo "ERROR: FuckFileShare.appex not found"; find .theos/obj -maxdepth 4 -type d; exit 1
+          fi
+          if [ ! -x "$EXT_BUILD/FuckFileShare" ]; then
+            echo "ERROR: share extension executable missing"; find "$EXT_BUILD" -maxdepth 2 -type f -print; exit 1
+          fi
           # ARCHS=arm64 arm64e：thin bundle would silently drop older devices.
-          for arch in arm64 arm64e; do
-            lipo -archs "$APP/FuckFile" | tr ' ' '\n' | grep -Fxq "$arch" || {
-              echo "ERROR: $APP/FuckFile is missing $arch"; exit 1;
-            }
+          for pair in "$APP/FuckFile" "$EXT_BUILD/FuckFileShare"; do
+            for arch in arm64 arm64e; do
+              lipo -archs "$pair" | tr ' ' '\n' | grep -Fxq "$arch" || {
+                echo "ERROR: $pair is missing $arch"; exit 1;
+              }
+            done
           done
 
           cp Info.plist "$APP/Info.plist"
+          cp ShareExtension/Info.plist "$EXT_BUILD/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.fucknima.fuckfile" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable FuckFile" "$APP/Info.plist"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_BUILD/Info.plist")" = "$BUILD_NUMBER" ] || exit 1
           plutil -lint "$APP/Info.plist"
+          plutil -lint "$EXT_BUILD/Info.plist"
           plutil -lint FuckFile.entitlements
+          plutil -lint ShareExtension/FuckFileShare.entitlements
 
           mkdir -p "$APP/Base.lproj"
           /usr/bin/ibtool --compile "$APP/Base.lproj/LaunchScreen.storyboardc" LaunchScreen.storyboard
@@ -271,8 +284,23 @@ jobs:
           [ "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "false" ] || exit 1
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSHandlerRank' "$APP/Info.plist")" = "Default" ] || exit 1
 
+          rm -rf "$APP/PlugIns/FuckFileShare.appex"
+          mkdir -p "$APP/PlugIns"
+          ditto "$EXT_BUILD" "$APP/PlugIns/FuckFileShare.appex"
+          EXT="$APP/PlugIns/FuckFileShare.appex"
+
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = "com.apple.share-services" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")" = "FFShareViewController" ] || exit 1
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionActivationRule:NSExtensionActivationSupportsFileWithMaxCount' "$EXT/Info.plist")" = "25" ] || exit 1
+
+          codesign --force -s - --entitlements ShareExtension/FuckFileShare.entitlements "$EXT"
           codesign --force -s - --entitlements FuckFile.entitlements "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+
+          codesign -d --entitlements :- "$APP" > /tmp/app-entitlements.plist 2>/dev/null
+          codesign -d --entitlements :- "$EXT" > /tmp/share-entitlements.plist 2>/dev/null
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/app-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' /tmp/share-entitlements.plist | grep -Fx 'group.com.fucknima.fuckfile'
 
           rm -rf Payload "$IPA_NAME"
           mkdir -p Payload
@@ -280,6 +308,7 @@ jobs:
           zip -qry "$IPA_NAME" Payload
           test -f "$IPA_NAME"
           unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/FuckFile'
+          unzip -l "$IPA_NAME" | grep 'Payload/FuckFile.app/PlugIns/FuckFileShare.appex/FuckFileShare'
           echo "IPA: $(pwd)/$IPA_NAME ($(du -h "$IPA_NAME" | cut -f1))"
 
       - name: Upload build ${{ env.BUILD_NUMBER }}
