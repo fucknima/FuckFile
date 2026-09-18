@@ -30,6 +30,11 @@ struct SettingsView: View {
                     LogView()
                 }
             }
+            Section("数据") {
+                NavigationLink("回收站") {
+                    TrashView()
+                }
+            }
             Section {
                 Text("Swift 重写进行中：当前为阶段 1（App 骨架 / 存储环境 / 日志 / 任务模型）。")
                     .font(.footnote)
