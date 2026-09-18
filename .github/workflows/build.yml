@@ -103,8 +103,8 @@ jobs:
           grep -q 'quickAccessBar' src/FFBrowserViewController.m
           grep -q 'FFTrashService' src/FFBrowserViewController.m
           grep -q 'batchRename' src/FFBrowserViewController.m
-          grep -q 'src/FFTrashService.m' Makefile
-          grep -q 'src/FFBatchRename.m' Makefile
+          # Swift 重写分支：App 目标只编译 Sources/*.swift，不再列 ObjC 源文件。
+          grep -q 'Sources' Makefile
           ! grep -q 'removeItemsAtPaths' src/FFBrowserViewController.m
 
           # No sandbox-escape / container-access stack may come back.
