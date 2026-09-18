@@ -161,9 +161,8 @@ jobs:
           grep -q '@"xlsx": @"spreadsheet"' src/FFFileAssociationService.m
           grep -q '@"docx": @"office-document"' src/FFFileAssociationService.m
           grep -q 'FFOfficeDocumentViewController' src/FFViewerRegistry.m
-          grep -q 'src/FFOfficeDocumentViewController.m' Makefile
-          grep -q 'src/FFViewerStateStore.m' Makefile
-          grep -q '.office-runtime/bundle' Makefile
+          # Swift 重写期间 App 目标不含 ObjC/Office runtime 接线；阶段 3 接回
+          # 查看器与 Office 运行时后，再恢复这三条断言。
           test -f scripts/prepare_office_runtime.sh
           test -f resources/office/entry.js
 
