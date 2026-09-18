@@ -102,7 +102,7 @@ struct MediaPlayerView: View {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
-        let preferences = UIWindowSceneGeometryPreferences.iOS(interfaceOrientations: mask)
+        let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
         scene.requestGeometryUpdate(preferences) { error in
             AppLog.tag("Media", "orientation request failed: \(error.localizedDescription)")
         }
