@@ -15,6 +15,8 @@ struct FilesView: View {
     @State private var isDeleteConfirmPresented = false
     @State private var transferRequest: TransferRequest?
     @State private var viewerEntry: FileEntry?
+    @State private var viewerOverride: ViewerID?
+    @State private var viewerPickerEntry: FileEntry?
 
     init(directory: String, title: String) {
         self.directory = directory
@@ -62,6 +64,15 @@ struct FilesView: View {
             } message: {
                 Text(deleteMessage)
             }
+            .sheet(item: $viewerPickerEntry) { entry in
+                NavigationStack {
+                    ViewerPickerView(entry: entry) { viewer in
+                        viewerPickerEntry = nil
+                        viewerOverride = viewer
+                        viewerEntry = entry
+                    }
+                }
+            }
             .sheet(item: $transferRequest) { request in
                 DirectoryPickerView(title: request.kind.pickerTitle,
                                     rootDirectory: StorageEnvironment.documentsPath) { picked in
@@ -89,7 +100,8 @@ struct FilesView: View {
         }
         .navigationDestination(isPresented: viewerPresented) {
             if let entry = viewerEntry {
-                ViewerHostView(entry: entry, siblings: viewModel.visibleEntries)
+                ViewerHostView(entry: entry, siblings: viewModel.visibleEntries,
+                               forcedViewer: viewerOverride)
             }
         }
     }
@@ -358,6 +370,10 @@ struct FilesView: View {
                         presentNamePrompt(.rename(entry))
                     }
                 }
+                batchButton("压缩", systemImage: "shippingbox", enabled: hasSelection) {
+                    FileActions.shared.compress(viewModel.selectedEntries,
+                                                toDirectory: viewModel.directory)
+                }
                 batchButton("删除", systemImage: "trash", enabled: hasSelection,
                             role: .destructive) {
                     confirmDelete(viewModel.selectedEntries)
@@ -400,6 +416,11 @@ struct FilesView: View {
                 viewerEntry = entry
             } label: {
                 Label("打开", systemImage: "eye")
+            }
+            Button {
+                viewerPickerEntry = entry
+            } label: {
+                Label("打开方式", systemImage: "square.on.square")
             }
         }
         Button {
@@ -444,7 +465,10 @@ struct FilesView: View {
         Binding(
             get: { viewerEntry != nil },
             set: { presented in
-                if !presented { viewerEntry = nil }
+                if !presented {
+                    viewerEntry = nil
+                    viewerOverride = nil
+                }
             }
         )
     }

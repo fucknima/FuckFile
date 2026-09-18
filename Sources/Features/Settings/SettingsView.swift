@@ -34,6 +34,9 @@ struct SettingsView: View {
                 NavigationLink("回收站") {
                     TrashView()
                 }
+                NavigationLink("文件关联") {
+                    FileAssociationsView()
+                }
             }
             Section {
                 Text("Swift 重写进行中：当前为阶段 1（App 骨架 / 存储环境 / 日志 / 任务模型）。")

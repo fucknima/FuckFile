@@ -67,6 +67,33 @@ final class FileActions: ObservableObject {
         }
     }
 
+    /// 批量压缩为 ZIP（目标目录里自动取不冲突的名字）。
+    func compress(_ entries: [FileEntry], toDirectory directory: String) {
+        guard !entries.isEmpty else { return }
+        let destination = (directory as NSString).appendingPathComponent(
+            uniqueArchiveName(in: directory))
+        let sources = entries.map(\.path)
+        FileTaskManager.shared.enqueue(kind: .compress,
+                                       displayName: "压缩 \(entries.count) 项") { task in
+            try ZipArchive.createZip(from: sources, to: destination, progress: { value, _ in
+                DispatchQueue.main.async { task.progress = min(max(value, 0), 1) }
+            }, shouldCancel: { task.cancelled })
+        } completion: { [weak self] _ in
+            self?.postChange()
+        }
+    }
+
+    private func uniqueArchiveName(in directory: String) -> String {
+        var candidate = "Archive.zip"
+        var index = 2
+        while FileManager.default.fileExists(
+            atPath: (directory as NSString).appendingPathComponent(candidate)) {
+            candidate = "Archive \(index).zip"
+            index += 1
+        }
+        return candidate
+    }
+
     func createFile(named name: String, inDirectory directory: String) {
         do {
             _ = try FileOperations.createFile(named: name, in: directory)

@@ -18,8 +18,11 @@ Objective-C 版，并为后续「Feather 式 IPA 安装器」提供 Swift 生态
 2. **文件浏览器 + 文件操作（已完成）**：列表/网格、排序筛选、多选与批量栏、
    复制/移动/删除/重命名、回收站、冲突询问（替换/保留两者/跳过）、任务队列
    执行与完成后自动刷新。并行约定见 docs/SWIFT-REWRITE-P2.md。
-3. **查看器/编辑器**：3a 已完成（查看器路由 + 图片/媒体/PDF/QuickLook/文本，
-   并行约定见 docs/SWIFT-REWRITE-P3.md）；3b 待做（plist/SQLite/Hex/压缩包/Office）。
+3. **查看器/编辑器**：3a 已完成（查看器路由 + 图片/媒体/PDF/QuickLook/文本）；
+   3b 已完成（plist 编辑、SQLite 只读浏览、Hex 编辑、ZIP 浏览/解压/压缩、
+   网页查看器、查看器选择与文件关联设置）。Office 保真运行时（docx/xlsx 等
+   自建 JS 运行时）暂用 QuickLook 兜底，留后续阶段；并行约定见
+   docs/SWIFT-REWRITE-P3.md 与 docs/SWIFT-REWRITE-P3B.md。
 4. **网络与任务中心**：WebDAV/局域网共享、下载任务、任务中心 UI 完整化。
 5. **安装器**：pairing 文件导入 + LocalDevVPN 连通 + lockdownd/AFC/
    installation_proxy（Feather 的 Pairing 安装路径，只装已签名 IPA）。

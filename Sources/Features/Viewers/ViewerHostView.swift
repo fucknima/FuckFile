@@ -4,6 +4,7 @@ import SwiftUI
 struct ViewerHostView: View {
     let entry: FileEntry
     let siblings: [FileEntry]
+    var forcedViewer: ViewerID? = nil
 
     var body: some View {
         switch resolvedViewerID {
@@ -15,13 +16,23 @@ struct ViewerHostView: View {
             PdfViewerView(entry: entry)
         case .text:
             TextEditorView(entry: entry)
+        case .web:
+            WebViewerView(entry: entry)
+        case .plist:
+            PlistEditorView(entry: entry)
+        case .sqlite:
+            SQLiteBrowserView(entry: entry)
+        case .hex:
+            HexEditorView(entry: entry)
+        case .archive:
+            ArchiveBrowserView(entry: entry)
         default:
             QuickLookView(entry: entry)
         }
     }
 
     private var resolvedViewerID: ViewerID {
-        let viewer = FileAssociationService.viewerID(forPath: entry.path)
+        let viewer = forcedViewer ?? FileAssociationService.viewerID(forPath: entry.path)
         return viewer.isImplemented ? viewer : .quickLook
     }
 

@@ -46,8 +46,8 @@ enum ViewerID: String, CaseIterable, Identifiable {
     /// 阶段 3a 已实现：quickLook/image/media/pdf/text；其余由路由回退 quickLook。
     var isImplemented: Bool {
         switch self {
-        case .quickLook, .image, .media, .pdf, .text: return true
-        case .web, .sqlite, .hex, .archive, .plist, .office, .spreadsheet, .macho: return false
+        case .quickLook, .image, .media, .pdf, .text, .web, .sqlite, .hex, .archive, .plist: return true
+        case .office, .spreadsheet, .macho: return false
         }
     }
 }
