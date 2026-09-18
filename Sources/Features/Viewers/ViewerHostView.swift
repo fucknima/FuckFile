@@ -12,6 +12,7 @@ struct ViewerHostView: View {
         }
         .navigationTitle(entry.name)
         .navigationBarTitleDisplayMode(.inline)
+        .viewerActions(for: entry)
     }
 
     @ViewBuilder

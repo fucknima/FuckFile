@@ -11,10 +11,24 @@ final class BrowserViewModel: ObservableObject {
     @Published var entries: [FileEntry] = []
     @Published var isLoading = false
     @Published var loadError: String?
-    @Published var sortMode: FileSortMode = .name
-    @Published var sortAscending = true
-    @Published var filterMode: FileFilterMode = .all
-    @Published var showHidden = false
+    @Published var sortMode: FileSortMode = FileSortMode(
+        rawValue: UserDefaults.standard.string(forKey: "FFSortMode") ?? "") ?? .name {
+        didSet { UserDefaults.standard.set(sortMode.rawValue, forKey: "FFSortMode") }
+    }
+    @Published var sortAscending: Bool = {
+        let defaults = UserDefaults.standard
+        return defaults.object(forKey: "FFSortAscending") == nil
+            ? true : defaults.bool(forKey: "FFSortAscending")
+    }() {
+        didSet { UserDefaults.standard.set(sortAscending, forKey: "FFSortAscending") }
+    }
+    @Published var filterMode: FileFilterMode = FileFilterMode(
+        rawValue: UserDefaults.standard.string(forKey: "FFFilterMode") ?? "") ?? .all {
+        didSet { UserDefaults.standard.set(filterMode.rawValue, forKey: "FFFilterMode") }
+    }
+    @Published var showHidden = UserDefaults.standard.bool(forKey: "FFShowHiddenFiles") {
+        didSet { UserDefaults.standard.set(showHidden, forKey: "FFShowHiddenFiles") }
+    }
     @Published var isSelecting = false
     @Published var selectedPaths: Set<String> = []
 

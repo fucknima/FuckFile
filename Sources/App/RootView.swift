@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct RootView: View {
+    @ObservedObject private var taskManager = FileTaskManager.shared
+
     var body: some View {
         TabView {
             NavigationStack {
@@ -10,11 +12,13 @@ struct RootView: View {
                 Label("文件", systemImage: "folder")
             }
 
-            NavigationStack {
-                TasksView()
-            }
-            .tabItem {
-                Label("任务", systemImage: "arrow.triangle.2.circlepath")
+            if !taskManager.tasks.isEmpty {
+                NavigationStack {
+                    TasksView()
+                }
+                .tabItem {
+                    Label("任务", systemImage: "arrow.triangle.2.circlepath")
+                }
             }
 
             NavigationStack {

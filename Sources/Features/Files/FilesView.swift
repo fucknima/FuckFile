@@ -17,6 +17,14 @@ struct FilesView: View {
     @State private var viewerEntry: FileEntry?
     @State private var viewerOverride: ViewerID?
     @State private var viewerPickerEntry: FileEntry?
+    @State private var isSearchPresented = false
+    @State private var isFavoritesPresented = false
+    @State private var isRecentsPresented = false
+    @State private var infoEntry: FileEntry?
+    @State private var shareEntry: FileEntry?
+    @State private var batchRenameEntries: [FileEntry] = []
+    @State private var isBatchRenamePresented = false
+    @ObservedObject private var clipboard = ClipboardService.shared
 
     init(directory: String, title: String) {
         self.directory = directory
@@ -37,7 +45,11 @@ struct FilesView: View {
             }
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom, spacing: 0) { batchBar }
-            .task { await viewModel.load() }
+            .task {
+                BookmarksService.shared.recordRecent(path: directory, name: title,
+                                                     isDirectory: true)
+                await viewModel.load()
+            }
             .onChange(of: viewModel.showHidden) { _ in
                 Task { await viewModel.load() }
             }
@@ -71,23 +83,62 @@ struct FilesView: View {
                     finishTransfer(request, toDirectory: picked)
                 }
             }
+            .sheet(item: $infoEntry) { entry in
+                NavigationStack {
+                    FileInfoView(entry: entry)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { infoEntry = nil }
+                            }
+                        }
+                }
+            }
+            .sheet(item: $shareEntry) { entry in
+                ShareSheet(items: [URL(fileURLWithPath: entry.path)])
+            }
+            .sheet(isPresented: $isBatchRenamePresented) {
+                BatchRenameView(entries: batchRenameEntries) {
+                    exitSelection()
+                    Task { await viewModel.load() }
+                }
+            }
+            .navigationDestination(isPresented: $isSearchPresented) {
+                SearchView(rootDirectory: StorageEnvironment.documentsPath)
+            }
+            .navigationDestination(isPresented: $isFavoritesPresented) {
+                BookmarksView(mode: .favorites)
+            }
+            .navigationDestination(isPresented: $isRecentsPresented) {
+                BookmarksView(mode: .recent)
+            }
     }
 
     // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
-        Group {
-            if isGrid {
-                gridContent
-            } else {
-                listContent
+        VStack(spacing: 0) {
+            BreadcrumbView(path: directory) { path in
+                guard path != directory else { return }
+                openPath = path
+                isOpenPresented = true
             }
-        }
-        .overlay { stateOverlay }
-        .overlay {
-            if viewModel.isLoading && viewModel.entries.isEmpty {
-                ProgressView()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(.bar)
+            Divider()
+            Group {
+                if isGrid {
+                    gridContent
+                } else {
+                    listContent
+                }
+            }
+            .overlay { stateOverlay }
+            .overlay {
+                if viewModel.isLoading && viewModel.entries.isEmpty {
+                    ProgressView()
+                }
             }
         }
         .navigationDestination(isPresented: viewerPresented) {
@@ -167,6 +218,8 @@ struct FilesView: View {
             }
         } else {
             Button {
+                BookmarksService.shared.recordRecent(path: entry.path, name: entry.name,
+                                                     isDirectory: false)
                 viewerEntry = entry
             } label: {
                 EntryRow(entry: entry)
@@ -201,6 +254,8 @@ struct FilesView: View {
             .buttonStyle(.plain)
         } else {
             Button {
+                BookmarksService.shared.recordRecent(path: entry.path, name: entry.name,
+                                                     isDirectory: false)
                 viewerEntry = entry
             } label: {
                 gridCellContent(entry, isSelected: false)
@@ -212,9 +267,10 @@ struct FilesView: View {
     private func gridCellContent(_ entry: FileEntry, isSelected: Bool) -> some View {
         VStack(spacing: 6) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: EntryStyle.icon(for: entry))
-                    .font(.system(size: 34))
-                    .foregroundColor(EntryStyle.tint(for: entry))
+                FileThumbnailView(entry: entry,
+                                  size: CGSize(width: 64, height: 64),
+                                  fallbackIcon: EntryStyle.icon(for: entry),
+                                  fallbackTint: EntryStyle.tint(for: entry))
                     .frame(maxWidth: .infinity)
                 if viewModel.isSelecting {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -284,8 +340,30 @@ struct FilesView: View {
         }
         ToolbarItemGroup(placement: .navigationBarTrailing) {
             if viewModel.isSelecting {
-                Button("全选") { viewModel.selectAll() }
+                Button(viewModel.selectedPaths.count == viewModel.visibleEntries.count
+                       && !viewModel.visibleEntries.isEmpty ? "取消全选" : "全选") {
+                    if viewModel.selectedPaths.count == viewModel.visibleEntries.count
+                        && !viewModel.visibleEntries.isEmpty {
+                        viewModel.clearSelection()
+                    } else {
+                        viewModel.selectAll()
+                    }
+                }
             } else {
+                Button {
+                    isSearchPresented = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("搜索")
+                if !clipboard.isEmpty {
+                    Button {
+                        pasteClipboard()
+                    } label: {
+                        Image(systemName: "doc.on.clipboard")
+                    }
+                    .accessibilityLabel("粘贴")
+                }
                 sortMenu
                 filterMenu
                 moreMenu
@@ -310,8 +388,8 @@ struct FilesView: View {
             Button {
                 viewModel.sortAscending.toggle()
             } label: {
-                Label(viewModel.sortAscending ? "升序" : "降序",
-                      systemImage: viewModel.sortAscending ? "arrow.up" : "arrow.down")
+                Label(viewModel.sortAscending ? "切换为降序" : "切换为升序",
+                      systemImage: viewModel.sortAscending ? "arrow.down" : "arrow.up")
             }
         } label: {
             Image(systemName: "arrow.up.arrow.down")
@@ -349,11 +427,29 @@ struct FilesView: View {
             Toggle(isOn: $viewModel.showHidden) {
                 Label("显示隐藏文件", systemImage: "eye")
             }
+            if !clipboard.isEmpty {
+                Button {
+                    pasteClipboard()
+                } label: {
+                    Label("粘贴 \(clipboard.count) 项", systemImage: "doc.on.clipboard")
+                }
+            }
             Divider()
             Button {
                 viewModel.isSelecting = true
             } label: {
                 Label("选择", systemImage: "checkmark.circle")
+            }
+            Divider()
+            Button {
+                isFavoritesPresented = true
+            } label: {
+                Label("收藏", systemImage: "star")
+            }
+            Button {
+                isRecentsPresented = true
+            } label: {
+                Label("最近", systemImage: "clock.arrow.circlepath")
             }
             Divider()
             Button {
@@ -389,6 +485,10 @@ struct FilesView: View {
                     if let entry = viewModel.selectedEntries.first {
                         presentNamePrompt(.rename(entry))
                     }
+                }
+                batchButton("批量改名", systemImage: "text.badge.plus", enabled: hasSelection) {
+                    batchRenameEntries = viewModel.selectedEntries
+                    isBatchRenamePresented = true
                 }
                 batchButton("压缩", systemImage: "shippingbox", enabled: hasSelection) {
                     FileActions.shared.compress(viewModel.selectedEntries,
@@ -453,6 +553,34 @@ struct FilesView: View {
                 Label("打开方式", systemImage: "square.on.square")
             }
         }
+        Button {
+            shareEntry = entry
+        } label: {
+            Label("分享", systemImage: "square.and.arrow.up")
+        }
+        Button {
+            infoEntry = entry
+        } label: {
+            Label("信息", systemImage: "info.circle")
+        }
+        Divider()
+        Button {
+            clipboard.copy([entry.path])
+        } label: {
+            Label("复制", systemImage: "doc.on.doc")
+        }
+        Button {
+            clipboard.cut([entry.path])
+        } label: {
+            Label("剪切", systemImage: "scissors")
+        }
+        Button {
+            toggleFavorite(entry)
+        } label: {
+            Label(BookmarksService.shared.isFavorite(path: entry.path) ? "取消收藏" : "收藏",
+                  systemImage: BookmarksService.shared.isFavorite(path: entry.path) ? "star.slash" : "star")
+        }
+        Divider()
         Button {
             beginTransfer(.copy, entries: [entry])
         } label: {
@@ -563,6 +691,43 @@ struct FilesView: View {
         )
     }
 
+    private func pasteClipboard() {
+        guard let mode = clipboard.mode, !clipboard.paths.isEmpty else { return }
+        var entries: [FileEntry] = []
+        for path in clipboard.paths {
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
+                continue
+            }
+            entries.append(FileEntry(name: (path as NSString).lastPathComponent,
+                                     path: path,
+                                     isDirectory: isDirectory.boolValue,
+                                     isSymlink: false,
+                                     size: 0,
+                                     modificationDate: nil))
+        }
+        guard !entries.isEmpty else {
+            clipboard.clear()
+            return
+        }
+        switch mode {
+        case .copy:
+            FileActions.shared.copy(entries, toDirectory: viewModel.directory)
+        case .cut:
+            FileActions.shared.move(entries, toDirectory: viewModel.directory)
+            clipboard.clear()
+        }
+        Task { await viewModel.load() }
+    }
+
+    private func toggleFavorite(_ entry: FileEntry) {
+        if BookmarksService.shared.isFavorite(path: entry.path) {
+            BookmarksService.shared.removeFavorite(path: entry.path)
+        } else {
+            BookmarksService.shared.addFavorite(path: entry.path, name: entry.name)
+        }
+    }
+
     private func confirmDelete(_ entries: [FileEntry]) {
         guard !entries.isEmpty else { return }
         pendingDeletion = entries
@@ -608,12 +773,14 @@ private struct EntryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: EntryStyle.icon(for: entry))
-                .foregroundColor(EntryStyle.tint(for: entry))
-                .frame(width: 24)
+            FileThumbnailView(entry: entry,
+                              size: CGSize(width: 32, height: 32),
+                              fallbackIcon: EntryStyle.icon(for: entry),
+                              fallbackTint: EntryStyle.tint(for: entry))
+                .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name)
-                    .lineLimit(1)
+                    .lineLimit(2)
                 if !entry.isDirectory {
                     Text(EntryStyle.detail(for: entry))
                         .font(.caption)
