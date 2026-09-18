@@ -188,12 +188,6 @@ jobs:
           node tests/viewer_fit_check.js
           node tests/style_xml_check.mjs
 
-      - name: Swift bridge header sanity (pch of FuckFile-Bridging-Header.h)
-        run: |
-          xcrun --sdk iphoneos clang -fobjc-arc -c -x objective-c-header \
-            -I src -I third_party/tree-sitter/include \
-            FuckFile-Bridging-Header.h -o /tmp/ff_bridge.pch
-
       - name: Build app and share extension
         run: |
           set -euo pipefail
