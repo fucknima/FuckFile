@@ -148,7 +148,8 @@ final class ShareViewController: UIViewController {
                     return
                 }
                 let name = url.lastPathComponent.isEmpty ? (provider.suggestedName ?? "") : url.lastPathComponent
-                completion(self.storeSource(url: url, name: name, typeIdentifier: fileURLType, inbox: inbox))
+                completion(self.storeSource(url: url, name: name, typeIdentifier: fileURLType,
+                                            inbox: inbox, mayMove: false))
             }
             return
         }
@@ -181,7 +182,8 @@ final class ShareViewController: UIViewController {
             completion(self.storeSource(url: url,
                                        name: provider.suggestedName ?? "",
                                        typeIdentifier: representationType,
-                                       inbox: inbox))
+                                       inbox: inbox,
+                                       mayMove: true))
         }
     }
 
@@ -220,12 +222,23 @@ final class ShareViewController: UIViewController {
         return inbox.path
     }
 
-    private func storeSource(url sourceURL: URL, name: String, typeIdentifier: String, inbox: String) -> Error? {
+    private func storeSource(url sourceURL: URL, name: String, typeIdentifier: String,
+                             inbox: String, mayMove: Bool) -> Error? {
         let resolvedName = name.isEmpty ? sourceURL.lastPathComponent : name
         return storeItem(inbox: inbox, name: resolvedName, typeIdentifier: typeIdentifier) { payloadURL in
             let scoped = sourceURL.startAccessingSecurityScopedResource()
             defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
-            try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
+            if mayMove {
+                // 系统给的临时副本与扩展同卷：move 是瞬时的，省掉 200MB+ 复制，
+                // 把扩展的时间预算留给直传（大文件就是在这里被系统回收的）。
+                do {
+                    try FileManager.default.moveItem(at: sourceURL, to: payloadURL)
+                } catch {
+                    try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
+                }
+            } else {
+                try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
+            }
             return (try? payloadURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         }
     }

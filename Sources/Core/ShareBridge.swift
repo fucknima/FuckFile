@@ -109,7 +109,7 @@ enum ShareBridgeWire {
 
 // MARK: - 超时与套接字参数（对齐老版 FFLocalShareBridge）
 
-private let bridgeAcceptTimeoutMs: Int32 = 8000      // 老版 select 5s，冷启动放宽
+private let bridgeAcceptTimeoutMs: Int32 = 20000     // 老版 select 5s，大文件/冷启动放宽
 private let bridgeIOTimeoutSeconds: Int = 10         // SO_RCVTIMEO / SO_SNDTIMEO
 private let bridgeConnectAttempts = 120              // 老版 60 × 50ms，冷启动放宽到 6s
 private let bridgeConnectIntervalMicros: UInt32 = 50_000
