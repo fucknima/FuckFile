@@ -83,7 +83,7 @@ enum ActionSheetPresenter {
                                             width: 1, height: 1)
             }
         }
-        let show = { topViewController()?.present(alert, animated: true) }
+        let show: () -> Void = { topViewController()?.present(alert, animated: true) }
         if delay > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: show)
         } else {
