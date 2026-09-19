@@ -123,20 +123,13 @@ final class ShareViewController: UIViewController {
 
     private func load(_ provider: NSItemProvider, inbox: String, completion: @escaping (Error?) -> Void) {
         if let representationType = fileRepresentationType(for: provider) {
-            // 大文件优先 in-place：直接流式读原文件，扩展不再复制一份（省磁盘与时间）。
-            provider.loadInPlaceFileRepresentation(forTypeIdentifier: representationType) { url, _, _ in
-                guard let url else {
-                    self.loadCopiedRepresentation(provider: provider,
-                                                  representationType: representationType,
-                                                  inbox: inbox,
-                                                  completion: completion)
-                    return
-                }
-                completion(self.storeInPlace(url: url,
-                                             name: provider.suggestedName ?? "",
-                                             typeIdentifier: representationType,
-                                             inbox: inbox))
-            }
+            // 严格照老版：让系统先把文件物化/复制成表示 URL，再存进扩展自己的收件箱，
+            // 直传只读这份稳定副本。不要直读 provider 的原始 URL（iCloud 未下全/临时
+            // 副本会在传输中途失效，大文件表现为传到一半断流）。
+            self.loadCopiedRepresentation(provider: provider,
+                                          representationType: representationType,
+                                          inbox: inbox,
+                                          completion: completion)
             return
         }
 
@@ -250,22 +243,10 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    /// in-place：只写 metadata（sourcePath 指向原文件），不复制 payload。
-    private func storeInPlace(url sourceURL: URL, name: String,
-                              typeIdentifier: String, inbox: String) -> Error? {
-        let resolvedName = name.isEmpty ? sourceURL.lastPathComponent : name
-        return storeItem(inbox: inbox, name: resolvedName,
-                         typeIdentifier: typeIdentifier,
-                         sourcePath: sourceURL.path) { _ in
-            (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        }
-    }
-
     /// staging `.partial-<uuid>` → 写 payload + metadata.plist → move 到 `<uuid>.ffshare`。
     private func storeItem(inbox: String,
                            name: String,
                            typeIdentifier: String,
-                           sourcePath: String? = nil,
                            payloadWriter: (URL) throws -> Int) -> Error? {
         let manager = FileManager.default
         let uuid = UUID().uuidString
@@ -277,19 +258,14 @@ final class ShareViewController: UIViewController {
 
         do {
             try manager.createDirectory(at: partialURL, withIntermediateDirectories: true)
-            var metadata: [String: Any] = [
+            let size = try payloadWriter(payloadURL)
+            let metadata: [String: Any] = [
                 "name": safeName(name),
                 "type": typeIdentifier.isEmpty ? Self.defaultTypeIdentifier : typeIdentifier,
                 "created": Date(),
-                "size": 0,
+                "size": size,
                 "session": sessionID,
             ]
-            if let sourcePath {
-                metadata["sourcePath"] = sourcePath
-                metadata["size"] = try payloadWriter(payloadURL)
-            } else {
-                metadata["size"] = try payloadWriter(payloadURL)
-            }
             let metadataData = try PropertyListSerialization.data(fromPropertyList: metadata,
                                                                   format: .binary,
                                                                   options: 0)

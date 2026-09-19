@@ -385,7 +385,6 @@ enum ShareBridgeClient {
         let name: String
         let type: String
         let size: UInt64
-        let needsSecurityScope: Bool
     }
 
     static func sendInbox(at inboxPath: String, sessionID: String, token: String) async throws -> Int {
@@ -436,12 +435,6 @@ enum ShareBridgeClient {
                     && ffWriteAll(fd, typeData)
                 if !ok { break }
 
-                // in-place 条目直接读原文件：需要 security scope 包裹整段读取。
-#if canImport(Darwin)
-                let scopedURL = URL(fileURLWithPath: item.payloadPath)
-                let scoped = item.needsSecurityScope && scopedURL.startAccessingSecurityScopedResource()
-                defer { if scoped { scopedURL.stopAccessingSecurityScopedResource() } }
-#endif
                 guard let handle = FileHandle(forReadingAtPath: item.payloadPath) else {
                     throw ShareBridgeError.payloadUnreadable(item.name)
                 }
@@ -508,19 +501,10 @@ enum ShareBridgeClient {
             let metadata = readMetadata(atPath: metadataPath)
             guard let session = metadata["session"] as? String, session == sessionID else { continue }
 
-            // in-place 共享：元数据里的 sourcePath 指向原文件（未复制到收件箱）。
-            let sourcePath = (metadata["sourcePath"] as? String) ?? ""
-            var effectivePath = payloadPath
-            var needsScope = false
-            if !sourcePath.isEmpty, manager.fileExists(atPath: sourcePath) {
-                effectivePath = sourcePath
-                needsScope = true
-            }
-
             var isDirectory: ObjCBool = false
-            guard manager.fileExists(atPath: effectivePath, isDirectory: &isDirectory),
+            guard manager.fileExists(atPath: payloadPath, isDirectory: &isDirectory),
                   !isDirectory.boolValue,
-                  let attributes = try? manager.attributesOfItem(atPath: effectivePath),
+                  let attributes = try? manager.attributesOfItem(atPath: payloadPath),
                   let size = (attributes[.size] as? NSNumber)?.uint64Value else { continue }
 
             let rawName = metadata["name"] as? String ?? ""
@@ -529,11 +513,10 @@ enum ShareBridgeClient {
             let rawType = metadata["type"] as? String ?? ""
             let type = rawType.isEmpty ? "public.data" : rawType
             items.append(Item(directory: directory,
-                              payloadPath: effectivePath,
+                              payloadPath: payloadPath,
                               name: displayName,
                               type: type,
-                              size: size,
-                              needsSecurityScope: needsScope))
+                              size: size))
         }
         items.sort { $0.name < $1.name }
         return items
