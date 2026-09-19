@@ -18,6 +18,8 @@ final class FileActions: ObservableObject {
         let id = UUID()
         let name: String
         let isDirectory: Bool
+        /// 触发本次冲突的源条目路径（UI 层据此把弹窗锚定到对应行；nil 时居中）。
+        let sourcePath: String?
         let completion: (FileConflictPolicy) -> Void
     }
 
@@ -117,16 +119,19 @@ final class FileActions: ObservableObject {
             return
         }
         // 一次询问应用到本批全部同名项（阶段 2 约定）。
-        askConflict(name: first.name, isDirectory: first.isDirectory) { [weak self] policy in
+        askConflict(name: first.name, isDirectory: first.isDirectory,
+                    sourcePath: first.path) { [weak self] policy in
             self?.enqueueTransfer(entries, toDirectory: directory, kind: kind, policy: policy)
         }
     }
 
     private func askConflict(name: String,
                              isDirectory: Bool,
+                             sourcePath: String?,
                              completion: @escaping (FileConflictPolicy) -> Void) {
         conflictRequest = ConflictRequest(name: name,
-                                          isDirectory: isDirectory) { [weak self] policy in
+                                          isDirectory: isDirectory,
+                                          sourcePath: sourcePath) { [weak self] policy in
             self?.conflictRequest = nil
             completion(policy)
         }

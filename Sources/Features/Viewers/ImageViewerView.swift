@@ -14,8 +14,9 @@ struct ImageViewerView: View {
 
             ZoomableImageView(image: model.image,
                               resetKey: model.currentEntry.path,
-                              onSwipeLeft: { model.showNext() },
-                              onSwipeRight: { model.showPrevious() })
+                              slideDirection: model.slideDirection,
+                              onSwipeLeft: { model.showNext(animated: true) },
+                              onSwipeRight: { model.showPrevious(animated: true) })
                 .ignoresSafeArea()
 
             if model.image == nil && model.errorText == nil {
@@ -87,6 +88,8 @@ private final class ImageViewerModel: ObservableObject {
     @Published private(set) var index: Int
     @Published private(set) var image: UIImage?
     @Published private(set) var errorText: String?
+    /// 最近一次切图方向：1 = 新图从右侧滑入，-1 = 从左侧滑入。
+    @Published private(set) var slideDirection = 0
 
     private var generation = 0
     private var hasStarted = false
@@ -109,17 +112,18 @@ private final class ImageViewerModel: ObservableObject {
         load(at: index)
     }
 
-    func showNext() {
+    func showNext(animated: Bool = false) {
         guard index + 1 < entries.count else { return }
-        load(at: index + 1)
+        load(at: index + 1, direction: animated ? 1 : 0)
     }
 
-    func showPrevious() {
+    func showPrevious(animated: Bool = false) {
         guard index > 0 else { return }
-        load(at: index - 1)
+        load(at: index - 1, direction: animated ? -1 : 0)
     }
 
-    private func load(at newIndex: Int) {
+    /// direction: 1 = 新图从右侧滑入（左划），-1 = 从左侧滑入（右划），0 = 直接切换。
+    private func load(at newIndex: Int, direction: Int = 0) {
         index = newIndex
         generation += 1
         let generation = self.generation
@@ -128,6 +132,7 @@ private final class ImageViewerModel: ObservableObject {
 
         if let cached = ImageViewerCache.images.object(forKey: path as NSString) {
             image = cached
+            slideDirection = direction
             prefetchNeighbours()
             return
         }
@@ -140,16 +145,19 @@ private final class ImageViewerModel: ObservableObject {
             } else {
                 message = nil
             }
-            await self?.apply(decoded: decoded, errorText: message, path: path, generation: generation)
+            await self?.apply(decoded: decoded, errorText: message, path: path,
+                              generation: generation, direction: direction)
         }
     }
 
-    private func apply(decoded: UIImage?, errorText message: String?, path: String, generation: Int) {
+    private func apply(decoded: UIImage?, errorText message: String?, path: String,
+                       generation: Int, direction: Int) {
         guard generation == self.generation else { return }
         if let decoded = decoded {
             ImageViewerCache.images.setObject(decoded, forKey: path as NSString)
             image = decoded
             errorText = nil
+            slideDirection = direction
         } else {
             image = nil
             errorText = message
@@ -187,6 +195,7 @@ private enum ImageViewerCache {
 private struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage?
     let resetKey: String
+    let slideDirection: Int
     let onSwipeLeft: () -> Void
     let onSwipeRight: () -> Void
 
@@ -197,7 +206,7 @@ private struct ZoomableImageView: UIViewRepresentable {
     func updateUIView(_ view: ZoomView, context: Context) {
         view.onSwipeLeft = onSwipeLeft
         view.onSwipeRight = onSwipeRight
-        view.setImage(image, resetKey: resetKey)
+        view.setImage(image, resetKey: resetKey, slideDirection: slideDirection)
     }
 }
 
@@ -245,13 +254,31 @@ private final class ZoomView: UIView, UIScrollViewDelegate, UIGestureRecognizerD
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setImage(_ image: UIImage?, resetKey: String) {
+    func setImage(_ image: UIImage?, resetKey: String, slideDirection: Int) {
         let isNewKey = resetKey != lastResetKey
         let isFirstImage = imageView.image == nil && image != nil
         lastResetKey = resetKey
         guard isNewKey || isFirstImage || image !== imageView.image else { return }
 
-        if isNewKey || isFirstImage {
+        // 与旧版 FFImageViewerViewController 一致：方向非 0 时用快照做滑入/滑出，
+        // 方向 0（首次进入/删除后落到相邻图）用交叉淡入。
+        let animated = !isFirstImage && window != nil && !bounds.isEmpty
+        if animated && slideDirection != 0 {
+            slide(to: image, direction: slideDirection)
+            return
+        }
+        if animated {
+            UIView.transition(with: self, duration: 0.2,
+                              options: .transitionCrossDissolve) {
+                self.apply(image, resetZoom: isNewKey || isFirstImage)
+            }
+            return
+        }
+        apply(image, resetZoom: isNewKey || isFirstImage)
+    }
+
+    private func apply(_ image: UIImage?, resetZoom: Bool) {
+        if resetZoom {
             scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
         }
         imageView.image = image
@@ -263,6 +290,40 @@ private final class ZoomView: UIView, UIScrollViewDelegate, UIGestureRecognizerD
         }
         setNeedsLayout()
         layoutIfNeeded()
+    }
+
+    /// direction: 1 = 新图从右侧进入，-1 = 从左侧进入。
+    private func slide(to image: UIImage?, direction: Int) {
+        let width = bounds.width
+        guard width > 0 else {
+            apply(image, resetZoom: true)
+            return
+        }
+
+        let outgoing = snapshotView(afterScreenUpdates: false)
+        outgoing?.frame = frame
+        outgoing?.isUserInteractionEnabled = false
+        if let outgoing { superview?.addSubview(outgoing) }
+
+        let incomingView = ZoomView(frame: frame.offsetBy(dx: CGFloat(direction) * width, dy: 0))
+        incomingView.apply(image, resetZoom: true)
+        incomingView.isUserInteractionEnabled = false
+        superview?.addSubview(incomingView)
+
+        apply(image, resetZoom: true)
+        isHidden = true
+
+        UIView.animate(withDuration: 0.26, delay: 0,
+                       options: [.curveEaseInOut]) {
+            outgoing?.frame = outgoing?.frame.offsetBy(dx: -CGFloat(direction) * width, dy: 0)
+                ?? .zero
+            incomingView.frame = incomingView.frame.offsetBy(dx: -CGFloat(direction) * width,
+                                                             dy: 0)
+        } completion: { _ in
+            outgoing?.removeFromSuperview()
+            incomingView.removeFromSuperview()
+            self.isHidden = false
+        }
     }
 
     override func layoutSubviews() {
@@ -292,8 +353,19 @@ private final class ZoomView: UIView, UIScrollViewDelegate, UIGestureRecognizerD
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 与旧版一致：滑动与滚动并行识别（未放大时滚动没有内容，不产生视觉冲突）。
         true
     }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        // 屏幕左缘留给系统「返回」手势：从中间右划才是上一张。
+        guard let swipe = gestureRecognizer as? UISwipeGestureRecognizer,
+              swipe.direction == .right else { return true }
+        return touch.location(in: self).x > Self.systemEdgeWidth
+    }
+
+    private static let systemEdgeWidth: CGFloat = 24
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
         guard isZoomedOut else {

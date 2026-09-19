@@ -12,10 +12,8 @@ struct FilesView: View {
     @State private var openPath: String?
     @State private var namePrompt: NamePromptKind?
     @State private var nameText = ""
-    @State private var pendingDeletion: [FileEntry] = []
-    @State private var deleteRequest: DeleteRequest?
-    @State private var isImportPresented = false
     @State private var importError: String?
+    @State private var importNotice: String?
     @State private var transferRequest: TransferRequest?
     @State private var viewerEntry: FileEntry?
     @State private var viewerOverride: ViewerID?
@@ -77,15 +75,15 @@ struct FilesView: View {
                     isOpenPresented = true
                 }
             }
-            .fileImporter(isPresented: $isImportPresented,
-                          allowedContentTypes: [.item],
-                          allowsMultipleSelection: true) { result in
-                importPickedFiles(result)
-            }
             .alert("导入失败", isPresented: importErrorBinding) {
                 Button("好") { importError = nil }
             } message: {
                 Text(importError ?? "")
+            }
+            .alert("导入", isPresented: importNoticeBinding) {
+                Button("好") { importNotice = nil }
+            } message: {
+                Text(importNotice ?? "")
             }
             .fileActionsDialogs()
             .alert(namePrompt?.title ?? "名称", isPresented: namePromptBinding) {
@@ -123,8 +121,7 @@ struct FilesView: View {
                             }
                         }
                 }
-            }
-            .sheet(item: $shareEntry) { entry in
+            }            .sheet(item: $shareEntry) { entry in
                 ShareSheet(items: [URL(fileURLWithPath: entry.path)])
             }
             .sheet(isPresented: $isBatchRenamePresented) {
@@ -191,8 +188,7 @@ struct FilesView: View {
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !viewModel.isSelecting {
                             Button(role: .destructive) {
-                                confirmDelete([entry], source: .row(entry.path),
-                                              afterSwipe: true)
+                                confirmDelete([entry], anchorKey: entry.path)
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
@@ -227,15 +223,7 @@ struct FilesView: View {
     @ViewBuilder
     private func listRow(for entry: FileEntry) -> some View {
         rowBody(for: entry)
-            .confirmationDialog("移到回收站",
-                                isPresented: deleteBinding(for: entry),
-                                titleVisibility: .visible) {
-                Button("移到回收站", role: .destructive) { commitDelete() }
-                Button("取消", role: .cancel) { cancelDelete() }
-            } message: {
-                Text(deleteMessage)
-            }
-            .compactPopoverIfAvailable()
+            .background(RowAnchorReader(key: entry.path))
     }
 
     @ViewBuilder
@@ -266,15 +254,7 @@ struct FilesView: View {
     @ViewBuilder
     private func gridCell(for entry: FileEntry) -> some View {
         gridBody(for: entry)
-            .confirmationDialog("移到回收站",
-                                isPresented: deleteBinding(for: entry),
-                                titleVisibility: .visible) {
-                Button("移到回收站", role: .destructive) { commitDelete() }
-                Button("取消", role: .cancel) { cancelDelete() }
-            } message: {
-                Text(deleteMessage)
-            }
-            .compactPopoverIfAvailable()
+            .background(RowAnchorReader(key: entry.path))
     }
 
     @ViewBuilder
@@ -406,6 +386,41 @@ struct FilesView: View {
 
     private var moreMenu: some View {
         Menu {
+            // 剪贴板有内容时「粘贴」置顶（与旧版一致，剪切后马上能粘）。
+            if !clipboard.isEmpty {
+                Button {
+                    pasteClipboard()
+                } label: {
+                    Label("粘贴 \(clipboard.count) 项", systemImage: "doc.on.clipboard")
+                }
+                Divider()
+            }
+            Button {
+                viewModel.isSelecting = true
+            } label: {
+                Label("选择", systemImage: "checkmark.circle")
+            }
+            Button {
+                Task { await viewModel.load() }
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            Button {
+                UIPasteboard.general.string = viewModel.directory
+            } label: {
+                Label("复制当前路径", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+            }
+            Button {
+                infoEntry = FileEntry(name: (viewModel.directory as NSString).lastPathComponent,
+                                      path: viewModel.directory,
+                                      isDirectory: true,
+                                      isSymlink: false,
+                                      size: 0,
+                                      modificationDate: nil)
+            } label: {
+                Label("文件夹信息", systemImage: "info.circle")
+            }
+            Divider()
             Menu {
                 ForEach(FileSortMode.allCases) { mode in
                     Button {
@@ -452,19 +467,6 @@ struct FilesView: View {
             Toggle(isOn: $viewModel.showHidden) {
                 Label("显示隐藏文件", systemImage: "eye")
             }
-            if !clipboard.isEmpty {
-                Button {
-                    pasteClipboard()
-                } label: {
-                    Label("粘贴 \(clipboard.count) 项", systemImage: "doc.on.clipboard")
-                }
-            }
-            Divider()
-            Button {
-                viewModel.isSelecting = true
-            } label: {
-                Label("选择", systemImage: "checkmark.circle")
-            }
             Divider()
             Button {
                 isFavoritesPresented = true
@@ -488,9 +490,14 @@ struct FilesView: View {
                 Label("新建文件", systemImage: "doc.badge.plus")
             }
             Button {
-                isImportPresented = true
+                presentDocumentPicker()
             } label: {
-                Label("导入文件", systemImage: "square.and.arrow.down")
+                Label("导入文件…", systemImage: "square.and.arrow.down")
+            }
+            Button {
+                presentPhotoPicker()
+            } label: {
+                Label("导入照片…", systemImage: "photo.on.rectangle")
             }
         } label: {
             Image(systemName: "ellipsis.circle")
@@ -527,21 +534,13 @@ struct FilesView: View {
                 }
                 batchButton("删除", systemImage: "trash", enabled: hasSelection,
                             role: .destructive) {
-                    confirmDelete(viewModel.selectedEntries, source: .batch)
+                    confirmDelete(viewModel.selectedEntries, anchorKey: batchAnchorKey)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(.bar)
-            .confirmationDialog("移到回收站",
-                                isPresented: batchDeleteBinding,
-                                titleVisibility: .visible) {
-                Button("移到回收站", role: .destructive) { commitDelete() }
-                Button("取消", role: .cancel) { cancelDelete() }
-            } message: {
-                Text(deleteMessage)
-            }
-            .compactPopoverIfAvailable()
+            .background(RowAnchorReader(key: batchAnchorKey))
         }
     }
 
@@ -628,7 +627,7 @@ struct FilesView: View {
         }
         Divider()
         Button(role: .destructive) {
-            confirmDelete([entry], source: .row(entry.path))
+            confirmDelete([entry], anchorKey: entry.path)
         } label: {
             Label("删除", systemImage: "trash")
         }
@@ -638,15 +637,10 @@ struct FilesView: View {
 
     private var hasSelection: Bool { !viewModel.selectedPaths.isEmpty }
 
+    private var batchAnchorKey: String { "batch" }
+
     private var trimmedName: String {
         nameText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var deleteMessage: String {
-        if pendingDeletion.count == 1, let entry = pendingDeletion.first {
-            return "“\(entry.name)” 将移到回收站，可在那里恢复。"
-        }
-        return "\(pendingDeletion.count) 个项目将移到回收站，可在那里恢复。"
     }
 
     private var viewerPresented: Binding<Bool> {
@@ -731,48 +725,27 @@ struct FilesView: View {
         }
     }
 
-    private func confirmDelete(_ entries: [FileEntry], source: DeleteRequest,
-                               afterSwipe: Bool = false) {
+    private func confirmDelete(_ entries: [FileEntry], anchorKey: String?) {
         guard !entries.isEmpty else { return }
-        let present = { [entries] in
-            pendingDeletion = entries
-            deleteRequest = source
-        }
-        if afterSwipe {
-            // 等左滑收起动画结束再弹：滑动动作结束时系统会把锚定弹窗一起收掉。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: present)
-        } else {
-            present()
-        }
+        ActionSheetPresenter.present(
+            title: "移到回收站",
+            message: deleteMessage(for: entries),
+            actions: [("移到回收站", true, { commitDelete(entries) })],
+            anchor: RowAnchors.view(for: anchorKey))
     }
 
-    private func cancelDelete() {
-        deleteRequest = nil
-        pendingDeletion = []
-    }
-
-    private func commitDelete() {
-        let entries = pendingDeletion
-        deleteRequest = nil
-        pendingDeletion = []
+    private func commitDelete(_ entries: [FileEntry]) {
         guard !entries.isEmpty else { return }
         FileActions.shared.trash(entries)
         exitSelection()
         Task { await viewModel.load() }
     }
 
-    private func deleteBinding(for entry: FileEntry) -> Binding<Bool> {
-        Binding(
-            get: { deleteRequest == .row(entry.path) },
-            set: { presented in if !presented { cancelDelete() } }
-        )
-    }
-
-    private var batchDeleteBinding: Binding<Bool> {
-        Binding(
-            get: { deleteRequest == .batch },
-            set: { presented in if !presented { cancelDelete() } }
-        )
+    private func deleteMessage(for entries: [FileEntry]) -> String {
+        if entries.count == 1, let entry = entries.first {
+            return "“\(entry.name)” 将移到回收站，可在那里恢复。"
+        }
+        return "\(entries.count) 个项目将移到回收站，可在那里恢复。"
     }
 
     private var importErrorBinding: Binding<Bool> {
@@ -781,6 +754,14 @@ struct FilesView: View {
             set: { presented in if !presented { importError = nil } }
         )
     }
+
+    private var importNoticeBinding: Binding<Bool> {
+        Binding(
+            get: { importNotice != nil },
+            set: { presented in if !presented { importNotice = nil } }
+        )
+    }
+
 
     private func importPickedFiles(_ result: Result<[URL], Error>) {
         switch result {
@@ -806,6 +787,57 @@ struct FilesView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    /// 系统文件选择器：菜单收起后再呈现（SwiftUI .fileImporter 从 Menu 里
+    /// 触发时在部分系统上不出现），与旧版 UIDocumentPickerModeImport 一致。
+    /// delegate 是弱引用，包装对象必须自己保活。
+    private func presentDocumentPicker() {
+        let picker = DocumentImportPicker(
+            onPick: { urls in
+                Self.activeDocumentPicker = nil
+                importPickedFiles(.success(urls))
+            },
+            onCancel: { Self.activeDocumentPicker = nil })
+        guard let controller = picker.makeController() else { return }
+        Self.activeDocumentPicker = picker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            Self.topViewController()?.present(controller, animated: true)
+        }
+    }
+
+    private static var activeDocumentPicker: DocumentImportPicker?
+
+    /// 系统相册选择器：同样等菜单收起后呈现。
+    private func presentPhotoPicker() {
+        let picker = PhotoImportPicker(destination: viewModel.directory) { [weak viewModel] imported, firstFailure in
+            Self.activePhotoPicker = nil
+            if imported > 0 { Task { await viewModel?.load() } }
+            if let firstFailure {
+                importError = imported > 0
+                    ? "已导入 \(imported) 张；失败：\(firstFailure)"
+                    : firstFailure
+            } else if imported > 0 {
+                importNotice = "已导入 \(imported) 张照片。"
+            }
+        }
+        Self.activePhotoPicker = picker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            Self.topViewController()?.present(picker.makeController(), animated: true)
+        }
+    }
+
+    private static var activePhotoPicker: PhotoImportPicker?
+
+    private static func topViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        var controller = scene?.windows.first { $0.isKeyWindow }?.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        return controller
     }
 
     private func beginTransfer(_ kind: TransferKind, entries: [FileEntry]) {
@@ -906,11 +938,6 @@ private enum EntryStyle {
 }
 
 // MARK: - Prompts & transfers
-
-private enum DeleteRequest: Equatable {
-    case row(String)
-    case batch
-}
 
 private enum NamePromptKind: Identifiable {
     case newFolder
@@ -1065,17 +1092,33 @@ private struct DirectoryPickerView: View {
     }
 }
 
-// MARK: - Compact popover
+// MARK: - Document import picker
 
-extension View {
-    /// iPhone 上让 confirmationDialog 以锚定弹窗（而非底部 sheet）出现。
-    /// iOS 16.4 之前不支持 compact popover 适配，保持系统默认。
-    @ViewBuilder
-    func compactPopoverIfAvailable() -> some View {
-        if #available(iOS 16.4, *) {
-            presentationCompactAdaptation(.popover)
-        } else {
-            self
-        }
+/// 系统文件选择器包装（UIDocumentPickerModeImport 语义）：回调后立刻
+/// 读取 security-scoped URL，拷贝交给 ImportService。
+final class DocumentImportPicker: NSObject, UIDocumentPickerDelegate {
+    private let onPick: ([URL]) -> Void
+    private let onCancel: () -> Void
+
+    init(onPick: @escaping ([URL]) -> Void, onCancel: @escaping () -> Void) {
+        self.onPick = onPick
+        self.onCancel = onCancel
+    }
+
+    func makeController() -> UIDocumentPickerViewController? {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.data, .content], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = true
+        return picker
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController,
+                        didPickDocumentsAt urls: [URL]) {
+        onPick(urls)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        onCancel()
     }
 }

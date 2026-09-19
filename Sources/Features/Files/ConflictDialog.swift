@@ -1,17 +1,11 @@
 import SwiftUI
 
 /// 挂在浏览器上的统一弹窗：冲突选择 + 操作失败提示。
+/// 冲突选择用 UIKit 锚定弹窗（跟随触发条目；SwiftUI confirmationDialog
+/// 挂行上会被左滑/长按菜单的收起动画连带关闭）。
 struct FileActionsDialogs: ViewModifier {
     @ObservedObject private var actions = FileActions.shared
-
-    private var conflictPresented: Binding<Bool> {
-        Binding(
-            get: { actions.conflictRequest != nil },
-            set: { presented in
-                if !presented { actions.conflictRequest = nil }
-            }
-        )
-    }
+    @State private var presentedRequestID: UUID?
 
     private var errorPresented: Binding<Bool> {
         Binding(
@@ -24,15 +18,10 @@ struct FileActionsDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(conflictTitle,
-                                isPresented: conflictPresented,
-                                titleVisibility: .visible) {
-                Button("替换") { actions.conflictRequest?.completion(.replace) }
-                Button("保留两者") { actions.conflictRequest?.completion(.keepBoth) }
-                Button("跳过", role: .cancel) { actions.conflictRequest?.completion(.skip) }
-            } message: {
-                Text("目标文件夹里已有同名项目；所选处理方式对本批全部同名项生效。")
+            .onChange(of: actions.conflictRequest?.id) { _ in
+                presentConflictIfNeeded()
             }
+            .onAppear { presentConflictIfNeeded() }
             .alert("操作失败", isPresented: errorPresented) {
                 Button("好") { actions.errorMessage = nil }
             } message: {
@@ -40,9 +29,22 @@ struct FileActionsDialogs: ViewModifier {
             }
     }
 
-    private var conflictTitle: String {
-        guard let request = actions.conflictRequest else { return "目标已存在" }
-        return "“\(request.name)” 已存在"
+    private func presentConflictIfNeeded() {
+        guard let request = actions.conflictRequest, request.id != presentedRequestID else {
+            return
+        }
+        presentedRequestID = request.id
+        let anchor = RowAnchors.view(for: request.sourcePath)
+        ActionSheetPresenter.present(
+            title: "“\(request.name)” 已存在",
+            message: "目标文件夹里已有同名项目；所选处理方式对本批全部同名项生效。",
+            actions: [
+                ("替换", false, { request.completion(.replace) }),
+                ("保留两者", false, { request.completion(.keepBoth) }),
+                ("跳过", true, { request.completion(.skip) }),
+            ],
+            onCancel: { request.completion(.skip) },
+            anchor: anchor)
     }
 }
 
