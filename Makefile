@@ -27,6 +27,8 @@ FuckFileShare_FILES = \
 	Sources/Core/ShareBridge.swift \
 	Sources/Core/ShareInboxService.swift \
 	Sources/Core/ImportService.swift \
+	Sources/Core/FileOperations.swift \
+	Sources/Core/FileConflictPolicy.swift \
 	Sources/Core/StorageEnvironment.swift \
 	Sources/Core/AppLog.swift
 FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
