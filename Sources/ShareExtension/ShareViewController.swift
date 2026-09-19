@@ -274,20 +274,25 @@ final class ShareViewController: UIViewController {
             return
         }
 
-        let token = UUID().uuidString
-        let opened = openWakeURL(ShareBridge.wakeURL(token: token, count: imported))
+        if usesAppGroup {
+            // App Group 路径：文件已在共享收件箱，只需唤醒 App 去取，
+            // 绝不能发 share-stream（那会让 App 空等回环连接直到超时）。
+            if let firstError {
+                showFailure(firstError)
+                return
+            }
+            let inboxURL = URL(string: "\(ShareBridge.wakeScheme)://shared-inbox")!
+            let opened = openWakeURL(inboxURL)
+            statusLabel.text = "已接收 \(imported) 个文件，正在打开 FuckFile…"
+            close(after: opened ? 0.20 : 0.80)
+            return
+        }
 
-        if !usesAppGroup {
-            statusLabel.text = "正在将文件传给 FuckFile…"
-            sendInbox(token: token, firstError: firstError)
-            return
-        }
-        if let firstError {
-            showFailure(firstError)
-            return
-        }
-        statusLabel.text = "已接收 \(imported) 个文件，正在打开 FuckFile…"
-        close(after: opened ? 0.20 : 0.80)
+        // 无 App Group：唤醒 App 起回环服务，再把本次条目直传过去。
+        let token = UUID().uuidString
+        _ = openWakeURL(ShareBridge.wakeURL(token: token, count: imported))
+        statusLabel.text = "正在将文件传给 FuckFile…"
+        sendInbox(token: token, firstError: firstError)
     }
 
     private func sendInbox(token: String, firstError: Error?) {

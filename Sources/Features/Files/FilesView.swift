@@ -36,7 +36,7 @@ struct FilesView: View {
     var body: some View {
         content
             .navigationTitle(viewModel.isSelecting ? "已选 \(viewModel.selectedPaths.count) 项" : title)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
             .navigationDestination(for: String.self) { path in
                 FilesView(directory: path, title: (path as NSString).lastPathComponent)
             }
@@ -368,68 +368,50 @@ struct FilesView: View {
                     Image(systemName: "magnifyingglass")
                 }
                 .accessibilityLabel("搜索")
-                if !clipboard.isEmpty {
-                    Button {
-                        pasteClipboard()
-                    } label: {
-                        Image(systemName: "doc.on.clipboard")
-                    }
-                    .accessibilityLabel("粘贴")
-                }
-                sortMenu
-                filterMenu
                 moreMenu
             }
         }
     }
 
-    private var sortMenu: some View {
-        Menu {
-            ForEach(FileSortMode.allCases) { mode in
-                Button {
-                    viewModel.sortMode = mode
-                } label: {
-                    if viewModel.sortMode == mode {
-                        Label(mode.title, systemImage: "checkmark")
-                    } else {
-                        Label(mode.title, systemImage: mode.icon)
-                    }
-                }
-            }
-            Divider()
-            Button {
-                viewModel.sortAscending.toggle()
-            } label: {
-                Label(viewModel.sortAscending ? "切换为降序" : "切换为升序",
-                      systemImage: viewModel.sortAscending ? "arrow.down" : "arrow.up")
-            }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
-        }
-        .accessibilityLabel("排序")
-    }
-
-    private var filterMenu: some View {
-        Menu {
-            ForEach(FileFilterMode.allCases) { mode in
-                Button {
-                    viewModel.filterMode = mode
-                } label: {
-                    if viewModel.filterMode == mode {
-                        Label(mode.title, systemImage: "checkmark")
-                    } else {
-                        Label(mode.title, systemImage: mode.icon)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-        }
-        .accessibilityLabel("筛选")
-    }
-
     private var moreMenu: some View {
         Menu {
+            Menu {
+                ForEach(FileSortMode.allCases) { mode in
+                    Button {
+                        viewModel.sortMode = mode
+                    } label: {
+                        if viewModel.sortMode == mode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Label(mode.title, systemImage: mode.icon)
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    viewModel.sortAscending.toggle()
+                } label: {
+                    Label(viewModel.sortAscending ? "切换为降序" : "切换为升序",
+                          systemImage: viewModel.sortAscending ? "arrow.down" : "arrow.up")
+                }
+            } label: {
+                Label("排序", systemImage: "arrow.up.arrow.down")
+            }
+            Menu {
+                ForEach(FileFilterMode.allCases) { mode in
+                    Button {
+                        viewModel.filterMode = mode
+                    } label: {
+                        if viewModel.filterMode == mode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Label(mode.title, systemImage: mode.icon)
+                        }
+                    }
+                }
+            } label: {
+                Label("筛选", systemImage: "line.3.horizontal.decrease.circle")
+            }
             Button {
                 isGrid.toggle()
             } label: {

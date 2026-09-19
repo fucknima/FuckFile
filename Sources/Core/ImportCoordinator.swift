@@ -44,8 +44,13 @@ final class ImportCoordinator: ObservableObject {
 
     /// SwiftUI `.onOpenURL`：文件 URL 导入；分享唤醒 URL 走回环直传。
     func handle(_ url: URL) {
-        if let wake = ShareBridge.parseWakeURL(url) {
-            acceptWake(token: wake.token, count: wake.count)
+        if url.scheme?.lowercased() == ShareBridge.wakeScheme {
+            if let wake = ShareBridge.parseWakeURL(url) {
+                acceptWake(token: wake.token, count: wake.count)
+            } else {
+                // shared-inbox 等普通唤醒：去 App Group 收件箱取文件并提示结果。
+                drainInbox(showResult: true)
+            }
             return
         }
         guard url.isFileURL else {
@@ -61,8 +66,8 @@ final class ImportCoordinator: ObservableObject {
         }
     }
 
-    /// 启动 / 回前台：静默回收 App Group 收件箱（不弹结果，只刷新可见列表）。
-    func drainInbox() {
+    /// 启动 / 回前台：静默回收 App Group 收件箱；分享唤醒时 showResult = true。
+    func drainInbox(showResult: Bool = false) {
         guard !streamInProgress else { return }
         Task { [weak self] in
             let outcome = await ShareInboxService.processPending()
@@ -71,6 +76,11 @@ final class ImportCoordinator: ObservableObject {
             AppLog.tag("ShareInbox", "drain imported=\(outcome.imported) errors=\(outcome.errors.count)")
             if outcome.imported > 0 {
                 self.pendingRevealPath = Self.importedDirectory()
+            }
+            if showResult {
+                self.outcome = Outcome(imported: outcome.imported,
+                                       destinations: outcome.destinations,
+                                       errors: outcome.errors.map(\.localizedDescription))
             }
         }
     }
