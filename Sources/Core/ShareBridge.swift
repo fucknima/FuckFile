@@ -104,7 +104,7 @@ enum ShareBridgeWire {
     static let maxNameLength = 4096
     static let maxTypeLength = 4096
     static let maxDataLength: UInt64 = 8 * 1024 * 1024 * 1024
-    static let chunkSize = 64 * 1024
+    static let chunkSize = 256 * 1024
 }
 
 // MARK: - 超时与套接字参数（对齐老版 FFLocalShareBridge）
@@ -420,7 +420,10 @@ enum ShareBridgeClient {
         ok = ok && ffWriteAllRaw(fd, &count, 4)
         ok = ok && ffWriteAll(fd, tokenData)
 
-        let buffer = [UInt8](repeating: 0, count: ShareBridgeWire.chunkSize)
+        // 与老版一致的裸 POSIX 读/写循环：不做每块 Data 分配，避免传输变慢。
+        let chunkSize = ShareBridgeWire.chunkSize
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunkSize, alignment: 1)
+        defer { buffer.deallocate() }
         if ok {
             for item in items {
                 let nameData = Data(item.name.utf8)
@@ -435,20 +438,25 @@ enum ShareBridgeClient {
                     && ffWriteAll(fd, typeData)
                 if !ok { break }
 
-                guard let handle = FileHandle(forReadingAtPath: item.payloadPath) else {
-                    throw ShareBridgeError.payloadUnreadable(item.name)
-                }
-                defer { try? handle.close() }
+                let input = open(item.payloadPath, O_RDONLY | O_CLOEXEC)
+                guard input >= 0 else { throw ShareBridgeError.payloadUnreadable(item.name) }
                 var remaining = item.size
                 while remaining > 0 {
-                    let chunk = (try? handle.read(upToCount: Int(min(remaining,
-                                                                     UInt64(buffer.count))))) ?? nil
-                    guard let chunk, !chunk.isEmpty else {
+                    let wanted = Int(min(UInt64(chunkSize), remaining))
+                    let got = read(input, buffer, wanted)
+                    if got < 0 {
+                        if errno == EINTR { continue }
+                        close(input)
+                        throw ShareBridgeError.payloadUnreadable(item.name)
+                    }
+                    if got == 0 {
+                        close(input)
                         throw ShareBridgeError.payloadTruncated(item.name)
                     }
-                    guard ffWriteAll(fd, chunk) else { ok = false; break }
-                    remaining -= UInt64(chunk.count)
+                    guard ffWriteAllRaw(fd, buffer, got) else { ok = false; break }
+                    remaining -= UInt64(got)
                 }
+                close(input)
                 if !ok { break }
             }
         }

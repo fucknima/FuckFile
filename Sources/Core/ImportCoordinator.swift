@@ -45,6 +45,17 @@ final class ImportCoordinator: ObservableObject {
     /// SwiftUI `.onOpenURL`：文件 URL 导入；分享唤醒 URL 走回环直传。
     func handle(_ url: URL) {
         if url.scheme?.lowercased() == ShareBridge.wakeScheme {
+            if url.host?.lowercased() == "send-failed" {
+                // 分享扩展直传失败：把客户端侧的真实原因显示/记录出来。
+                var message = "分享扩展直传失败"
+                for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                where item.name == "message" {
+                    message = item.value ?? message
+                }
+                AppLog.tag("ShareBridge", "extension send failed: \(message)")
+                outcome = Outcome(imported: 0, destinations: [], errors: [message])
+                return
+            }
             if let wake = ShareBridge.parseWakeURL(url) {
                 acceptWake(token: wake.token, count: wake.count)
             } else {

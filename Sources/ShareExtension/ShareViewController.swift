@@ -329,10 +329,22 @@ final class ShareViewController: UIViewController {
                     self.close(after: 0.15)
                 }
             } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                self.reportSendFailure(message)
                 self.statusLabel.text = "直传失败：请先打开 FuckFile，然后重新分享一次"
                 self.close(after: 1.2)
             }
         }
+    }
+
+    /// 直传失败原因回传 App：日志/弹窗里能看到客户端侧的真实错误。
+    private func reportSendFailure(_ message: String) {
+        var components = URLComponents()
+        components.scheme = ShareBridge.wakeScheme
+        components.host = "send-failed"
+        components.queryItems = [URLQueryItem(name: "message",
+                                              value: String(message.prefix(200)))]
+        if let url = components.url { _ = openWakeURL(url) }
     }
 
     private func showFailure(_ error: Error) {
