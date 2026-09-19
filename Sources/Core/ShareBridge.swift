@@ -121,6 +121,7 @@ import Network
 
 private let bridgeAcceptTimeout: TimeInterval = 10
 private let bridgeReadWriteTimeout: TimeInterval = 10
+private let bridgeAckTimeout: TimeInterval = 60
 /// 客户端连接等待：覆盖 App 冷启动后开始监听的时间。
 private let bridgeConnectTimeout: TimeInterval = 1
 private let bridgeClientRetryWindow: TimeInterval = 12
@@ -157,6 +158,12 @@ private final class BridgeSocket {
                 }
             }
             connection.start(queue: queue)
+            // 已建立的连接（listener 接受的）在挂上 stateUpdateHandler 时可能
+            // 已经是 .ready，不会再收到回调；这里补一次状态检查，否则服务端
+            // 永远不读，客户端写满缓冲后报「本地分享读写超时」。
+            if connection.state == .ready {
+                resume(.success(()))
+            }
             queue.asyncAfter(deadline: .now() + timeout) {
                 resume(.failure(ShareBridgeError.connectTimeout))
             }
@@ -315,6 +322,7 @@ final class ShareBridgeServer {
             return outcome
         }
 
+        AppLog.tag("ShareBridge", "loopback accepted token=\(token) expected=\(expectedCount)")
         do {
             outcome = try await receiveItems(from: socket, token: token, expectedCount: expectedCount)
         } catch let error as ShareBridgeError {
@@ -390,9 +398,7 @@ final class ShareBridgeServer {
         guard count > 0, count <= ShareBridgeWire.maxItemCount else {
             throw ShareBridgeError.invalidStream("条目数量无效")
         }
-        if expectedCount > 0 && count != expectedCount {
-            AppLog.tag("ShareBridge", "count differs wake=\(expectedCount) stream=\(count)")
-        }
+        AppLog.tag("ShareBridge", "loopback items count=\(count) wake=\(expectedCount)")
 
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("FFShareBridge-\(UUID().uuidString)", isDirectory: true)
@@ -501,7 +507,8 @@ enum ShareBridgeClient {
 
         do {
             try await send(items: items, over: socket)
-            let acknowledged = try await socket.readUInt32(timeout: bridgeReadWriteTimeout)
+            // 服务端会把所有条目导入完才回 ACK，大文件/多项分享要给足时间。
+            let acknowledged = try await socket.readUInt32(timeout: bridgeAckTimeout)
             guard Int(acknowledged) == items.count else {
                 throw ShareBridgeError.notAcknowledged(imported: acknowledged, expected: items.count)
             }

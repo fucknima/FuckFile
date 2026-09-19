@@ -127,7 +127,10 @@ indirect enum PlistValue: Equatable {
             }
             return .dictionary(items)
         default:
-            return nil
+            // NSKeyedArchiver 的 CF$UID 等非标准 plist 对象：不让整份文档失败，
+            // 以只读文本形式展示（用户至少能看到结构）。
+            let description = String(describing: object)
+            return description.isEmpty ? nil : .string(description)
         }
     }
 
