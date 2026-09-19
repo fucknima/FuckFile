@@ -141,8 +141,7 @@ final class ShareViewController: UIViewController {
                     return
                 }
                 let name = url.lastPathComponent.isEmpty ? (provider.suggestedName ?? "") : url.lastPathComponent
-                completion(self.storeSource(url: url, name: name, typeIdentifier: fileURLType,
-                                            inbox: inbox, mayMove: false))
+                completion(self.storeSource(url: url, name: name, typeIdentifier: fileURLType, inbox: inbox))
             }
             return
         }
@@ -175,8 +174,7 @@ final class ShareViewController: UIViewController {
             completion(self.storeSource(url: url,
                                        name: provider.suggestedName ?? "",
                                        typeIdentifier: representationType,
-                                       inbox: inbox,
-                                       mayMove: true))
+                                       inbox: inbox))
         }
     }
 
@@ -215,23 +213,15 @@ final class ShareViewController: UIViewController {
         return inbox.path
     }
 
+    /// 严格照老版：一律 copy。copy 会强制把 iCloud 未下载完（dataless）的文件
+    /// 完整物化；用 move 搬进来则不会，直传读到已下载部分就断（大文件必现）。
     private func storeSource(url sourceURL: URL, name: String, typeIdentifier: String,
-                             inbox: String, mayMove: Bool) -> Error? {
+                             inbox: String) -> Error? {
         let resolvedName = name.isEmpty ? sourceURL.lastPathComponent : name
         return storeItem(inbox: inbox, name: resolvedName, typeIdentifier: typeIdentifier) { payloadURL in
             let scoped = sourceURL.startAccessingSecurityScopedResource()
             defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
-            if mayMove {
-                // 系统给的临时副本与扩展同卷：move 是瞬时的，省掉 200MB+ 复制，
-                // 把扩展的时间预算留给直传（大文件就是在这里被系统回收的）。
-                do {
-                    try FileManager.default.moveItem(at: sourceURL, to: payloadURL)
-                } catch {
-                    try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
-                }
-            } else {
-                try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
-            }
+            try FileManager.default.copyItem(at: sourceURL, to: payloadURL)
             return (try? payloadURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         }
     }
