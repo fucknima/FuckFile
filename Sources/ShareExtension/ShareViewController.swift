@@ -124,7 +124,7 @@ final class ShareViewController: UIViewController {
     private func load(_ provider: NSItemProvider, inbox: String, completion: @escaping (Error?) -> Void) {
         if let representationType = fileRepresentationType(for: provider) {
             // 大文件优先 in-place：直接流式读原文件，扩展不再复制一份（省磁盘与时间）。
-            provider.loadInPlaceFileRepresentation(forTypeIdentifier: representationType) { url, _ in
+            provider.loadInPlaceFileRepresentation(forTypeIdentifier: representationType) { url, _, _ in
                 guard let url else {
                     self.loadCopiedRepresentation(provider: provider,
                                                   representationType: representationType,
