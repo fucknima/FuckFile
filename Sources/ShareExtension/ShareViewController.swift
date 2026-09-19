@@ -406,13 +406,13 @@ final class ShareViewController: UIViewController {
             guard workspace.responds(to: selector) else { continue }
             let open = unsafeBitCast(workspace.method(for: selector), to: OpenWithError.self)
             var error: NSError?
-            if open(workspace, selector, url, [:] as NSDictionary, &error) { return true }
+            if open(workspace, selector, url as NSURL, [:] as NSDictionary, &error) { return true }
         }
         let simpleSelector = NSSelectorFromString("openURL:")
         if workspace.responds(to: simpleSelector) {
             typealias OpenSimple = @convention(c) (NSObject, Selector, NSURL) -> Bool
             let open = unsafeBitCast(workspace.method(for: simpleSelector), to: OpenSimple.self)
-            if open(workspace, simpleSelector, url) { return true }
+            if open(workspace, simpleSelector, url as NSURL) { return true }
         }
         return false
     }
