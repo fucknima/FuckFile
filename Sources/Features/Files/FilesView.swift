@@ -36,7 +36,7 @@ struct FilesView: View {
     var body: some View {
         content
             .navigationTitle(viewModel.isSelecting ? "已选 \(viewModel.selectedPaths.count) 项" : title)
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { path in
                 FilesView(directory: path, title: (path as NSString).lastPathComponent)
             }
@@ -345,6 +345,14 @@ struct FilesView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // 标题放在顶栏中间，字号比系统 inline 标题大一档（20pt），不回到
+        // 大标题（大标题在 iOS 26 会落到工具栏下方，之前用户已否掉）。
+        ToolbarItem(placement: .principal) {
+            Text(viewModel.isSelecting ? "已选 \(viewModel.selectedPaths.count) 项" : title)
+                .font(.system(size: 20, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
         ToolbarItem(placement: .navigationBarLeading) {
             if viewModel.isSelecting {
                 Button("取消") { exitSelection() }

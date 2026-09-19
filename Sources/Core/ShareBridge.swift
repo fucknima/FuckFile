@@ -119,10 +119,11 @@ enum ShareBridgeWire {
 #if canImport(Network)
 import Network
 
-private let bridgeAcceptTimeout: TimeInterval = 5
+private let bridgeAcceptTimeout: TimeInterval = 10
 private let bridgeReadWriteTimeout: TimeInterval = 10
 /// 客户端连接等待：覆盖 App 冷启动后开始监听的时间。
-private let bridgeConnectTimeout: TimeInterval = 8
+private let bridgeConnectTimeout: TimeInterval = 1
+private let bridgeClientRetryWindow: TimeInterval = 12
 
 /// NWConnection 的 async 读写封装；所有回调都在同一个串行 queue 上。
 private final class BridgeSocket {
@@ -473,16 +474,29 @@ enum ShareBridgeClient {
             throw ShareBridgeError.nothingToSend
         }
 
+        // 对齐 ObjC 版 FFConnectLoopback：App 冷启动期间要反复重试连接，
+        // 单次连接失败（connection refused / waiting）不能直接放弃。
         let queue = DispatchQueue(label: "ff.local-share-client")
-        let connection = NWConnection(to: .hostPort(host: .ipv4(.loopback),
-                                                    port: NWEndpoint.Port(rawValue: ShareBridge.port)!),
-                                      using: .tcp)
-        let socket = BridgeSocket(connection: connection, queue: queue)
-        do {
-            try await socket.start(timeout: bridgeConnectTimeout)
-        } catch {
-            socket.cancel()
-            throw (error as? ShareBridgeError) ?? ShareBridgeError.connectTimeout
+        let endpoint = NWEndpoint.hostPort(host: .ipv4(.loopback),
+                                           port: NWEndpoint.Port(rawValue: ShareBridge.port)!)
+        var socket: BridgeSocket?
+        var lastError: Error?
+        let deadline = Date().addingTimeInterval(bridgeClientRetryWindow)
+        while Date() < deadline {
+            let connection = NWConnection(to: endpoint, using: .tcp)
+            let candidate = BridgeSocket(connection: connection, queue: queue)
+            do {
+                try await candidate.start(timeout: bridgeConnectTimeout)
+                socket = candidate
+                break
+            } catch {
+                lastError = error
+                candidate.cancel()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        guard let socket else {
+            throw (lastError as? ShareBridgeError) ?? ShareBridgeError.connectTimeout
         }
 
         do {
