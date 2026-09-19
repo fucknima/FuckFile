@@ -123,15 +123,19 @@ final class ShareViewController: UIViewController {
 
     private func load(_ provider: NSItemProvider, inbox: String, completion: @escaping (Error?) -> Void) {
         if let representationType = fileRepresentationType(for: provider) {
-            provider.loadFileRepresentation(forTypeIdentifier: representationType) { url, error in
-                guard let url, error == nil else {
-                    completion(error ?? ShareExtensionError.emptyContent)
+            // 大文件优先 in-place：直接流式读原文件，扩展不再复制一份（省磁盘与时间）。
+            provider.loadInPlaceFileRepresentation(forTypeIdentifier: representationType) { url, _ in
+                guard let url else {
+                    self.loadCopiedRepresentation(provider: provider,
+                                                  representationType: representationType,
+                                                  inbox: inbox,
+                                                  completion: completion)
                     return
                 }
-                completion(self.storeSource(url: url,
-                                           name: provider.suggestedName ?? "",
-                                           typeIdentifier: representationType,
-                                           inbox: inbox))
+                completion(self.storeInPlace(url: url,
+                                             name: provider.suggestedName ?? "",
+                                             typeIdentifier: representationType,
+                                             inbox: inbox))
             }
             return
         }
@@ -162,6 +166,22 @@ final class ShareViewController: UIViewController {
                                      name: provider.suggestedName ?? "",
                                      typeIdentifier: fallbackType,
                                      inbox: inbox))
+        }
+    }
+
+    private func loadCopiedRepresentation(provider: NSItemProvider,
+                                          representationType: String,
+                                          inbox: String,
+                                          completion: @escaping (Error?) -> Void) {
+        provider.loadFileRepresentation(forTypeIdentifier: representationType) { url, error in
+            guard let url, error == nil else {
+                completion(error ?? ShareExtensionError.emptyContent)
+                return
+            }
+            completion(self.storeSource(url: url,
+                                       name: provider.suggestedName ?? "",
+                                       typeIdentifier: representationType,
+                                       inbox: inbox))
         }
     }
 
@@ -217,10 +237,22 @@ final class ShareViewController: UIViewController {
         }
     }
 
+    /// in-place：只写 metadata（sourcePath 指向原文件），不复制 payload。
+    private func storeInPlace(url sourceURL: URL, name: String,
+                              typeIdentifier: String, inbox: String) -> Error? {
+        let resolvedName = name.isEmpty ? sourceURL.lastPathComponent : name
+        return storeItem(inbox: inbox, name: resolvedName,
+                         typeIdentifier: typeIdentifier,
+                         sourcePath: sourceURL.path) { _ in
+            (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        }
+    }
+
     /// staging `.partial-<uuid>` → 写 payload + metadata.plist → move 到 `<uuid>.ffshare`。
     private func storeItem(inbox: String,
                            name: String,
                            typeIdentifier: String,
+                           sourcePath: String? = nil,
                            payloadWriter: (URL) throws -> Int) -> Error? {
         let manager = FileManager.default
         let uuid = UUID().uuidString
@@ -232,14 +264,19 @@ final class ShareViewController: UIViewController {
 
         do {
             try manager.createDirectory(at: partialURL, withIntermediateDirectories: true)
-            let size = try payloadWriter(payloadURL)
-            let metadata: [String: Any] = [
+            var metadata: [String: Any] = [
                 "name": safeName(name),
                 "type": typeIdentifier.isEmpty ? Self.defaultTypeIdentifier : typeIdentifier,
                 "created": Date(),
-                "size": size,
+                "size": 0,
                 "session": sessionID,
             ]
+            if let sourcePath {
+                metadata["sourcePath"] = sourcePath
+                metadata["size"] = try payloadWriter(payloadURL)
+            } else {
+                metadata["size"] = try payloadWriter(payloadURL)
+            }
             let metadataData = try PropertyListSerialization.data(fromPropertyList: metadata,
                                                                   format: .binary,
                                                                   options: 0)

@@ -254,20 +254,21 @@ final class ShareBridgeServer {
         }
         AppLog.tag("ShareBridge", "items count=\(count) wake=\(expectedCount)")
 
-        let stagingRoot = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("FFShareBridge-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(atPath: stagingRoot,
-                                                 withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: stagingRoot) }
-
         let importedDirectory = (StorageEnvironment.documentsPath as NSString)
             .appendingPathComponent("Imported")
-        try? FileManager.default.createDirectory(atPath: importedDirectory,
-                                                 withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(atPath: importedDirectory,
+                                                    withIntermediateDirectories: true)
+        } catch {
+            outcome.errors.append(ShareBridgeError.invalidStream(
+                "无法创建导入目录：\(error.localizedDescription)"))
+            _ = writeAck(client: client, imported: 0)
+            return outcome
+        }
 
         var ok = true
         var buffer = [UInt8](repeating: 0, count: ShareBridgeWire.chunkSize)
-        for index in 0..<count {
+        for _ in 0..<count {
             var nameLengthNetwork: UInt32 = 0
             var typeLengthNetwork: UInt32 = 0
             var dataLengthNetwork: UInt64 = 0
@@ -291,34 +292,49 @@ final class ShareBridgeServer {
             let name = (rawName as NSString).lastPathComponent
             let displayName = name.isEmpty ? "imported" : name
 
-            let stagingPath = (stagingRoot as NSString)
-                .appendingPathComponent("\(index)-\(displayName)")
-            let output = open(stagingPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-                              0o600)
-            guard output >= 0 else { ok = false; break }
-
-            var remaining = dataLength
-            while remaining > 0 {
-                let wanted = Int(min(UInt64(buffer.count), remaining))
-                guard ffReadAll(client, &buffer, wanted),
-                      ffWriteAllRaw(output, buffer, wanted) else { ok = false; break }
-                remaining -= UInt64(wanted)
-            }
-            close(output)
-            guard ok else { break }
-
-            let result = ImportService.importURL(URL(fileURLWithPath: stagingPath),
-                                                 displayName: displayName,
-                                                 toDirectory: importedDirectory)
-            if result.success {
-                if let destination = result.destinationPath {
-                    outcome.destinations.append(destination)
-                }
-            } else {
-                outcome.errors.append(result.error ?? ShareBridgeError.importFailed(displayName))
+            // 直接流式写入 Imported 的唯一目标（1 倍磁盘占用）：大文件不再
+            // 先写 tmp 再复制一遍，避免设备空间不足导致「数据流中断」。
+            let destinationPath = FileOperations.uniqueDestination(in: importedDirectory,
+                                                                   preferredName: displayName)
+            let output = open(destinationPath,
+                              O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
+            guard output >= 0 else {
+                let code = errno
+                outcome.errors.append(ShareBridgeError.invalidStream(
+                    "无法创建目标文件（errno \(code)）：\(displayName)"))
                 ok = false
                 break
             }
+
+            var failure: String?
+            var remaining = dataLength
+            var writtenBytes: UInt64 = 0
+            while remaining > 0 {
+                let wanted = Int(min(UInt64(buffer.count), remaining))
+                guard ffReadAll(client, &buffer, wanted) else {
+                    failure = "读取数据流失败（已收 \(writtenBytes)/\(dataLength) 字节）"
+                    break
+                }
+                guard ffWriteAllRaw(output, buffer, wanted) else {
+                    let code = errno
+                    failure = code == ENOSPC
+                        ? "磁盘空间不足，无法保存 \(displayName)"
+                        : "写入文件失败（errno \(code)）：\(displayName)"
+                    break
+                }
+                remaining -= UInt64(wanted)
+                writtenBytes += UInt64(wanted)
+            }
+            close(output)
+            guard failure == nil else {
+                try? FileManager.default.removeItem(atPath: destinationPath)
+                outcome.errors.append(ShareBridgeError.invalidStream(failure ?? "写入失败"))
+                ok = false
+                break
+            }
+            outcome.destinations.append(destinationPath)
+            AppLog.tag("ShareBridge",
+                       "import OK name=\(displayName) bytes=\(writtenBytes) dest=\(destinationPath)")
         }
         outcome.imported = outcome.destinations.count
         _ = writeAck(client: client, imported: UInt32(outcome.imported))
@@ -369,6 +385,7 @@ enum ShareBridgeClient {
         let name: String
         let type: String
         let size: UInt64
+        let needsSecurityScope: Bool
     }
 
     static func sendInbox(at inboxPath: String, sessionID: String, token: String) async throws -> Int {
@@ -419,6 +436,12 @@ enum ShareBridgeClient {
                     && ffWriteAll(fd, typeData)
                 if !ok { break }
 
+                // in-place 条目直接读原文件：需要 security scope 包裹整段读取。
+#if canImport(Darwin)
+                let scopedURL = URL(fileURLWithPath: item.payloadPath)
+                let scoped = item.needsSecurityScope && scopedURL.startAccessingSecurityScopedResource()
+                defer { if scoped { scopedURL.stopAccessingSecurityScopedResource() } }
+#endif
                 guard let handle = FileHandle(forReadingAtPath: item.payloadPath) else {
                     throw ShareBridgeError.payloadUnreadable(item.name)
                 }
@@ -485,10 +508,19 @@ enum ShareBridgeClient {
             let metadata = readMetadata(atPath: metadataPath)
             guard let session = metadata["session"] as? String, session == sessionID else { continue }
 
+            // in-place 共享：元数据里的 sourcePath 指向原文件（未复制到收件箱）。
+            let sourcePath = (metadata["sourcePath"] as? String) ?? ""
+            var effectivePath = payloadPath
+            var needsScope = false
+            if !sourcePath.isEmpty, manager.fileExists(atPath: sourcePath) {
+                effectivePath = sourcePath
+                needsScope = true
+            }
+
             var isDirectory: ObjCBool = false
-            guard manager.fileExists(atPath: payloadPath, isDirectory: &isDirectory),
+            guard manager.fileExists(atPath: effectivePath, isDirectory: &isDirectory),
                   !isDirectory.boolValue,
-                  let attributes = try? manager.attributesOfItem(atPath: payloadPath),
+                  let attributes = try? manager.attributesOfItem(atPath: effectivePath),
                   let size = (attributes[.size] as? NSNumber)?.uint64Value else { continue }
 
             let rawName = metadata["name"] as? String ?? ""
@@ -497,10 +529,11 @@ enum ShareBridgeClient {
             let rawType = metadata["type"] as? String ?? ""
             let type = rawType.isEmpty ? "public.data" : rawType
             items.append(Item(directory: directory,
-                              payloadPath: payloadPath,
+                              payloadPath: effectivePath,
                               name: displayName,
                               type: type,
-                              size: size))
+                              size: size,
+                              needsSecurityScope: needsScope))
         }
         items.sort { $0.name < $1.name }
         return items
