@@ -15,6 +15,11 @@ enum ThumbnailService {
     static func cachedThumbnail(forPath path: String, size: CGSize) -> UIImage? {
         ThumbnailEngine.shared.cachedThumbnail(forPath: path, size: size)
     }
+
+    /// 清空缩略图缓存（内存 + 磁盘），供存储页「清缓存」使用。
+    static func clearCaches() {
+        ThumbnailEngine.shared.clearCaches()
+    }
 }
 
 private final class ThumbnailEngine {
@@ -34,6 +39,11 @@ private final class ThumbnailEngine {
     private init() {
         memoryCache.countLimit = 200
         workQueue.async { [weak self] in self?.trimDiskCacheIfNeeded() }
+    }
+
+    func clearCaches() {
+        memoryCache.removeAllObjects()
+        try? FileManager.default.removeItem(at: Self.diskRoot)
     }
 
     /// 同步读内存缓存（磁盘不回读，避免列表滚动时在主线程解文件）。

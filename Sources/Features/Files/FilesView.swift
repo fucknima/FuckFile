@@ -1,5 +1,6 @@
 import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FilesView: View {
     let directory: String
@@ -12,7 +13,9 @@ struct FilesView: View {
     @State private var namePrompt: NamePromptKind?
     @State private var nameText = ""
     @State private var pendingDeletion: [FileEntry] = []
-    @State private var isDeleteConfirmPresented = false
+    @State private var deleteRequest: DeleteRequest?
+    @State private var isImportPresented = false
+    @State private var importError: String?
     @State private var transferRequest: TransferRequest?
     @State private var viewerEntry: FileEntry?
     @State private var viewerOverride: ViewerID?
@@ -65,13 +68,26 @@ struct FilesView: View {
                 openPath = path
                 isOpenPresented = true
             }
-            .fileActionsDialogs()
-            .alert("移到回收站", isPresented: $isDeleteConfirmPresented) {
-                Button("移到回收站", role: .destructive) { commitDelete() }
-                Button("取消", role: .cancel) { pendingDeletion = [] }
-            } message: {
-                Text(deleteMessage)
+            .onAppear {
+                // 首帧前设置的待跳转路径（AppDelegate 冷启动唤醒）在这里补跳。
+                if directory == StorageEnvironment.documentsPath,
+                   let path = importer.pendingRevealPath, !path.isEmpty {
+                    importer.pendingRevealPath = nil
+                    openPath = path
+                    isOpenPresented = true
+                }
             }
+            .fileImporter(isPresented: $isImportPresented,
+                          allowedContentTypes: [.item],
+                          allowsMultipleSelection: true) { result in
+                importPickedFiles(result)
+            }
+            .alert("导入失败", isPresented: importErrorBinding) {
+                Button("好") { importError = nil }
+            } message: {
+                Text(importError ?? "")
+            }
+            .fileActionsDialogs()
             .alert(namePrompt?.title ?? "名称", isPresented: namePromptBinding) {
                 TextField("名称", text: $nameText)
                     .textInputAutocapitalization(.never)
@@ -175,7 +191,8 @@ struct FilesView: View {
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !viewModel.isSelecting {
                             Button(role: .destructive) {
-                                confirmDelete([entry])
+                                confirmDelete([entry], source: .row(entry.path),
+                                              afterSwipe: true)
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
@@ -210,6 +227,15 @@ struct FilesView: View {
     @ViewBuilder
     private func listRow(for entry: FileEntry) -> some View {
         rowBody(for: entry)
+            .confirmationDialog("移到回收站",
+                                isPresented: deleteBinding(for: entry),
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { cancelDelete() }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
     }
 
     @ViewBuilder
@@ -240,6 +266,15 @@ struct FilesView: View {
     @ViewBuilder
     private func gridCell(for entry: FileEntry) -> some View {
         gridBody(for: entry)
+            .confirmationDialog("移到回收站",
+                                isPresented: deleteBinding(for: entry),
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { cancelDelete() }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
     }
 
     @ViewBuilder
@@ -452,6 +487,11 @@ struct FilesView: View {
             } label: {
                 Label("新建文件", systemImage: "doc.badge.plus")
             }
+            Button {
+                isImportPresented = true
+            } label: {
+                Label("导入文件", systemImage: "square.and.arrow.down")
+            }
         } label: {
             Image(systemName: "ellipsis.circle")
         }
@@ -487,12 +527,21 @@ struct FilesView: View {
                 }
                 batchButton("删除", systemImage: "trash", enabled: hasSelection,
                             role: .destructive) {
-                    confirmDelete(viewModel.selectedEntries)
+                    confirmDelete(viewModel.selectedEntries, source: .batch)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(.bar)
+            .confirmationDialog("移到回收站",
+                                isPresented: batchDeleteBinding,
+                                titleVisibility: .visible) {
+                Button("移到回收站", role: .destructive) { commitDelete() }
+                Button("取消", role: .cancel) { cancelDelete() }
+            } message: {
+                Text(deleteMessage)
+            }
+            .compactPopoverIfAvailable()
         }
     }
 
@@ -579,7 +628,7 @@ struct FilesView: View {
         }
         Divider()
         Button(role: .destructive) {
-            confirmDelete([entry])
+            confirmDelete([entry], source: .row(entry.path))
         } label: {
             Label("删除", systemImage: "trash")
         }
@@ -682,19 +731,81 @@ struct FilesView: View {
         }
     }
 
-    private func confirmDelete(_ entries: [FileEntry]) {
+    private func confirmDelete(_ entries: [FileEntry], source: DeleteRequest,
+                               afterSwipe: Bool = false) {
         guard !entries.isEmpty else { return }
-        pendingDeletion = entries
-        isDeleteConfirmPresented = true
+        let present = { [entries] in
+            pendingDeletion = entries
+            deleteRequest = source
+        }
+        if afterSwipe {
+            // 等左滑收起动画结束再弹：滑动动作结束时系统会把锚定弹窗一起收掉。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: present)
+        } else {
+            present()
+        }
+    }
+
+    private func cancelDelete() {
+        deleteRequest = nil
+        pendingDeletion = []
     }
 
     private func commitDelete() {
         let entries = pendingDeletion
+        deleteRequest = nil
         pendingDeletion = []
         guard !entries.isEmpty else { return }
         FileActions.shared.trash(entries)
         exitSelection()
         Task { await viewModel.load() }
+    }
+
+    private func deleteBinding(for entry: FileEntry) -> Binding<Bool> {
+        Binding(
+            get: { deleteRequest == .row(entry.path) },
+            set: { presented in if !presented { cancelDelete() } }
+        )
+    }
+
+    private var batchDeleteBinding: Binding<Bool> {
+        Binding(
+            get: { deleteRequest == .batch },
+            set: { presented in if !presented { cancelDelete() } }
+        )
+    }
+
+    private var importErrorBinding: Binding<Bool> {
+        Binding(
+            get: { importError != nil },
+            set: { presented in if !presented { importError = nil } }
+        )
+    }
+
+    private func importPickedFiles(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            AppLog.tag("Import", "picker failed: \(error.localizedDescription)")
+            importError = error.localizedDescription
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            let target = viewModel.directory
+            Task {
+                let firstError = await Task.detached(priority: .userInitiated) { () -> String? in
+                    var failure: String?
+                    for url in urls {
+                        let imported = ImportService.importURL(url, displayName: nil,
+                                                               toDirectory: target)
+                        if !imported.success, failure == nil {
+                            failure = imported.error?.localizedDescription ?? "导入失败"
+                        }
+                    }
+                    return failure
+                }.value
+                if let firstError { importError = firstError }
+                await viewModel.load()
+            }
+        }
     }
 
     private func beginTransfer(_ kind: TransferKind, entries: [FileEntry]) {
@@ -795,6 +906,11 @@ private enum EntryStyle {
 }
 
 // MARK: - Prompts & transfers
+
+private enum DeleteRequest: Equatable {
+    case row(String)
+    case batch
+}
 
 private enum NamePromptKind: Identifiable {
     case newFolder
@@ -945,6 +1061,21 @@ private struct DirectoryPickerView: View {
         } catch {
             directories = []
             AppLog.tag("Files", "picker list FAIL path=\(currentDirectory) error=\(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - Compact popover
+
+extension View {
+    /// iPhone 上让 confirmationDialog 以锚定弹窗（而非底部 sheet）出现。
+    /// iOS 16.4 之前不支持 compact popover 适配，保持系统默认。
+    @ViewBuilder
+    func compactPopoverIfAvailable() -> some View {
+        if #available(iOS 16.4, *) {
+            presentationCompactAdaptation(.popover)
+        } else {
+            self
         }
     }
 }

@@ -37,6 +37,7 @@ struct FileAssociationsView: View {
             }
         }
         .navigationTitle("文件关联")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

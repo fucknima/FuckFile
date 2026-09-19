@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @State private var storageSummary = ""
+
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"
     }
@@ -16,6 +18,12 @@ struct SettingsView: View {
                 LabeledContent("版本", value: "\(version) (\(build))")
             }
             Section("存储") {
+                NavigationLink {
+                    StorageAnalysisView()
+                } label: {
+                    LabeledContent("存储空间",
+                                   value: storageSummary.isEmpty ? "正在计算…" : storageSummary)
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Documents")
                         .font(.caption)
@@ -45,5 +53,21 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            storageSummary = await Task.detached { Self.deviceSummary() }.value
+        }
+    }
+
+    private static func deviceSummary() -> String {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        guard let values = try? url.resourceValues(
+            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+            let total = values.volumeTotalCapacity,
+            let available = values.volumeAvailableCapacityForImportantUsage else { return "" }
+        let used = max(0, Int64(total) - Int64(available))
+        let usedText = ByteCountFormatter.string(fromByteCount: used, countStyle: .file)
+        let totalText = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        return "已用 \(usedText) / 共 \(totalText)"
     }
 }

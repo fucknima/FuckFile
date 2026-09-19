@@ -33,6 +33,7 @@ struct TasksView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("任务")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !manager.tasks.isEmpty {
                 Button("清除已完成") { manager.removeFinished() }

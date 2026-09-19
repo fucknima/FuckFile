@@ -41,6 +41,7 @@ struct BookmarksView: View {
             }
         }
         .navigationTitle(mode == .favorites ? "收藏" : "最近访问")
+        .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: destinationBinding) {
             if let destination {
                 switch destination {

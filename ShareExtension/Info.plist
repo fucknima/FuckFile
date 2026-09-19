@@ -39,6 +39,10 @@
             <dict>
                 <key>NSExtensionActivationSupportsFileWithMaxCount</key>
                 <integer>25</integer>
+                <key>NSExtensionActivationSupportsImageWithMaxCount</key>
+                <integer>25</integer>
+                <key>NSExtensionActivationSupportsMovieWithMaxCount</key>
+                <integer>25</integer>
             </dict>
         </dict>
         <key>NSExtensionPointIdentifier</key>

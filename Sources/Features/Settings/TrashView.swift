@@ -41,13 +41,13 @@ struct TrashView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("回收站")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !entries.isEmpty {
                 Button("清空", role: .destructive) { isConfirmingEmpty = true }
             }
         }
-        .confirmationDialog("清空回收站", isPresented: $isConfirmingEmpty,
-                            titleVisibility: .visible) {
+        .alert("清空回收站", isPresented: $isConfirmingEmpty) {
             Button("清空", role: .destructive) { empty() }
             Button("取消", role: .cancel) {}
         } message: {

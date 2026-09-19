@@ -14,7 +14,10 @@ struct QuickLookView: View {
         if let message = fileError {
             QuickLookErrorState(message: message)
         } else {
+            // QLPreviewController 按全屏设计，自己处理安全区；不让 SwiftUI 再缩一次，
+            // 否则顶栏和预览内容之间会多出一条空白。
             QuickLookRepresentable(url: URL(fileURLWithPath: entry.path))
+                .ignoresSafeArea()
         }
     }
 

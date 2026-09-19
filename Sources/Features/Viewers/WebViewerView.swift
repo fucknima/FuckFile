@@ -17,7 +17,10 @@ struct WebViewerView: View {
 
     var body: some View {
         ZStack {
+            // 与旧版一致：web view 铺满，自己按安全区加内容 inset；
+            // 交给 SwiftUI 再缩一次会在顶栏下多出空白。
             WebViewRepresentable(entry: entry, store: store)
+                .ignoresSafeArea()
             if store.isLoading {
                 ProgressView("正在载入…")
             }

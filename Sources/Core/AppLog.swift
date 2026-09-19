@@ -32,6 +32,13 @@ enum AppLog {
         return String(decoding: data.suffix(maxBytes), as: UTF8.self)
     }
 
+    /// 清空日志（运行日志页手动清除）。与写入共用串行队列，保证顺序。
+    static func clear() {
+        queue.async {
+            try? FileManager.default.removeItem(at: logURL)
+        }
+    }
+
     private static func write(tag: String, _ message: String) {
         queue.async {
             let line = "[\(formatter.string(from: Date()))] [\(tag)] \(message)\n"
