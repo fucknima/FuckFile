@@ -1241,3 +1241,34 @@ ImportService/PathPolicy），未引入新的事实来源。
    文件路径与格式）、目录列举（lstat 语义）、任务模型与串行执行器。
 
 原因：后续安装器需要 Swift 生态（IDeviceKit 等），且用户要求整体 Swift 重写。
+
+## ADR-038
+
+日期：2026-09-19
+
+决定：
+
+**分享直传（无 App Group 路径）按旧版行为加固，目标是让扩展在宿主退场宽限期内
+完成传输。**
+
+1. 唤醒 URL 的接收提前到 `AppDelegate`：冷启动在
+   `application(_:didFinishLaunchingWithOptions:)` 里直接交给
+   `ImportCoordinator`（旧版 FFAppDelegate 同位置），热启动保留
+   `application(_:open:options:)` 与 SwiftUI `.onOpenURL` 双入口。
+   原因：SwiftUI 的 `.onOpenURL` 要等第一帧之后才触发，回环监听
+   bind 太晚，240MB 文件在扩展退场宽限期结束前传不完（设备日志：约 88%
+   处对端断开）。
+2. 扩展唤醒链恢复旧版顺序：`LSApplicationWorkspace`（openURL/openSensitiveURL/
+   openURL:）→ responder 链 → sharedApplication → `extensionContext.open`。
+   这是 ADR-019 例外条款允许的 best-effort 链。
+3. 回环套接字调优：`TCP_NODELAY` + 1MB `SO_SNDBUF`/`SO_RCVBUF`；扩展端发送
+   线程 QoS 从 utility 提到 userInitiated（扩展退场时 utility 会被系统压低）。
+4. 文件 URL 导入恢复旧版 5 秒去重（in-flight + recent），避免 AppDelegate 与
+   `.onOpenURL` 对同一次打开重复导入。
+5. 诊断补强：服务端读取失败区分「对端断开（EOF，扩展可能被回收）」与
+   「读错误 errno N」，记录 accept→结束耗时；App 侧记录 scenePhase 切换；
+   扩展端直传失败继续用 `fuckfile-import://send-failed?message=` 回传，App
+   把客户端原因与服务端结果合并展示。
+
+原因：设备上 240MB 分享在两处构建都停在同一比例，且旧 ObjC 版同文件可成功；
+逐项对照旧版后确认以上差异（唤醒时机、唤醒链、导入去重）与性能余量。

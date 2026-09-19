@@ -1,5 +1,8 @@
 import UIKit
 import UniformTypeIdentifiers
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// 分享扩展主控制器：接收系统分享的 `NSItemProvider`，写入共享收件箱
 /// （App Group 优先，否则本扩展容器），并尽力唤醒宿主 App 或回环直传。
@@ -364,13 +367,53 @@ final class ShareViewController: UIViewController {
 
     // MARK: - 唤醒宿主 App
 
-    /// 分享扩展没有公开 API 打开宿主：依次尝试 responder 链、sharedApplication、
-    /// extensionContext.open（公开调用在 share-services 扩展点通常被系统忽略）。
+    /// 分享扩展没有公开 API 打开宿主：与旧版一致，依次尝试
+    /// LaunchServices（TrollStore/自签环境下最可靠）、responder 链、
+    /// sharedApplication、extensionContext.open（公开调用在 share-services
+    /// 扩展点通常被系统忽略）。
     @discardableResult
     private func openWakeURL(_ url: URL) -> Bool {
+        if openWakeURLViaLaunchServices(url) { return true }
         if openViaResponderChain(url) { return true }
         if openViaSharedApplication(url) { return true }
         extensionContext?.open(url, completionHandler: nil)
+        return false
+    }
+
+    private static var launchServicesLoaded = false
+
+    private func openWakeURLViaLaunchServices(_ url: URL) -> Bool {
+        if !Self.launchServicesLoaded {
+            Self.launchServicesLoaded = true
+            for path in ["/System/Library/Frameworks/CoreServices.framework/CoreServices",
+                         "/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices"] {
+                if dlopen(path, RTLD_LAZY | RTLD_LOCAL) != nil { break }
+            }
+        }
+        guard let workspaceClass = NSClassFromString("LSApplicationWorkspace") else {
+            return false
+        }
+        let classObject = workspaceClass as AnyObject
+        let defaultSelector = NSSelectorFromString("defaultWorkspace")
+        guard classObject.responds(to: defaultSelector),
+              let workspace = classObject.perform(defaultSelector)?
+                  .takeUnretainedValue() as? NSObject else { return false }
+
+        typealias OpenWithError = @convention(c) (NSObject, Selector, NSURL, NSDictionary,
+                                                  UnsafeMutablePointer<NSError?>?) -> Bool
+        for name in ["openURL:withOptions:error:", "openSensitiveURL:withOptions:error:"] {
+            let selector = NSSelectorFromString(name)
+            guard workspace.responds(to: selector) else { continue }
+            let open = unsafeBitCast(workspace.method(for: selector), to: OpenWithError.self)
+            var error: NSError?
+            if open(workspace, selector, url, [:] as NSDictionary, &error) { return true }
+        }
+        let simpleSelector = NSSelectorFromString("openURL:")
+        if workspace.responds(to: simpleSelector) {
+            typealias OpenSimple = @convention(c) (NSObject, Selector, NSURL) -> Bool
+            let open = unsafeBitCast(workspace.method(for: simpleSelector), to: OpenSimple.self)
+            if open(workspace, simpleSelector, url) { return true }
+        }
         return false
     }
 

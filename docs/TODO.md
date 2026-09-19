@@ -430,3 +430,16 @@
 - [ ] SMB / SFTP 客户端（需 vendored libsmb2 / libssh2，单独一批）
 - [ ] 大文件 / 重复文件查找
 
+## 分享直传加固（2026-09-19，ADR-038）
+
+- [x] 唤醒 URL 提前到 AppDelegate（冷启动 didFinishLaunching / 热启动 open）——
+      回环监听在第一帧之前 bind，对齐旧版 FFAppDelegate
+- [x] 扩展唤醒链恢复旧版顺序：LSApplicationWorkspace → responder 链 →
+      sharedApplication → extensionContext.open
+- [x] 回环套接字调优：TCP_NODELAY + 1MB 收发缓冲；发送线程 QoS 提到 userInitiated
+- [x] 文件 URL 导入 5 秒去重（in-flight + recent），避免双入口重复导入
+- [x] 诊断：读取失败区分 EOF/errno、accept→结束耗时、scenePhase 日志；
+      `send-failed` 客户端原因与服务端结果合并展示
+- [~] 真机复测 240MB 分享：若仍在中途断开，用新日志（EOF/errno + 耗时 +
+  客户端 send-failed 原因）定位是扩展被回收还是客户端读失败
+

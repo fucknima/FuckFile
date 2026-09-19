@@ -173,6 +173,32 @@ private func ffConfigureTimeouts(_ fd: Int32) {
     var timeout = timeval(tv_sec: bridgeIOTimeoutSeconds, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    // 大文件直传要和分享扩展的退场宽限期赛跑：低延迟 + 大缓冲能显著提高吞吐。
+    var noDelay: Int32 = 1
+    setsockopt(fd, Int32(IPPROTO_TCP), Int32(TCP_NODELAY), &noDelay,
+               socklen_t(MemoryLayout<Int32>.size))
+    var bufferSize: Int32 = 1 << 20
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufferSize,
+               socklen_t(MemoryLayout<Int32>.size))
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufferSize,
+               socklen_t(MemoryLayout<Int32>.size))
+}
+
+/// 数据阶段专用读取：区分「对端断开（EOF）」与「读错误（errno）」，
+/// 让设备日志能判断是扩展被杀还是读失败。
+private func ffReadData(_ fd: Int32, _ buffer: UnsafeMutableRawPointer,
+                        _ length: Int) -> (ok: Bool, eof: Bool, code: Int32) {
+    var offset = 0
+    while offset < length {
+        let got = read(fd, buffer.advanced(by: offset), length - offset)
+        if got < 0 {
+            if errno == EINTR { continue }
+            return (false, false, errno)
+        }
+        if got == 0 { return (false, true, 0) }
+        offset += got
+    }
+    return (true, false, 0)
 }
 
 // MARK: - 主机端
@@ -245,6 +271,7 @@ final class ShareBridgeServer {
         }
         defer { close(client) }
         ffConfigureTimeouts(client)
+        let acceptedAt = Date()
         AppLog.tag("ShareBridge", "accepted token=\(token) expected=\(expectedCount)")
 
         guard let count = readHandshake(client: client, token: token) else {
@@ -311,8 +338,12 @@ final class ShareBridgeServer {
             var writtenBytes: UInt64 = 0
             while remaining > 0 {
                 let wanted = Int(min(UInt64(buffer.count), remaining))
-                guard ffReadAll(client, &buffer, wanted) else {
-                    failure = "读取数据流失败（已收 \(writtenBytes)/\(dataLength) 字节）"
+                let readResult = ffReadData(client, &buffer, wanted)
+                guard readResult.ok else {
+                    let reason = readResult.eof
+                        ? "对端断开（扩展进程可能已被系统回收）"
+                        : "读错误 errno \(readResult.code)"
+                    failure = "读取数据流失败（已收 \(writtenBytes)/\(dataLength) 字节，\(reason)）"
                     break
                 }
                 guard ffWriteAllRaw(output, buffer, wanted) else {
@@ -342,7 +373,7 @@ final class ShareBridgeServer {
             outcome.errors.append(ShareBridgeError.invalidStream("共享数据流中断或格式无效"))
         }
         AppLog.tag("ShareBridge",
-                   "loopback receive token=\(token) imported=\(outcome.imported) errors=\(outcome.errors.count)")
+                   "loopback receive token=\(token) imported=\(outcome.imported) errors=\(outcome.errors.count) elapsed=\(Int(Date().timeIntervalSince(acceptedAt) * 1000))ms")
         return outcome
     }
 
@@ -395,7 +426,9 @@ enum ShareBridgeClient {
         guard !items.isEmpty else { throw ShareBridgeError.nothingToSend }
 
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            // userInitiated：扩展进入退场流程时 utility 线程会被系统压到极低，
+            // 大文件直传必须在宽限期内跑完（旧版 utility 在旧系统上够快）。
+            DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     continuation.resume(returning: try send(items: items, token: token,
                                                             sessionID: sessionID))
