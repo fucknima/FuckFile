@@ -122,8 +122,9 @@ import Network
 private let bridgeAcceptTimeout: TimeInterval = 10
 private let bridgeReadWriteTimeout: TimeInterval = 10
 private let bridgeAckTimeout: TimeInterval = 60
+private let bridgeGateTimeout: TimeInterval = 20
 /// 客户端连接等待：覆盖 App 冷启动后开始监听的时间。
-private let bridgeConnectTimeout: TimeInterval = 1
+private let bridgeConnectTimeout: TimeInterval = 2
 private let bridgeClientRetryWindow: TimeInterval = 12
 
 /// NWConnection 的 async 读写封装；所有回调都在同一个串行 queue 上。
@@ -262,24 +263,38 @@ private final class BridgeSocket {
     }
 }
 
-/// 串行闸门：同一时刻只允许一个 prepareForToken 在跑，后来的排队。
+/// 串行闸门：同一时刻只允许一个 prepareForToken 在跑，后来的排队（带超时，
+/// 避免某次卡住的分享把后续分享永久挡住——「首次成功、后面一直失败」）。
 private actor ShareBridgeGate {
     private var busy = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
-    func acquire() async {
+    func acquire(timeout: TimeInterval) async -> Bool {
         if !busy {
             busy = true
-            return
+            return true
         }
-        await withCheckedContinuation { waiters.append($0) }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            waiters.append((id, continuation))
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                await self?.timeout(id)
+            }
+        }
+    }
+
+    private func timeout(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
     }
 
     func release() {
         if waiters.isEmpty {
             busy = false
         } else {
-            waiters.removeFirst().resume()
+            waiters.removeFirst().continuation.resume(returning: true)
         }
     }
 }
@@ -292,6 +307,12 @@ final class ShareBridgeServer {
     private static let queue = DispatchQueue(label: "ff.local-share-server")
     private static let gate = ShareBridgeGate()
 
+    // 监听器常驻：每次分享重建监听端口会撞上一条连接的 TIME_WAIT，表现为
+    // 「首次能成功，后面一直失败」。这里只建一次，之后每次分享只等一条连接。
+    private var listener: NWListener?
+    private var pendingConnection: CheckedContinuation<NWConnection, Error>?
+    private var pendingTimeout: DispatchWorkItem?
+
     private init() {}
 
     func prepareForToken(_ token: String, expectedCount: Int) async -> SharedImportOutcome {
@@ -300,7 +321,11 @@ final class ShareBridgeServer {
             outcome.errors.append(ShareBridgeError.missingToken)
             return outcome
         }
-        await Self.gate.acquire()
+        guard await Self.gate.acquire(timeout: bridgeGateTimeout) else {
+            AppLog.tag("ShareBridge", "gate busy, give up token=\(token)")
+            outcome.errors.append(ShareBridgeError.waitTimeout)
+            return outcome
+        }
         outcome = await serve(token: token, expectedCount: expectedCount)
         await Self.gate.release()
         return outcome
@@ -341,7 +366,7 @@ final class ShareBridgeServer {
     }
 
     private func acceptSocket() async throws -> BridgeSocket {
-        let connection = try await acceptConnection()
+        let connection = try await waitForConnection()
         let socket = BridgeSocket(connection: connection, queue: Self.queue)
         do {
             try await socket.start(timeout: bridgeAcceptTimeout)
@@ -352,7 +377,36 @@ final class ShareBridgeServer {
         return socket
     }
 
-    private func acceptConnection() async throws -> NWConnection {
+    /// 等待本次分享的直传连接（监听器只建一次，之后一直复用）。
+    private func waitForConnection() async throws -> NWConnection {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWConnection, Error>) in
+            Self.queue.async {
+                do {
+                    try self.ensureListener()
+                } catch {
+                    continuation.resume(throwing: (error as? ShareBridgeError)
+                        ?? ShareBridgeError.listenerUnavailable(error.localizedDescription))
+                    return
+                }
+                guard self.pendingConnection == nil else {
+                    continuation.resume(throwing: ShareBridgeError.listenerUnavailable("已有等待中的连接"))
+                    return
+                }
+                self.pendingConnection = continuation
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self, let pending = self.pendingConnection else { return }
+                    self.pendingConnection = nil
+                    self.pendingTimeout = nil
+                    pending.resume(throwing: ShareBridgeError.waitTimeout)
+                }
+                self.pendingTimeout = timeout
+                Self.queue.asyncAfter(deadline: .now() + bridgeAcceptTimeout, execute: timeout)
+            }
+        }
+    }
+
+    private func ensureListener() throws {
+        if listener != nil { return }
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
@@ -365,28 +419,37 @@ final class ShareBridgeServer {
         } catch {
             throw ShareBridgeError.listenerUnavailable(error.localizedDescription)
         }
-
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWConnection, Error>) in
-            var resumed = false
-            let resume: (Result<NWConnection, Error>) -> Void = { result in
-                guard !resumed else { return }
-                resumed = true
-                listener.cancel()
-                continuation.resume(with: result)
-            }
-            listener.stateUpdateHandler = { state in
-                if case .failed(let error) = state {
-                    resume(.failure(ShareBridgeError.listenerUnavailable(error.localizedDescription)))
+        listener.stateUpdateHandler = { [weak self] state in
+            guard case .failed(let error) = state else { return }
+            AppLog.tag("ShareBridge", "listener failed: \(error.localizedDescription)")
+            Self.queue.async {
+                guard let self else { return }
+                self.listener = nil
+                if let pending = self.pendingConnection {
+                    self.pendingConnection = nil
+                    self.pendingTimeout?.cancel()
+                    self.pendingTimeout = nil
+                    pending.resume(throwing: ShareBridgeError.listenerUnavailable(error.localizedDescription))
                 }
             }
-            listener.newConnectionHandler = { connection in
-                resume(.success(connection))
-            }
-            listener.start(queue: Self.queue)
-            Self.queue.asyncAfter(deadline: .now() + bridgeAcceptTimeout) {
-                resume(.failure(ShareBridgeError.waitTimeout))
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            Self.queue.async {
+                self.pendingTimeout?.cancel()
+                self.pendingTimeout = nil
+                if let pending = self.pendingConnection {
+                    self.pendingConnection = nil
+                    pending.resume(returning: connection)
+                } else {
+                    // 没有等待者（重复连接/异常来源）：直接拒绝。
+                    connection.cancel()
+                }
             }
         }
+        listener.start(queue: Self.queue)
+        self.listener = listener
+        AppLog.tag("ShareBridge", "listener started port=\(ShareBridge.port)")
     }
 
     private func receiveItems(from socket: BridgeSocket,
