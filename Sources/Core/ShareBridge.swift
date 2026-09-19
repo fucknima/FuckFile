@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 /// 本地回环直传桥：常量与唤醒 URL。
 enum ShareBridge {
@@ -89,441 +94,273 @@ enum ShareBridgeError: LocalizedError {
     }
 }
 
-/// 大端线协议（两端都是 Swift）：
-/// 客户端 `UInt32 itemCount`，逐条 `UInt32 nameLen + name`、
-/// `UInt32 typeLen + type`、`UInt64 dataLen + data`；服务端回 `UInt32 importedCount`。
+/// 线协议（与老版 ObjC 完全一致）：
+/// 客户端 `"FFSHARE1"` + `UInt32 tokenLen + token` + `UInt32 itemCount`，
+/// 逐条 `UInt32 nameLen + name`、`UInt32 typeLen + type`、`UInt64 dataLen + data`；
+/// 服务端回 `UInt32 importedCount`。全部大端。
 enum ShareBridgeWire {
+    static let magic: [UInt8] = Array("FFSHARE1".utf8)
     static let maxItemCount = 64
     static let maxNameLength = 4096
     static let maxTypeLength = 4096
     static let maxDataLength: UInt64 = 8 * 1024 * 1024 * 1024
     static let chunkSize = 64 * 1024
+}
 
-    static func encodeUInt32(_ value: UInt32) -> Data {
-        withUnsafeBytes(of: value.bigEndian) { Data($0) }
+// MARK: - 超时与套接字参数（对齐老版 FFLocalShareBridge）
+
+private let bridgeAcceptTimeoutMs: Int32 = 8000      // 老版 select 5s，冷启动放宽
+private let bridgeIOTimeoutSeconds: Int = 10         // SO_RCVTIMEO / SO_SNDTIMEO
+private let bridgeConnectAttempts = 120              // 老版 60 × 50ms，冷启动放宽到 6s
+private let bridgeConnectIntervalMicros: UInt32 = 50_000
+
+private let ffSockStream: Int32 = {
+#if canImport(Darwin)
+    return SOCK_STREAM
+#else
+    return Int32(SOCK_STREAM.rawValue)
+#endif
+}()
+
+private func ffLoopbackAddress() -> sockaddr_in {
+    var address = sockaddr_in()
+#if canImport(Darwin)
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+#endif
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = ShareBridge.port.bigEndian
+    address.sin_addr = in_addr(s_addr: UInt32(INADDR_LOOPBACK).bigEndian)
+    return address
+}
+
+private func ffReadAll(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ length: Int) -> Bool {
+    var offset = 0
+    while offset < length {
+        let got = read(fd, buffer.advanced(by: offset), length - offset)
+        if got < 0 {
+            if errno == EINTR { continue }
+            return false
+        }
+        if got == 0 { return false }
+        offset += got
     }
+    return true
+}
 
-    static func encodeUInt64(_ value: UInt64) -> Data {
-        withUnsafeBytes(of: value.bigEndian) { Data($0) }
+private func ffWriteAllRaw(_ fd: Int32, _ buffer: UnsafeRawPointer, _ length: Int) -> Bool {
+    var offset = 0
+    while offset < length {
+        let written = write(fd, buffer.advanced(by: offset), length - offset)
+        if written < 0 {
+            if errno == EINTR { continue }
+            return false
+        }
+        if written == 0 { return false }
+        offset += written
     }
+    return true
+}
 
-    static func decodeUInt32(_ data: Data) -> UInt32 {
-        data.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-    }
-
-    static func decodeUInt64(_ data: Data) -> UInt64 {
-        data.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+private func ffWriteAll(_ fd: Int32, _ data: Data) -> Bool {
+    guard !data.isEmpty else { return true }
+    return data.withUnsafeBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return true }
+        return ffWriteAllRaw(fd, base, data.count)
     }
 }
 
-#if canImport(Network)
-import Network
-
-private let bridgeAcceptTimeout: TimeInterval = 10
-private let bridgeReadWriteTimeout: TimeInterval = 10
-private let bridgeAckTimeout: TimeInterval = 60
-private let bridgeGateTimeout: TimeInterval = 20
-/// 客户端连接等待：覆盖 App 冷启动后开始监听的时间。
-private let bridgeConnectTimeout: TimeInterval = 2
-private let bridgeClientRetryWindow: TimeInterval = 12
-
-/// NWConnection 的 async 读写封装；所有回调都在同一个串行 queue 上。
-private final class BridgeSocket {
-
-    private let connection: NWConnection
-    private let queue: DispatchQueue
-
-    init(connection: NWConnection, queue: DispatchQueue) {
-        self.connection = connection
-        self.queue = queue
-    }
-
-    func start(timeout: TimeInterval) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var resumed = false
-            let resume: (Result<Void, Error>) -> Void = { result in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(with: result)
-            }
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    resume(.success(()))
-                case .failed(let error):
-                    resume(.failure(error))
-                case .cancelled:
-                    resume(.failure(ShareBridgeError.connectionClosed))
-                default:
-                    break
-                }
-            }
-            connection.start(queue: queue)
-            // 已建立的连接（listener 接受的）在挂上 stateUpdateHandler 时可能
-            // 已经是 .ready，不会再收到回调；这里补一次状态检查，否则服务端
-            // 永远不读，客户端写满缓冲后报「本地分享读写超时」。
-            if connection.state == .ready {
-                resume(.success(()))
-            }
-            queue.asyncAfter(deadline: .now() + timeout) {
-                resume(.failure(ShareBridgeError.connectTimeout))
-            }
-        }
-    }
-
-    func cancel() {
-        connection.cancel()
-    }
-
-    func readUInt32(timeout: TimeInterval) async throws -> UInt32 {
-        ShareBridgeWire.decodeUInt32(try await readExactly(4, timeout: timeout))
-    }
-
-    func readUInt64(timeout: TimeInterval) async throws -> UInt64 {
-        ShareBridgeWire.decodeUInt64(try await readExactly(8, timeout: timeout))
-    }
-
-    func readString(length: Int, timeout: TimeInterval) async throws -> String {
-        guard length > 0 else { return "" }
-        let data = try await readExactly(length, timeout: timeout)
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    func readExactly(_ count: Int, timeout: TimeInterval) async throws -> Data {
-        guard count > 0 else { return Data() }
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            var buffer = Data()
-            var resumed = false
-            let resume: (Result<Data, Error>) -> Void = { result in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(with: result)
-            }
-            func receiveNext() {
-                connection.receive(minimumIncompleteLength: 1,
-                                   maximumLength: count - buffer.count) { data, _, isComplete, error in
-                    if let data, !data.isEmpty { buffer.append(data) }
-                    if let error {
-                        resume(.failure(error))
-                    } else if buffer.count >= count {
-                        resume(.success(buffer))
-                    } else if isComplete {
-                        resume(.failure(ShareBridgeError.streamEnded))
-                    } else {
-                        receiveNext()
-                    }
-                }
-            }
-            queue.asyncAfter(deadline: .now() + timeout) {
-                resume(.failure(ShareBridgeError.ioTimeout))
-            }
-            receiveNext()
-        }
-    }
-
-    func readToFile(at path: String, length: UInt64, timeout: TimeInterval) async throws {
-        FileManager.default.createFile(atPath: path, contents: nil)
-        guard let handle = FileHandle(forWritingAtPath: path) else {
-            throw ShareBridgeError.invalidStream("无法创建临时文件")
-        }
-        defer { try? handle.close() }
-        var remaining = length
-        while remaining > 0 {
-            let chunk = Int(min(remaining, UInt64(ShareBridgeWire.chunkSize)))
-            let data = try await readExactly(chunk, timeout: timeout)
-            do {
-                try handle.write(contentsOf: data)
-            } catch {
-                throw ShareBridgeError.invalidStream("无法写入临时文件")
-            }
-            remaining -= UInt64(data.count)
-        }
-    }
-
-    func write(_ data: Data, timeout: TimeInterval) async throws {
-        guard !data.isEmpty else { return }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var resumed = false
-            let resume: (Result<Void, Error>) -> Void = { result in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(with: result)
-            }
-            queue.asyncAfter(deadline: .now() + timeout) {
-                resume(.failure(ShareBridgeError.ioTimeout))
-            }
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    resume(.failure(error))
-                } else {
-                    resume(.success(()))
-                }
-            })
-        }
-    }
+private func ffConfigureTimeouts(_ fd: Int32) {
+    var timeout = timeval(tv_sec: bridgeIOTimeoutSeconds, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 }
 
-/// 串行闸门：同一时刻只允许一个 prepareForToken 在跑，后来的排队（带超时，
-/// 避免某次卡住的分享把后续分享永久挡住——「首次成功、后面一直失败」）。
-private actor ShareBridgeGate {
-    private var busy = false
-    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+// MARK: - 主机端
 
-    func acquire(timeout: TimeInterval) async -> Bool {
-        if !busy {
-            busy = true
-            return true
-        }
-        let id = UUID()
-        return await withCheckedContinuation { continuation in
-            waiters.append((id, continuation))
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                await self?.timeout(id)
-            }
-        }
-    }
-
-    private func timeout(_ id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-        let waiter = waiters.remove(at: index)
-        waiter.continuation.resume(returning: false)
-    }
-
-    func release() {
-        if waiters.isEmpty {
-            busy = false
-        } else {
-            waiters.removeFirst().continuation.resume(returning: true)
-        }
-    }
-}
-
-/// 主机端：App 收到 wake URL 后启动，等待扩展把本次分享直传过来。
+/// 主机端：App 收到 wake URL 后监听 127.0.0.1:47551，等扩展把本次分享直传过来。
+/// 实现与老版 `FFLocalShareBridgeServer` 一致（POSIX socket + select/accept + 固定超时），
+/// 每次分享独立 bind/listen/close，避免 Network.framework 的连接状态差异。
 final class ShareBridgeServer {
 
     static let shared = ShareBridgeServer()
 
-    private static let queue = DispatchQueue(label: "ff.local-share-server")
-    private static let gate = ShareBridgeGate()
-
-    // 监听器常驻：每次分享重建监听端口会撞上一条连接的 TIME_WAIT，表现为
-    // 「首次能成功，后面一直失败」。这里只建一次，之后每次分享只等一条连接。
-    private var listener: NWListener?
-    private var pendingConnection: CheckedContinuation<NWConnection, Error>?
-    private var pendingTimeout: DispatchWorkItem?
+    private let queue = DispatchQueue(label: "ff.local-share-server")
 
     private init() {}
 
     func prepareForToken(_ token: String, expectedCount: Int) async -> SharedImportOutcome {
-        var outcome = SharedImportOutcome()
         guard !token.isEmpty else {
+            var outcome = SharedImportOutcome()
             outcome.errors.append(ShareBridgeError.missingToken)
             return outcome
         }
-        guard await Self.gate.acquire(timeout: bridgeGateTimeout) else {
-            AppLog.tag("ShareBridge", "gate busy, give up token=\(token)")
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.serve(token: token,
+                                                          expectedCount: expectedCount))
+            }
+        }
+    }
+
+    private func serve(token: String, expectedCount: Int) -> SharedImportOutcome {
+        var outcome = SharedImportOutcome()
+
+        let listener = socket(AF_INET, ffSockStream, 0)
+        guard listener >= 0 else {
+            outcome.errors.append(ShareBridgeError.listenerUnavailable("无法创建套接字"))
+            return outcome
+        }
+        var reuse: Int32 = 1
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                   socklen_t(MemoryLayout<Int32>.size))
+
+        var address = ffLoopbackAddress()
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(listener, 1) == 0 else {
+            let code = errno
+            close(listener)
+            AppLog.tag("ShareBridge", "listen FAIL token=\(token) errno=\(code)")
+            outcome.errors.append(ShareBridgeError.listenerUnavailable("端口被占用（errno \(code)）"))
+            return outcome
+        }
+        defer { close(listener) }
+        AppLog.tag("ShareBridge", "listener ready port=\(ShareBridge.port) token=\(token)")
+
+        var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&descriptor, 1, bridgeAcceptTimeoutMs)
+        guard ready > 0 else {
+            AppLog.tag("ShareBridge", "accept timeout token=\(token)")
             outcome.errors.append(ShareBridgeError.waitTimeout)
             return outcome
         }
-        outcome = await serve(token: token, expectedCount: expectedCount)
-        await Self.gate.release()
-        return outcome
-    }
 
-    private func serve(token: String, expectedCount: Int) async -> SharedImportOutcome {
-        var outcome = SharedImportOutcome()
-
-        let socket: BridgeSocket
-        do {
-            socket = try await acceptSocket()
-        } catch let error as ShareBridgeError {
-            AppLog.tag("ShareBridge", "accept FAIL token=\(token) error=\(error.localizedDescription)")
-            outcome.errors.append(error)
-            return outcome
-        } catch {
-            AppLog.tag("ShareBridge", "accept FAIL token=\(token) error=\(error.localizedDescription)")
-            outcome.errors.append(ShareBridgeError.connectionClosed)
+        let client = accept(listener, nil, nil)
+        guard client >= 0 else {
+            outcome.errors.append(ShareBridgeError.listenerUnavailable("接受连接失败"))
             return outcome
         }
+        defer { close(client) }
+        ffConfigureTimeouts(client)
+        AppLog.tag("ShareBridge", "accepted token=\(token) expected=\(expectedCount)")
 
-        AppLog.tag("ShareBridge", "loopback accepted token=\(token) expected=\(expectedCount)")
-        do {
-            outcome = try await receiveItems(from: socket, token: token, expectedCount: expectedCount)
-        } catch let error as ShareBridgeError {
-            outcome.errors.append(error)
-        } catch {
-            outcome.errors.append(ShareBridgeError.connectionClosed)
+        guard let count = readHandshake(client: client, token: token) else {
+            outcome.errors.append(ShareBridgeError.invalidStream("握手失败或 token 不匹配"))
+            _ = writeAck(client: client, imported: 0)
+            return outcome
         }
+        AppLog.tag("ShareBridge", "items count=\(count) wake=\(expectedCount)")
 
-        // 即使失败也要回 ack（0），对齐 ObjC 的收尾行为。
-        try? await socket.write(ShareBridgeWire.encodeUInt32(UInt32(outcome.imported)),
-                                timeout: bridgeReadWriteTimeout)
-        socket.cancel()
+        let stagingRoot = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("FFShareBridge-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(atPath: stagingRoot,
+                                                 withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: stagingRoot) }
+
+        let importedDirectory = (StorageEnvironment.documentsPath as NSString)
+            .appendingPathComponent("Imported")
+        try? FileManager.default.createDirectory(atPath: importedDirectory,
+                                                 withIntermediateDirectories: true)
+
+        var ok = true
+        var buffer = [UInt8](repeating: 0, count: ShareBridgeWire.chunkSize)
+        for index in 0..<count {
+            var nameLengthNetwork: UInt32 = 0
+            var typeLengthNetwork: UInt32 = 0
+            var dataLengthNetwork: UInt64 = 0
+            guard ffReadAll(client, &nameLengthNetwork, 4),
+                  ffReadAll(client, &typeLengthNetwork, 4),
+                  ffReadAll(client, &dataLengthNetwork, 8) else { ok = false; break }
+            let nameLength = Int(UInt32(bigEndian: nameLengthNetwork))
+            let typeLength = Int(UInt32(bigEndian: typeLengthNetwork))
+            let dataLength = UInt64(bigEndian: dataLengthNetwork)
+            guard nameLength > 0, nameLength <= ShareBridgeWire.maxNameLength,
+                  typeLength <= ShareBridgeWire.maxTypeLength,
+                  dataLength <= ShareBridgeWire.maxDataLength else { ok = false; break }
+
+            var nameBytes = [UInt8](repeating: 0, count: nameLength)
+            guard ffReadAll(client, &nameBytes, nameLength) else { ok = false; break }
+            if typeLength > 0 {
+                var typeBytes = [UInt8](repeating: 0, count: typeLength)
+                guard ffReadAll(client, &typeBytes, typeLength) else { ok = false; break }
+            }
+            let rawName = String(bytes: nameBytes, encoding: .utf8) ?? ""
+            let name = (rawName as NSString).lastPathComponent
+            let displayName = name.isEmpty ? "imported" : name
+
+            let stagingPath = (stagingRoot as NSString)
+                .appendingPathComponent("\(index)-\(displayName)")
+            let output = open(stagingPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                              0o600)
+            guard output >= 0 else { ok = false; break }
+
+            var remaining = dataLength
+            while remaining > 0 {
+                let wanted = Int(min(UInt64(buffer.count), remaining))
+                guard ffReadAll(client, &buffer, wanted),
+                      ffWriteAllRaw(output, buffer, wanted) else { ok = false; break }
+                remaining -= UInt64(wanted)
+            }
+            close(output)
+            guard ok else { break }
+
+            let result = ImportService.importURL(URL(fileURLWithPath: stagingPath),
+                                                 displayName: displayName,
+                                                 toDirectory: importedDirectory)
+            if result.success {
+                if let destination = result.destinationPath {
+                    outcome.destinations.append(destination)
+                }
+            } else {
+                outcome.errors.append(result.error ?? ShareBridgeError.importFailed(displayName))
+                ok = false
+                break
+            }
+        }
+        outcome.imported = outcome.destinations.count
+        _ = writeAck(client: client, imported: UInt32(outcome.imported))
+        if !ok && outcome.errors.isEmpty {
+            outcome.errors.append(ShareBridgeError.invalidStream("共享数据流中断或格式无效"))
+        }
         AppLog.tag("ShareBridge",
                    "loopback receive token=\(token) imported=\(outcome.imported) errors=\(outcome.errors.count)")
         return outcome
     }
 
-    private func acceptSocket() async throws -> BridgeSocket {
-        let connection = try await waitForConnection()
-        let socket = BridgeSocket(connection: connection, queue: Self.queue)
-        do {
-            try await socket.start(timeout: bridgeAcceptTimeout)
-        } catch {
-            socket.cancel()
-            throw (error as? ShareBridgeError) ?? ShareBridgeError.connectionClosed
-        }
-        return socket
+    /// 读握手（magic + token + count），校验 token；失败返回 nil。
+    private func readHandshake(client: Int32, token: String) -> Int? {
+        var magic = [UInt8](repeating: 0, count: ShareBridgeWire.magic.count)
+        var tokenLengthNetwork: UInt32 = 0
+        var countNetwork: UInt32 = 0
+        guard ffReadAll(client, &magic, magic.count),
+              magic == ShareBridgeWire.magic,
+              ffReadAll(client, &tokenLengthNetwork, 4),
+              ffReadAll(client, &countNetwork, 4) else { return nil }
+
+        let tokenLength = Int(UInt32(bigEndian: tokenLengthNetwork))
+        let count = Int(UInt32(bigEndian: countNetwork))
+        guard tokenLength > 0, tokenLength <= ShareBridgeWire.maxNameLength,
+              count > 0, count <= ShareBridgeWire.maxItemCount else { return nil }
+
+        var tokenBytes = [UInt8](repeating: 0, count: tokenLength)
+        guard ffReadAll(client, &tokenBytes, tokenLength),
+              let received = String(bytes: tokenBytes, encoding: .utf8),
+              received == token else { return nil }
+        return count
     }
 
-    /// 等待本次分享的直传连接（监听器只建一次，之后一直复用）。
-    private func waitForConnection() async throws -> NWConnection {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWConnection, Error>) in
-            Self.queue.async {
-                do {
-                    try self.ensureListener()
-                } catch {
-                    continuation.resume(throwing: (error as? ShareBridgeError)
-                        ?? ShareBridgeError.listenerUnavailable(error.localizedDescription))
-                    return
-                }
-                guard self.pendingConnection == nil else {
-                    continuation.resume(throwing: ShareBridgeError.listenerUnavailable("已有等待中的连接"))
-                    return
-                }
-                self.pendingConnection = continuation
-                let timeout = DispatchWorkItem { [weak self] in
-                    guard let self, let pending = self.pendingConnection else { return }
-                    self.pendingConnection = nil
-                    self.pendingTimeout = nil
-                    pending.resume(throwing: ShareBridgeError.waitTimeout)
-                }
-                self.pendingTimeout = timeout
-                Self.queue.asyncAfter(deadline: .now() + bridgeAcceptTimeout, execute: timeout)
-            }
-        }
-    }
-
-    private func ensureListener() throws {
-        if listener != nil { return }
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
-            host: .ipv4(.loopback),
-            port: NWEndpoint.Port(rawValue: ShareBridge.port)!)
-
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: parameters)
-        } catch {
-            throw ShareBridgeError.listenerUnavailable(error.localizedDescription)
-        }
-        listener.stateUpdateHandler = { [weak self] state in
-            guard case .failed(let error) = state else { return }
-            AppLog.tag("ShareBridge", "listener failed: \(error.localizedDescription)")
-            Self.queue.async {
-                guard let self else { return }
-                self.listener = nil
-                if let pending = self.pendingConnection {
-                    self.pendingConnection = nil
-                    self.pendingTimeout?.cancel()
-                    self.pendingTimeout = nil
-                    pending.resume(throwing: ShareBridgeError.listenerUnavailable(error.localizedDescription))
-                }
-            }
-        }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { connection.cancel(); return }
-            Self.queue.async {
-                self.pendingTimeout?.cancel()
-                self.pendingTimeout = nil
-                if let pending = self.pendingConnection {
-                    self.pendingConnection = nil
-                    pending.resume(returning: connection)
-                } else {
-                    // 没有等待者（重复连接/异常来源）：直接拒绝。
-                    connection.cancel()
-                }
-            }
-        }
-        listener.start(queue: Self.queue)
-        self.listener = listener
-        AppLog.tag("ShareBridge", "listener started port=\(ShareBridge.port)")
-    }
-
-    private func receiveItems(from socket: BridgeSocket,
-                              token: String,
-                              expectedCount: Int) async throws -> SharedImportOutcome {
-        var outcome = SharedImportOutcome()
-
-        let count = Int(try await socket.readUInt32(timeout: bridgeReadWriteTimeout))
-        guard count > 0, count <= ShareBridgeWire.maxItemCount else {
-            throw ShareBridgeError.invalidStream("条目数量无效")
-        }
-        AppLog.tag("ShareBridge", "loopback items count=\(count) wake=\(expectedCount)")
-
-        let stagingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("FFShareBridge-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-        } catch {
-            throw ShareBridgeError.invalidStream("无法准备导入暂存目录")
-        }
-        defer { try? FileManager.default.removeItem(at: stagingRoot) }
-
-        let destinationDirectory = (StorageEnvironment.documentsPath as NSString)
-            .appendingPathComponent("Imported")
-        do {
-            try FileManager.default.createDirectory(atPath: destinationDirectory,
-                                                    withIntermediateDirectories: true)
-        } catch {
-            throw ShareBridgeError.invalidStream("无法准备导入目录")
-        }
-
-        for index in 0..<count {
-            let nameLength = Int(try await socket.readUInt32(timeout: bridgeReadWriteTimeout))
-            guard nameLength > 0, nameLength <= ShareBridgeWire.maxNameLength else {
-                throw ShareBridgeError.invalidStream("文件名长度无效")
-            }
-            let typeLength = Int(try await socket.readUInt32(timeout: bridgeReadWriteTimeout))
-            guard typeLength <= ShareBridgeWire.maxTypeLength else {
-                throw ShareBridgeError.invalidStream("文件类型长度无效")
-            }
-            let dataLength = try await socket.readUInt64(timeout: bridgeReadWriteTimeout)
-            guard dataLength <= ShareBridgeWire.maxDataLength else {
-                throw ShareBridgeError.invalidStream("文件过大")
-            }
-
-            let rawName = try await socket.readString(length: nameLength, timeout: bridgeReadWriteTimeout)
-            _ = try await socket.readString(length: typeLength, timeout: bridgeReadWriteTimeout)
-            let lastComponent = (rawName as NSString).lastPathComponent
-            let name = lastComponent.isEmpty ? "imported" : lastComponent
-
-            let stagingPath = stagingRoot.appendingPathComponent("\(index)-\(name)").path
-            try await socket.readToFile(at: stagingPath, length: dataLength, timeout: bridgeReadWriteTimeout)
-
-            let result = ImportService.importURL(URL(fileURLWithPath: stagingPath),
-                                                 displayName: name,
-                                                 toDirectory: destinationDirectory)
-            if result.success {
-                if let destination = result.destinationPath {
-                    outcome.destinations.append(destination)
-                }
-                AppLog.tag("ShareBridge", "import OK name=\(name) dest=\(result.destinationPath ?? "?")")
-            } else {
-                let error = result.error ?? ShareBridgeError.importFailed(name)
-                outcome.errors.append(error)
-                AppLog.tag("ShareBridge", "import FAIL name=\(name) error=\(error.localizedDescription)")
-            }
-        }
-
-        outcome.imported = outcome.destinations.count
-        return outcome
+    private func writeAck(client: Int32, imported: UInt32) -> Bool {
+        var ack = imported.bigEndian
+        return ffWriteAllRaw(client, &ack, 4)
     }
 }
 
-/// 扩展端：把本次 session 的收件箱条目直传给主机。
+// MARK: - 扩展端
+
+/// 扩展端：把本次 session 的收件箱条目直传给主机（POSIX socket，与老版一致）。
 enum ShareBridgeClient {
 
     private struct Item {
@@ -539,50 +376,75 @@ enum ShareBridgeClient {
             throw ShareBridgeError.invalidArguments
         }
         let items = collectItems(inboxPath: inboxPath, sessionID: sessionID)
-        guard !items.isEmpty else {
-            throw ShareBridgeError.nothingToSend
-        }
+        guard !items.isEmpty else { throw ShareBridgeError.nothingToSend }
 
-        // 对齐 ObjC 版 FFConnectLoopback：App 冷启动期间要反复重试连接，
-        // 单次连接失败（connection refused / waiting）不能直接放弃。
-        let queue = DispatchQueue(label: "ff.local-share-client")
-        let endpoint = NWEndpoint.hostPort(host: .ipv4(.loopback),
-                                           port: NWEndpoint.Port(rawValue: ShareBridge.port)!)
-        var socket: BridgeSocket?
-        var lastError: Error?
-        let deadline = Date().addingTimeInterval(bridgeClientRetryWindow)
-        while Date() < deadline {
-            let connection = NWConnection(to: endpoint, using: .tcp)
-            let candidate = BridgeSocket(connection: connection, queue: queue)
-            do {
-                try await candidate.start(timeout: bridgeConnectTimeout)
-                socket = candidate
-                break
-            } catch {
-                lastError = error
-                candidate.cancel()
-                try? await Task.sleep(nanoseconds: 200_000_000)
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try send(items: items, token: token,
+                                                            sessionID: sessionID))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
-        guard let socket else {
-            throw (lastError as? ShareBridgeError) ?? ShareBridgeError.connectTimeout
+    }
+
+    private static func send(items: [Item], token: String, sessionID: String) throws -> Int {
+        let fd = connectLoopback()
+        guard fd >= 0 else { throw ShareBridgeError.connectTimeout }
+        defer { close(fd) }
+        ffConfigureTimeouts(fd)
+
+        let tokenData = Data(token.utf8)
+        var tokenLength = UInt32(tokenData.count).bigEndian
+        var count = UInt32(items.count).bigEndian
+        var ok = ffWriteAllRaw(fd, ShareBridgeWire.magic, ShareBridgeWire.magic.count)
+        ok = ok && ffWriteAllRaw(fd, &tokenLength, 4)
+        ok = ok && ffWriteAllRaw(fd, &count, 4)
+        ok = ok && ffWriteAll(fd, tokenData)
+
+        let buffer = [UInt8](repeating: 0, count: ShareBridgeWire.chunkSize)
+        if ok {
+            for item in items {
+                let nameData = Data(item.name.utf8)
+                let typeData = Data(item.type.utf8)
+                var nameLength = UInt32(nameData.count).bigEndian
+                var typeLength = UInt32(typeData.count).bigEndian
+                var fileLength = item.size.bigEndian
+                ok = ffWriteAllRaw(fd, &nameLength, 4)
+                    && ffWriteAllRaw(fd, &typeLength, 4)
+                    && ffWriteAllRaw(fd, &fileLength, 8)
+                    && ffWriteAll(fd, nameData)
+                    && ffWriteAll(fd, typeData)
+                if !ok { break }
+
+                guard let handle = FileHandle(forReadingAtPath: item.payloadPath) else {
+                    throw ShareBridgeError.payloadUnreadable(item.name)
+                }
+                defer { try? handle.close() }
+                var remaining = item.size
+                while remaining > 0 {
+                    let chunk = (try? handle.read(upToCount: Int(min(remaining,
+                                                                     UInt64(buffer.count))))) ?? nil
+                    guard let chunk, !chunk.isEmpty else {
+                        throw ShareBridgeError.payloadTruncated(item.name)
+                    }
+                    guard ffWriteAll(fd, chunk) else { ok = false; break }
+                    remaining -= UInt64(chunk.count)
+                }
+                if !ok { break }
+            }
         }
 
-        do {
-            try await send(items: items, over: socket)
-            // 服务端会把所有条目导入完才回 ACK，大文件/多项分享要给足时间。
-            let acknowledged = try await socket.readUInt32(timeout: bridgeAckTimeout)
-            guard Int(acknowledged) == items.count else {
-                throw ShareBridgeError.notAcknowledged(imported: acknowledged, expected: items.count)
-            }
-        } catch let error as ShareBridgeError {
-            socket.cancel()
-            throw error
-        } catch {
-            socket.cancel()
-            throw ShareBridgeError.connectionClosed
+        var acknowledged: UInt32 = 0
+        guard ok, ffReadAll(fd, &acknowledged, 4) else {
+            throw ShareBridgeError.notAcknowledged(imported: 0, expected: items.count)
         }
-        socket.cancel()
+        let ack = UInt32(bigEndian: acknowledged)
+        guard Int(ack) == items.count else {
+            throw ShareBridgeError.notAcknowledged(imported: ack, expected: items.count)
+        }
 
         for item in items {
             try? FileManager.default.removeItem(atPath: item.directory)
@@ -591,40 +453,22 @@ enum ShareBridgeClient {
         return items.count
     }
 
-    private static func send(items: [Item], over socket: BridgeSocket) async throws {
-        try await socket.write(ShareBridgeWire.encodeUInt32(UInt32(items.count)),
-                               timeout: bridgeReadWriteTimeout)
-        for item in items {
-            let nameData = Data(item.name.utf8)
-            let typeData = Data(item.type.utf8)
-            var header = Data()
-            header.append(ShareBridgeWire.encodeUInt32(UInt32(nameData.count)))
-            header.append(ShareBridgeWire.encodeUInt32(UInt32(typeData.count)))
-            header.append(ShareBridgeWire.encodeUInt64(item.size))
-            try await socket.write(header, timeout: bridgeReadWriteTimeout)
-            try await socket.write(nameData, timeout: bridgeReadWriteTimeout)
-            try await socket.write(typeData, timeout: bridgeReadWriteTimeout)
-
-            guard let handle = FileHandle(forReadingAtPath: item.payloadPath) else {
-                throw ShareBridgeError.payloadUnreadable(item.name)
-            }
-            defer { try? handle.close() }
-            var remaining = item.size
-            while remaining > 0 {
-                let chunk: Data
-                do {
-                    chunk = try handle.read(upToCount: Int(min(remaining,
-                                                             UInt64(ShareBridgeWire.chunkSize)))) ?? Data()
-                } catch {
-                    throw ShareBridgeError.payloadUnreadable(item.name)
+    /// 对齐老版 FFConnectLoopback：50ms 一次、最多 120 次（6s）。
+    private static func connectLoopback() -> Int32 {
+        for _ in 0..<bridgeConnectAttempts {
+            let fd = socket(AF_INET, ffSockStream, 0)
+            if fd < 0 { return -1 }
+            var address = ffLoopbackAddress()
+            let result = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
-                guard !chunk.isEmpty else {
-                    throw ShareBridgeError.payloadTruncated(item.name)
-                }
-                try await socket.write(chunk, timeout: bridgeReadWriteTimeout)
-                remaining -= UInt64(chunk.count)
             }
+            if result == 0 { return fd }
+            close(fd)
+            usleep(bridgeConnectIntervalMicros)
         }
+        return -1
     }
 
     private static func collectItems(inboxPath: String, sessionID: String) -> [Item] {
@@ -671,4 +515,3 @@ enum ShareBridgeClient {
         return metadata
     }
 }
-#endif

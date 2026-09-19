@@ -16,7 +16,7 @@ FuckFile_CFLAGS = -I$(PWD)/third_party/minizip
 FuckFile_CCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_OBJCFLAGS = $(FuckFile_CFLAGS)
 FuckFile_SWIFT_BRIDGING_HEADER = $(PWD)/Sources/FuckFile-Bridging-Header.h
-FuckFile_FRAMEWORKS = UIKit SwiftUI Foundation QuickLook PDFKit AVKit Network
+FuckFile_FRAMEWORKS = UIKit SwiftUI Foundation QuickLook PDFKit AVKit
 FuckFile_LIBRARIES = z sqlite3 compression
 FuckFile_INFOPLIST = Info.plist
 FuckFile_INSTALL_PATH = /Applications
@@ -29,7 +29,7 @@ FuckFileShare_FILES = \
 	Sources/Core/ImportService.swift \
 	Sources/Core/StorageEnvironment.swift \
 	Sources/Core/AppLog.swift
-FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers Network
+FuckFileShare_FRAMEWORKS = UIKit Foundation UniformTypeIdentifiers
 FuckFileShare_INFOPLIST = ShareExtension/Info.plist
 FuckFileShare_INSTALL_PATH = /Applications/FuckFile.app/PlugIns
 
